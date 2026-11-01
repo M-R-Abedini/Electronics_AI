@@ -1,3 +1,4 @@
+# Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Schematic audit, structured visual/layout violation report.
@@ -33,6 +34,10 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
+# Physical PCB checks share this audit entry point while retaining the existing
+# schematic auditor's API and coordinate convention.
+from eda_agent.design.copper_audit import audit_board_copper, net_connectivity
 
 
 # Default half-extent for a component body in mils when no

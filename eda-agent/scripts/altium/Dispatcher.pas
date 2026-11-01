@@ -1,4 +1,4 @@
-{ Modified 2026-10-10 by M-R-Abedini; see root MODIFICATIONS.md. }
+{ Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md. }
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
@@ -108,6 +108,7 @@ Begin
            Or ActionHasPrefix(Verb, 'inspect_')
            Or ActionHasPrefix(Verb, 'diff_')
            Or ActionHasPrefix(Verb, 'compare_')
+           Or (Verb = 'focus_copper_violation')
            Or (Verb = 'ping');
 End;
 

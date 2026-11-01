@@ -17,11 +17,37 @@ FAT = 0xFFFFFFFD
 DIF = 0xFFFFFFFC
 
 
-def read_streams(path) -> dict[str, bytes]:
+def list_stream_names(path):
+    """Inspect directory names without reading stream payloads."""
     import olefile
     with olefile.OleFileIO(str(path)) as ole:
-        return {"/".join(parts): ole.openstream(parts).read()
-                for parts in ole.listdir(streams=True, storages=False)}
+        return ['/'.join(parts) for parts in ole.listdir(streams=True, storages=False)]
+
+
+def read_streams(path, sections=None, *, max_stream_bytes=None,
+                 max_total_bytes=None) -> dict[str, bytes]:
+    """Read selected CFB streams without loading unrelated models/history.
+
+    ``sections`` contains exact stream names or top-level storage names. The
+    default retains the original all-stream reader API used by library edits.
+    Size limits are checked against directory sizes *before* opening a stream.
+    """
+    import olefile
+    selected = None if sections is None else {str(s).strip('/').casefold() for s in sections}
+    with olefile.OleFileIO(str(path)) as ole:
+        result, total = {}, 0
+        for parts in ole.listdir(streams=True, storages=False):
+            name = '/'.join(parts)
+            if selected is not None and not (name.casefold() in selected or parts[0].casefold() in selected):
+                continue
+            size = ole.get_size(parts)
+            total += size
+            if max_stream_bytes is not None and size > max_stream_bytes:
+                raise ValueError('CFB stream exceeds size limit: ' + name)
+            if max_total_bytes is not None and total > max_total_bytes:
+                raise ValueError('Selected CFB streams exceed total size limit')
+            result[name] = ole.openstream(parts).read()
+        return result
 
 
 def write_streams(path, streams: dict[str, bytes]) -> None:

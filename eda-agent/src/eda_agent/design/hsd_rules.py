@@ -1,3 +1,4 @@
+# Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """High-speed design helpers: size every differential pair's traces.
@@ -19,6 +20,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from eda_agent.design.plan import DesignPlan
+
+
+def assess_routed_copper(plan: DesignPlan, snapshot: dict, *, topology: dict | None = None,
+                         policy: dict | None = None) -> dict:
+    """Combine existing role/pair recognition with actual routed SI evidence."""
+    from eda_agent.design.net_classes import classify_copper_intent
+    from eda_agent.design.signal_integrity import audit_routed_signal_integrity
+    return audit_routed_signal_integrity(snapshot, classify_copper_intent(plan, topology), policy=policy)
 
 
 @dataclass(frozen=True)
@@ -140,6 +149,7 @@ def assess_diff_pair_skew(
 
 
 __all__ = [
+    "assess_routed_copper",
     "DiffPairTrace",
     "suggest_diff_pair_traces",
     "DiffPairSkew",

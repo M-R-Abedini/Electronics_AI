@@ -1,4 +1,13 @@
-# Release verification: 2026.10.29.single-transport1
+# Release verification: 2026.11.01.copper-si-pi1
+
+The copper-aware revision adds private `pcb.get_copper_snapshot`,
+`pcb.focus_copper_violation` and `pcb.apply_copper_rules` handlers in the existing
+native transport. Python geometry tests and native static checks are separate
+from live Altium acceptance. Record the current acceptance result in the root
+`COPPER_SI_PI_REPORT.fa.md`; do not infer that every native geometry variant is
+qualified from compilation or synthetic fixtures. The historical checklist below
+remains a list of distinct native API risks, not a declaration that those checks
+have all run for this revision.
 
 Everything below is Pascal that FPC and the linter have checked and that
 **Altium's DelphiScript engine has never executed**. The two are not the

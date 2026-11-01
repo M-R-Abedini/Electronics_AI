@@ -587,3 +587,395 @@ def encode_wide_strings(footprint):
             units=struct.unpack('<'+'H'*(len(encoded)//2),encoded)
             parts.append('ENCODEDTEXT'+str(i)+'='+','.join(str(unit) for unit in units))
     return _block(('|'.join(parts)+'\0').encode('ascii'))
+
+
+# PcbDoc uses the same independently implemented primitive payloads as PcbLib,
+# in type-specific storage streams without the footprint-name envelope.
+_BOARD_STORAGES = {'Tracks6': (4, 'tracks'), 'Arcs6': (1, 'arcs'),
+                   'Vias6': (3, 'vias'), 'Pads6': (2, 'pads'),
+                   'Fills6': (6, 'fills'), 'Regions6': (11, 'regions'),
+                   'ShapeBasedRegions6': (11, 'regions')}
+
+
+def decode_board_primitive_stream(data: bytes, expected_type: int):
+    """Decode a PcbDoc storage with bounded records and explicit schema gaps.
+
+    Does not change the permissive lossless PcbLib API. Unverified payload
+    lengths are reported even when their known common prefix can be read.
+    """
+    def nonfinite(value):
+        if isinstance(value, float):
+            return not math.isfinite(value)
+        if isinstance(value, dict):
+            return any(nonfinite(v) for v in value.values())
+        if isinstance(value, (tuple, list)):
+            return any(nonfinite(v) for v in value)
+        return False
+
+    rows, missing, pos = [], [], 0
+    while pos < len(data):
+        index, typ = len(rows), data[pos]
+        pos += 1
+        if typ != expected_type or typ not in TYPE_NAMES:
+            missing.append(f'unsupported primitive type {typ} at byte {pos - 1}')
+            break  # Unknown types have an unknown number of framing blocks.
+        blocks = []
+        for _ in range(6 if typ == 2 else 1):
+            if pos + 4 > len(data):
+                raise PcbPrimitiveError('Truncated board primitive block length')
+            size = _read('I', data, pos)
+            pos += 4
+            if size > len(data) - pos:
+                raise PcbPrimitiveError('Board primitive block exceeds stream')
+            blocks.append(data[pos:pos + size])
+            pos += size
+        payload = blocks[4] if typ == 2 else blocks[0]
+        minimum = {1: 45, 2: 126, 3: 74, 4: 33, 6: 37, 11: 26}[typ]
+        if len(payload) < minimum:
+            missing.append(f'primitive {index}: unsupported short schema ({len(payload)} bytes)')
+            continue
+        known_sizes = {1: {60}, 2: {202}, 3: {316, 321}, 4: {49}, 6: {50}}
+        if typ in known_sizes and len(payload) not in known_sizes[typ]:
+            missing.append(f'primitive {index}: unverified payload schema ({len(payload)} bytes)')
+            continue
+        if typ in _SIMPLE_FIELDS:
+            item = _decode_simple(typ, payload)
+        elif typ == 2:
+            if payload[49] not in SHAPES or payload[62] > 2:
+                missing.append(f'primitive {index}: unsupported pad stack or shape')
+                continue
+            item = _decode_pad(blocks)
+            if item.get('stack_mode') != 'simple':
+                missing.append(f'primitive {index}: non-simple pad stack requires per-layer geometry')
+        elif typ == 3:
+            item = _decode_via(payload)
+            item['layer'] = 'Multi-Layer'
+        else:
+            item = _decode_region(typ, payload)
+            if item.get('additional_parameters'):
+                missing.append(f'primitive {index}: unverified region parameters')
+            raw_kind = _param_dict(item.params).get('KIND', '0')
+            if raw_kind != '0':
+                # The historic PcbLib API labels ordinal 2 as board_cutout.
+                # PcbDoc named-region/cutout ordinals need saved native proof;
+                # do not promote that library assumption to board evidence.
+                item['raw_region_kind'] = raw_kind
+                item['kind_hint'] = item['kind']
+                item['kind'] = 'unsupported'
+                missing.append(f'primitive {index}: unverified board region kind {raw_kind}')
+        if item.get('raw_layer_id') is not None:
+            missing.append(f'primitive {index}: unsupported layer ID {item["raw_layer_id"]}')
+            continue
+        if typ == 3 and any(item[k] not in LAYER_NAMES.values() for k in ('from_layer', 'to_layer')):
+            missing.append(f'primitive {index}: unsupported via layer span')
+            continue
+        if nonfinite(item):
+            missing.append(f'primitive {index}: nonfinite geometry')
+            continue
+        rows.append(item)
+    return rows, missing
+
+
+def _board_parameter_records(data):
+    """Length-prefixed Altium parameter records, not raw byte scanning."""
+    for _, params in _identity_records(data):
+        yield params
+
+
+def _explicit_mm(value):
+    value = str(value).strip().lower()
+    if not value.endswith(('mm', 'mil')):
+        raise ValueError('Dimension has no explicit unit')
+    result = _dim(value)
+    if not math.isfinite(result):
+        raise ValueError('Nonfinite dimension')
+    return result
+
+
+def read_board_copper(path, *, max_stream_bytes=64 * 1024 * 1024,
+                      max_total_bytes=128 * 1024 * 1024):
+    """Read saved PcbDoc copper; never represents unsaved editor state.
+
+    Unrelated 3D models, history and library streams are not opened. Missing
+    sections and unknown schemas are evidence gaps, not empty-board evidence.
+    """
+    from pathlib import Path
+    from suite_ole import list_stream_names, read_streams
+    target = Path(path).resolve()
+    selected = set(_BOARD_STORAGES) | {'Board6', 'Nets6', 'Components6', 'Polygons6',
+                                      'LayerStack', 'LayerStack6', 'SplitPlaneRegions6'}
+    streams = read_streams(target, selected, max_stream_bytes=max_stream_bytes,
+                           max_total_bytes=max_total_bytes)
+    by_name = {k.casefold(): v for k, v in streams.items()}
+    result = dict(schema=1, units='mm', board_path=str(target), source='file',
+                  complete=False, missing=[], coverage={},
+                  provenance={'reader': 'suite_pcb_primitives', 'live': False,
+                              'saved_file_only': True, 'streams': sorted(streams)})
+    for section in ('layers', 'tracks', 'arcs', 'vias', 'pads', 'regions',
+                    'keepouts', 'holes', 'cutouts', 'net_ties', 'components', 'nets', 'unsupported_regions'):
+        result[section] = []
+    missing = result['missing']
+    selected_keys = {s.casefold() for s in selected}
+    for name in list_stream_names(target):
+        storage = name.split('/')[0]
+        lower = storage.casefold()
+        if any(lower.startswith(prefix) for prefix in
+               ('tracks', 'arcs', 'vias', 'pads', 'fills', 'regions', 'shapebasedregions',
+                'polygons', 'splitplane', 'layerstack', 'board', 'nets', 'components')):
+            if storage.casefold() not in selected_keys:
+                missing.append('unsupported board storage schema: ' + storage)
+            elif name.rsplit('/', 1)[-1].casefold() not in ('data', 'header'):
+                missing.append('unparsed board stream: ' + name)
+
+    def check_count(storage, actual):
+        header = by_name.get((storage + '/Header').casefold())
+        if header is None:
+            missing.append(storage + '/Header absent; record count unverified')
+        elif len(header) != 4:
+            missing.append(storage + '/Header count schema unsupported')
+        elif _read('I', header, 0) != actual:
+            missing.append(storage + '/Header record count mismatch')
+
+    def records(storage):
+        raw = by_name.get((storage + '/Data').casefold())
+        if raw is None:
+            missing.append(storage + '/Data absent')
+            return []
+        try:
+            rows = list(_board_parameter_records(raw))
+            check_count(storage, len(rows))
+            return rows
+        except (ValueError, struct.error) as exc:
+            missing.append(storage + ': ' + str(exc))
+            return []
+
+    nets = records('Nets6')
+    result['nets'] = [row.get('NAME', '') for row in nets]
+    if any('NAME' not in row for row in nets):
+        missing.append('Nets6 name schema unsupported')
+    components = records('Components6')
+    for i, row in enumerate(components):
+        c = dict(id=f'component:{i}', designator=row.get('SOURCEDESIGNATOR', row.get('NAME', '')),
+                 comment=row.get('SOURCECOMMENT', ''), footprint=row.get('PATTERN', ''),
+                 parameters=dict(row), pad_ids=[])
+        result['components'].append(c)
+        if not c['designator']:
+            missing.append(f'Components6:{i} designator unavailable')
+
+    def common(item, section, index):
+        net_index = item.get('net_index', 65535)
+        net_name = ''
+        if net_index != 65535:
+            if 0 <= net_index < len(nets) and 'NAME' in nets[net_index]:
+                net_name = nets[net_index]['NAME']
+            else:
+                missing.append(f'{section}:{index} unresolved net index {net_index}')
+        return dict(id=f'{section}:{index}', net_name=net_name, layer=item['layer'])
+
+    copper_layers = {LAYER_NAMES[i] for i in (*range(1, 33), *range(39, 55), 74)}
+    excluded_non_copper = 0
+    for storage, (typ, section) in _BOARD_STORAGES.items():
+        raw = by_name.get((storage + '/Data').casefold())
+        if raw is None:
+            # ShapeBasedRegions6 is an alternative/newer additional region set.
+            if storage != 'ShapeBasedRegions6':
+                missing.append(storage + '/Data absent')
+            continue
+        try:
+            items, gaps = decode_board_primitive_stream(raw, typ)
+        except (ValueError, IndexError, struct.error) as exc:
+            missing.append(storage + ': ' + str(exc))
+            continue
+        missing.extend(storage + ': ' + gap for gap in gaps)
+        check_count(storage, len(items))
+        status = 'partial' if gaps else 'complete'
+        result['coverage'][storage] = status
+        key = 'regions' if section == 'fills' else section
+        previous = result['coverage'].get(key)
+        result['coverage'][key] = 'partial' if 'partial' in (status, previous) else status
+        for index, item in enumerate(items):
+            is_keepout = 'KEEPOUT' in item.get('flags', '') or item['layer'] == 'Keep-Out Layer'
+            if item['layer'] not in copper_layers and not is_keepout:
+                excluded_non_copper += 1
+                continue
+            row = common(item, storage, index)
+            polygon = item.get('polygon_index', 65535)
+            if polygon != 65535:
+                row['polygon_id'] = f'polygon:{polygon}'
+            if typ == 4:
+                row.update(start=[item['x1'], item['y1']], end=[item['x2'], item['y2']], width_mm=item['width'])
+            elif typ == 1:
+                row.update(center=[item['x'], item['y']], radius_mm=item['radius'],
+                           start_angle_deg=item['start_angle'], end_angle_deg=item['end_angle'], width_mm=item['width'])
+            elif typ == 3:
+                row.update(x_mm=item['x'], y_mm=item['y'], diameter_mm=item['diameter'],
+                           drill_mm=item['hole_size'], start_layer=item['from_layer'], end_layer=item['to_layer'])
+                if item.get('diameter_stack_mode') != 'simple':
+                    row['per_layer_diameters_mm'] = item.get('per_layer_diameters', [])
+                    row['geometry_complete'] = False
+                    missing.append(row['id'] + ' non-simple via stack')
+                    result['coverage']['vias'] = 'partial'
+            elif typ == 2:
+                owner = item.get('component_index', -1)
+                component = ''
+                if owner != -1:
+                    if 0 <= owner < len(components):
+                        component = result['components'][owner]['designator']
+                        result['components'][owner]['pad_ids'].append(row['id'])
+                    else:
+                        missing.append(row['id'] + ' unresolved component index')
+                row.update(component=component, pad_name=item['designator'], x_mm=item['x'], y_mm=item['y'],
+                           width_mm=item['width'], height_mm=item['height'], rotation_deg=item['rotation'],
+                           shape=item['shape'], drill_mm=item.get('hole_size', 0), is_plated=item['is_plated'])
+                if row['shape'] == 'round' and row['width_mm'] != row['height_mm']:
+                    row['shape'] = 'oval'
+                if item.get('stack_mode') != 'simple':
+                    row['geometry_complete'] = False
+                if item['shape'] in ('rounded_rectangle', 'octagonal'):
+                    row['geometry_complete'] = False
+                    missing.append(row['id'] + ' exact pad corner geometry unsupported')
+                    result['coverage']['pads'] = 'partial'
+                if item.get('per_layer_sizes'):
+                    row['per_layer_sizes_mm'] = item['per_layer_sizes']
+                if item.get('hole_shape'):
+                    row.update(hole_shape=item['hole_shape'], hole_slot_length_mm=item.get('hole_slot_length'),
+                               hole_rotation_deg=item.get('hole_rotation'))
+                    row['geometry_complete'] = False
+                    missing.append(row['id'] + ' non-round hole contour unsupported')
+                    result['coverage']['pads'] = 'partial'
+            elif typ == 6:
+                # Fills are oriented rectangles, not a bounding-box copper proxy.
+                angle = math.radians(item['rotation'])
+                cx, cy = (item['x1'] + item['x2']) / 2, (item['y1'] + item['y2']) / 2
+                corners = [(item['x1'], item['y1']), (item['x2'], item['y1']),
+                           (item['x2'], item['y2']), (item['x1'], item['y2'])]
+                row.update(outline=[[cx+(x-cx)*math.cos(angle)-(y-cy)*math.sin(angle),
+                                     cy+(x-cx)*math.sin(angle)+(y-cy)*math.cos(angle)] for x, y in corners],
+                           holes=[], kind='region', poured=True, primitive_kind='fill')
+            else:
+                row.update(outline=[[p['x'], p['y']] for p in item['vertices']],
+                           holes=[[[p['x'], p['y']] for p in hole] for hole in item.get('holes', [])],
+                           kind='region', poured=True)
+                if item['kind'] in ('board_cutout', 'polygon_cutout'):
+                    row['kind'] = item['kind']
+                    result['cutouts'].append(row)
+                    continue
+                if item['kind'] != 'copper':
+                    missing.append(row['id'] + ' unsupported region kind ' + str(item['kind']))
+                    row.update(kind='unsupported', geometry_complete=False,
+                               raw_region_kind=item.get('raw_region_kind'), kind_hint=item.get('kind_hint'))
+                    result['unsupported_regions'].append(row)
+                    continue
+            if is_keepout:
+                row['primitive_kind'] = TYPE_NAMES[typ][0]
+                result['keepouts'].append(row)
+            elif typ == 6:
+                result['regions'].append(row)
+            else:
+                result[section].append(row)
+            if typ in (2, 3) and row.get('drill_mm', 0) > 0:
+                result['holes'].append(dict(id=row['id'] + ':hole', owner_id=row['id'],
+                                            x_mm=row['x_mm'], y_mm=row['y_mm'],
+                                            diameter_mm=row['drill_mm'], is_plated=row.get('is_plated', True)))
+
+    # Polygon definitions describe intent; only their saved primitive children
+    # above are evidence of poured copper. Curved outlines stay unsupported.
+    for i, params in enumerate(records('Polygons6')):
+        outline, vertex = [], 0
+        try:
+            while f'VX{vertex}' in params:
+                if params.get(f'KIND{vertex}', '0') not in ('0', 'ePolySegmentLine'):
+                    raise ValueError('arc polygon outline unsupported')
+                outline.append([_explicit_mm(params[f'VX{vertex}']), _explicit_mm(params[f'VY{vertex}'])])
+                vertex += 1
+            if len(outline) < 3:
+                raise ValueError('polygon outline schema unsupported')
+            raw_layer = params.get('LAYER', '')
+            layer_id = int(raw_layer) if raw_layer.isdigit() else _layer(raw_layer)
+            net_id = int(params.get('NET', '65535'))
+            row = common({'layer': LAYER_NAMES[layer_id], 'net_index': net_id}, 'polygon', i)
+            row.update(outline=outline, holes=[], kind='polygon', poured=False, name=params.get('NAME', ''))
+            result['regions'].append(row)
+        except (ValueError, KeyError) as exc:
+            missing.append(f'Polygons6:{i}: {exc}')
+
+    stack_missing_start = len(missing)
+    board_rows = records('Board6')
+    board = board_rows[0] if board_rows else {}
+    import re
+    layer_ids = sorted({int(m.group(1)) for k in board if (m := re.fullmatch(r'LAYER(\d+)NAME', k))})
+    # NEXT links define physical order; numeric IDs themselves do not.
+    ordered, seen, current = [], set(), 1
+    while current in layer_ids and current not in seen:
+        seen.add(current)
+        ordered.append(current)
+        try:
+            current = int(board[f'LAYER{current}NEXT'])
+        except (ValueError, KeyError):
+            break
+    # Board6 also names every INACTIVE layer. Only the NEXT chain describes
+    # the physical stack; appending the other named entries invents planes.
+    if current != 0 or not ordered:
+        missing.append('Board6 physical layer ordering incomplete')
+    for i in ordered:
+        if i not in LAYER_NAMES or not (1 <= i <= 32 or 39 <= i <= 54):
+            continue
+        prefix = f'LAYER{i}'
+        kind = 'plane' if 39 <= i <= 54 else 'signal'
+        layer = dict(name=LAYER_NAMES[i], display_name=board[prefix + 'NAME'], kind=kind,
+                     order=len(result['layers']), layer_id=i)
+        try:
+            layer['thickness_mm'] = _explicit_mm(board[prefix + 'COPTHICK'])
+        except (ValueError, KeyError):
+            missing.append(layer['name'] + ' copper thickness unavailable')
+        reference = board.get(prefix + 'NETNAME')
+        if reference:
+            layer['reference_net'] = reference
+        elif kind == 'plane':
+            missing.append(layer['name'] + ' reference net unavailable')
+        result['layers'].append(layer)
+        if i != ordered[-1]:
+            dielectric = dict(name=layer['name'] + ' dielectric', kind='dielectric', order=len(result['layers']))
+            try:
+                dielectric['thickness_mm'] = _explicit_mm(board[prefix + 'DIELHEIGHT'])
+                if dielectric['thickness_mm'] <= 0:
+                    raise ValueError('invalid interlayer dielectric thickness')
+                er = float(board[prefix + 'DIELCONST'])
+                if not math.isfinite(er) or er <= 0:
+                    raise ValueError('invalid Er')
+                dielectric['er'] = er
+            except (ValueError, KeyError):
+                missing.append(dielectric['name'] + ' thickness/Er unavailable')
+            result['layers'].append(dielectric)
+    if not result['layers']:
+        missing.append('stackup unavailable')
+    # Other stack schemas are intentionally not guessed from opaque bytes.
+    if any('layerstack' in k for k in by_name):
+        missing.append('dedicated layer-stack stream schema unsupported')
+    stack_complete = len(missing) == stack_missing_start and bool(result['layers'])
+    if any('splitplaneregions' in k for k in by_name) or any(l['kind'] == 'plane' for l in result['layers']):
+        missing.append('implicit/split plane copper and void geometry unverified')
+    pads_by_id = {p['id']: p for p in result['pads']}
+    for component in result['components']:
+        params = component['parameters']
+        tie = params.get('COMPONENTKIND', params.get('KIND', '')).upper()
+        if tie in ('NETTIE', 'NET TIE', 'NETTIE_BOM', 'NETTIE_NOBOM', 'NET TIE (IN BOM)'):
+            pads = [pads_by_id[pid] for pid in component['pad_ids'] if pid in pads_by_id]
+            result['net_ties'].append(dict(component=component['designator'],
+                pad_ids=component['pad_ids'], net_names=sorted({p['net_name'] for p in pads if p['net_name']})))
+    missing.append('file component net-tie classification unverified for absent/unknown kind metadata')
+    missing.append('board outline and nonprimitive hole/cutout coverage unverified')
+    result['missing'] = list(dict.fromkeys(missing))
+    result['complete'] = not result['missing']
+    for name in ('tracks', 'arcs', 'vias', 'pads', 'regions'):
+        result['coverage'].setdefault(name, 'unsupported')
+    for storage, (_, section) in _BOARD_STORAGES.items():
+        if any(storage.casefold() in gap.casefold() for gap in missing):
+            result['coverage']['regions' if section == 'fills' else section] = 'partial'
+    if any('Regions6/Data absent' in gap for gap in missing):
+        result['coverage']['regions'] = 'partial'
+    result['coverage'].update(layers='complete' if stack_complete else 'partial',
+                               stackup='complete' if stack_complete else 'partial', net_ties='partial',
+                               board_outline='unsupported', implicit_planes='unsupported')
+    result['provenance']['excluded_non_copper_primitives'] = excluded_non_copper
+    return result

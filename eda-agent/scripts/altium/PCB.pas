@@ -1,3 +1,4 @@
+{ Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md. }
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
@@ -327,6 +328,7 @@ Var
     ClassExists : Boolean;
     CommaPos, AddedCount, NetIndex : Integer;
     NetNames : TStringList;
+    MemberNet : IPCB_Net;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -404,13 +406,14 @@ Begin
     For NetIndex := 0 To NetNames.Count - 1 Do
     Begin
         NetName := NetNames[NetIndex];
-        If (NetName <> '') And (Not NetClass.IsMember(NetName)) Then
+        MemberNet := FindNetByName(Board, NetName);
+        If (MemberNet <> Nil) And (Not NetClass.IsMember(MemberNet)) Then
         Begin
             PCBServer.PreProcess;
             // AddMemberByName is a procedure; verify membership instead
             // of interpreting its undefined return value as a Boolean.
-            NetClass.AddMemberByName(NetName);
-            If NetClass.IsMember(NetName) Then
+            NetClass.AddMember(MemberNet);
+            If NetClass.IsMember(MemberNet) Then
                 Inc(AddedCount);
             PCBServer.PostProcess;
         End;
@@ -5418,9 +5421,11 @@ Var
     RuleWidth : IPCB_MaxMinWidthConstraint;
     RuleHole : IPCB_MaxMinHoleSizeConstraint;
     RuleDiff : IPCB_DifferentialPairsRoutingRule;
+    RuleMatch : IPCB_MatchedNetLengthsConstraint;
     RuleTypeStr, RuleName, ValueStr, MaxValueStr, FavoredValueStr : String;
-    ScopeStr, NetScopeStr, MaxUncoupStr : String;
-    RuleValue, MaxValue, FavoredValue, MaxUncoupVal, NetScopeVal : Integer;
+    ScopeStr, Scope2Str, NetScopeStr, MaxUncoupStr : String;
+    RuleValue, MaxValue, FavoredValue, MaxUncoupVal : Double;
+    NetScopeVal : Integer;
     HasMaxValue : Boolean;
     L : TLayer;
 Begin
@@ -5438,6 +5443,7 @@ Begin
     FavoredValueStr := ExtractJsonValue(Params, 'favored_value');
     MaxUncoupStr := ExtractJsonValue(Params, 'max_uncoupled_length');
     ScopeStr := ExtractJsonValue(Params, 'scope');
+    Scope2Str := ExtractJsonValue(Params, 'scope2');
     NetScopeStr := LowerCase(ExtractJsonValue(Params, 'net_scope'));
 
     If RuleName = '' Then
@@ -5460,7 +5466,7 @@ Begin
     Else
         NetScopeVal := eNetScope_AnyNet;
 
-    RuleValue := StrToIntDef(ValueStr, 10);
+    RuleValue := StrToFloatDef(ValueStr, 10);
 
     { Independent max / favored values: when omitted, fall back to the legacy }
     { 5x-min default for width/via_size so existing callers keep working. The }
@@ -5468,9 +5474,9 @@ Begin
     { clamped any Width rule's max to 25 mil when value was 5 mil and broke   }
     { wider power-trace use cases.                                              }
     HasMaxValue := MaxValueStr <> '';
-    MaxValue := StrToIntDef(MaxValueStr, RuleValue * 5);
-    FavoredValue := StrToIntDef(FavoredValueStr, RuleValue);
-    MaxUncoupVal := StrToIntDef(MaxUncoupStr, 1000);
+    MaxValue := StrToFloatDef(MaxValueStr, RuleValue * 5);
+    FavoredValue := StrToFloatDef(FavoredValueStr, RuleValue);
+    MaxUncoupVal := StrToFloatDef(MaxUncoupStr, 1000);
 
     { Constraint values are NOT properties of the base IPCB_Rule interface,    }
     { they live on the per-kind subtypes (IPCB_ClearanceConstraint,            }
@@ -5548,14 +5554,25 @@ Begin
                 RuleDiff.Scope1Expression := ScopeStr;
             Rule := RuleDiff;
         End
+        Else If RuleTypeStr = 'matched_lengths' Then
+        Begin
+            RuleMatch := PCBServer.PCBRuleFactory(eRule_MatchedLengths);
+            RuleMatch.Name := RuleName;
+            RuleMatch.Tolerance := MilsToCoord(RuleValue);
+            If ScopeStr <> '' Then RuleMatch.Scope1Expression := ScopeStr;
+            Rule := RuleMatch;
+        End
         Else
         Begin
             PCBServer.PostProcess;
             Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
-                'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, via_size, or differential_pairs');
+                'Unknown rule_type: ' + RuleTypeStr + '. Use clearance, width, via_size, differential_pairs, or matched_lengths');
             Exit;
         End;
 
+        If Scope2Str <> '' Then Rule.Scope2Expression := Scope2Str;
+        If ExtractJsonValue(Params, 'managed_by') <> '' Then
+            Rule.Comment := ExtractJsonValue(Params, 'managed_by');
         Rule.Enabled := True;
         Board.AddPCBObject(Rule);
         PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
@@ -5570,7 +5587,7 @@ Begin
         '{"created":true,'
         + '"name":"' + EscapeJsonString(RuleName) + '",'
         + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
-        + '"value_mils":' + IntToStr(RuleValue) + '}');
+        + '"value_mils":' + FloatToJsonStr(RuleValue) + '}');
 End;
 
 {..............................................................................}
@@ -12896,9 +12913,855 @@ End;
 { HandlePCBCommand - Route PCB actions to handlers                            }
 {..............................................................................}
 
+{ Copper evidence uses only loaded documents. ResolvePCBBoard deliberately
+  opens files and may fall back to a different board, so it is unsuitable here. }
+Function Copper_LoadedBoard(Path : String) : IPCB_Board;
+Var
+    ServerDoc : IServerDocument;
+    Workspace : IWorkspace;
+    Doc : IDocument;
+Begin
+    Result := Nil;
+    If Path = '' Then
+    Begin
+        Workspace := GetWorkspace;
+        If Workspace = Nil Then Exit;
+        Doc := Workspace.DM_FocusedDocument;
+        If Doc = Nil Then Exit;
+        If UpperCase(Doc.DM_DocumentKind) <> 'PCB' Then Exit;
+        Path := Doc.DM_FullPath;
+    End;
+    ServerDoc := Client.GetDocumentByPath(Path);
+    If ServerDoc = Nil Then Exit;
+    Client.ShowDocument(ServerDoc);
+    Result := GetFocusedPCBBoard(0);
+    If Result = Nil Then Exit;
+    If UpperCase(ExpandFileName(Result.FileName)) <> UpperCase(ExpandFileName(Path)) Then
+        Result := Nil;
+End;
+
+Procedure Copper_Push(Items : TStringList; Item : String);
+Begin
+    Items.Add(Item + ',');
+End;
+
+Function Copper_Array(Items : TStringList) : String;
+Begin
+    Result := Trim(Items.Text);
+    If Result <> '' Then Delete(Result, Length(Result), 1);
+    Result := '[' + Result + ']';
+End;
+
+Function Copper_Point(X, Y : TCoord) : String;
+Begin
+    Result := '[' + FloatToJsonStr(CoordToMM(X)) + ',' + FloatToJsonStr(CoordToMM(Y)) + ']';
+End;
+
+Function Copper_Contour(Contour : IPCB_Contour) : String;
+Var
+    I : Integer;
+    Points : TStringList;
+Begin
+    If Contour.Count > 100000 Then Raise('Copper contour vertex limit exceeded');
+    Points := TStringList.Create;
+    Try
+        For I := 1 To Contour.Count Do
+            Copper_Push(Points, Copper_Point(Contour.X[I], Contour.Y[I]));
+        Result := Copper_Array(Points);
+    Finally Points.Free; End;
+End;
+
+Function Copper_FillOutline(Fill : IPCB_Fill) : String;
+Var
+    X1, Y1, X2, Y2, CX, CY, Angle, C, S : Double;
+Begin
+    X1 := CoordToMM(Fill.X1Location); Y1 := CoordToMM(Fill.Y1Location);
+    X2 := CoordToMM(Fill.X2Location); Y2 := CoordToMM(Fill.Y2Location);
+    CX := (X1 + X2) / 2; CY := (Y1 + Y2) / 2;
+    Angle := Fill.Rotation * 3.141592653589793 / 180;
+    C := Cos(Angle); S := Sin(Angle);
+    Result := '[[' + FloatToJsonStr(CX + (X1-CX)*C - (Y1-CY)*S) + ','
+        + FloatToJsonStr(CY + (X1-CX)*S + (Y1-CY)*C) + '],['
+        + FloatToJsonStr(CX + (X2-CX)*C - (Y1-CY)*S) + ','
+        + FloatToJsonStr(CY + (X2-CX)*S + (Y1-CY)*C) + '],['
+        + FloatToJsonStr(CX + (X2-CX)*C - (Y2-CY)*S) + ','
+        + FloatToJsonStr(CY + (X2-CX)*S + (Y2-CY)*C) + '],['
+        + FloatToJsonStr(CX + (X1-CX)*C - (Y2-CY)*S) + ','
+        + FloatToJsonStr(CY + (X1-CX)*S + (Y2-CY)*C) + ']]';
+End;
+
+Function Copper_NetTie(Comp : IPCB_Component) : String;
+Var
+    Iter : IPCB_GroupIterator;
+    Pad : IPCB_Pad;
+    Names, PadIds, NetItems : TStringList;
+    Name : String;
+    I : Integer;
+Begin
+    Names := TStringList.Create; PadIds := TStringList.Create; NetItems := TStringList.Create;
+    Try
+        Iter := Comp.GroupIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(ePadObject));
+            Pad := Iter.FirstPCBObject;
+            While Pad <> Nil Do
+            Begin
+                Copper_Push(PadIds, '"' + IntToStr(Pad.I_ObjectAddress) + '"');
+                If Pad.Net <> Nil Then
+                Begin
+                    Name := Pad.Net.Name;
+                    If Names.IndexOf(Name) < 0 Then Names.Add(Name);
+                End;
+                Pad := Iter.NextPCBObject;
+            End;
+        Finally Comp.GroupIterator_Destroy(Iter); End;
+        Names.Sort;
+        For I := 0 To Names.Count - 1 Do Copper_Push(NetItems, '"' + EscapeJsonString(Names[I]) + '"');
+        Result := '{' + JsonStr('component', Comp.Name.Text) + ',"net_names":' + Copper_Array(NetItems)
+            + ',"pad_ids":' + Copper_Array(PadIds) + '}';
+    Finally Names.Free; PadIds.Free; NetItems.Free; End;
+End;
+
+{ One native handler captures the loaded, unsaved board in absolute mm.
+  Unsupported SDK members are declared as missing evidence. In particular a
+  polygon outline and a bounding rectangle never stand in for poured copper. }
+Function PCB_GetCopperSnapshot(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    PrevView : IServerDocumentView;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Child : IPCB_Primitive;
+    ChildIter : IPCB_GroupIterator;
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Via : IPCB_Via;
+    Pad : IPCB_Pad;
+    Pad2 : IPCB_Pad2;
+    Region : IPCB_Region;
+    Polygon : IPCB_Polygon;
+    Fill : IPCB_Fill;
+    Comp : IPCB_Component;
+    Net : IPCB_Net;
+    Stack : IPCB_LayerStack_V7;
+    LayerObj : IPCB_LayerObject_V7;
+    Layers, Tracks, Arcs, Vias, Pads, Regions, Keepouts, Holes, Cutouts : TStringList;
+    Components, Nets, Missing, NetTies, Seen, PolygonChildren : TStringList;
+    Path, Item, Common, NetName, LayerName, Kind, Outline, Shape, Owner, Identity, HoleJson, CoverageState, LayerGeometries : String;
+    Count, I, Order, LayerId, HoleCount, ExcludedNonCopper, StackVisited, CopperCount, DielectricCount : Integer;
+    Er, Thickness, PadRadius : Double;
+    IsKeepout, Curved : Boolean;
+Begin
+    PrevView := Client.GetCurrentView;
+    Path := ExtractJsonValue(Params, 'board_path');
+    Board := Copper_LoadedBoard(Path);
+    If Board = Nil Then
+    Begin
+        If PrevView <> Nil Then Client.ShowDocument(PrevView.OwnerDocument);
+        Result := BuildErrorResponse(RequestId, 'COPPER_BOARD_NOT_LOADED',
+            'Target PCB must already be loaded; no saved-file or alternate-board fallback is allowed.');
+        Exit;
+    End;
+    Layers := TStringList.Create; Tracks := TStringList.Create; Arcs := TStringList.Create;
+    Vias := TStringList.Create; Pads := TStringList.Create; Regions := TStringList.Create;
+    Keepouts := TStringList.Create; Holes := TStringList.Create; Cutouts := TStringList.Create;
+    Components := TStringList.Create; Nets := TStringList.Create; Missing := TStringList.Create;
+    NetTies := TStringList.Create; Seen := TStringList.Create; PolygonChildren := TStringList.Create;
+    Try
+        Identity := IntToStr(Board.I_ObjectAddress);
+        Stack := Nil;
+        Try Stack := Board.LayerStack_V7; Except End;
+        If Stack = Nil Then Copper_Push(Missing, '"layer stack unavailable"')
+        Else
+        Begin
+            Order := 0;
+            CopperCount := 0; DielectricCount := 0;
+            StackVisited := 0;
+            LayerObj := Stack.FirstLayer;
+            While LayerObj <> Nil Do
+            Begin
+                Inc(StackVisited);
+                If StackVisited > 256 Then
+                Begin Copper_Push(Missing, '"layer stack iteration limit exceeded"'); Break; End;
+                Try
+                    LayerId := LayerObj.LayerID;
+                    LayerName := GetLayerString(LayerId);
+                    Kind := 'signal';
+                    If (LayerId >= eInternalPlane1) And (LayerId <= eInternalPlane16) Then
+                    Begin
+                        Kind := 'plane';
+                        Copper_Push(Missing, '"implicit plane void/copper contours and reference-net binding unavailable"');
+                    End;
+                    Thickness := CoordToMM(LayerObj.CopperThickness);
+                    Item := '{' + JsonStr('name', LayerName) + ',' + JsonStr('display_name', LayerObj.Name)
+                        + ',' + JsonStr('kind', Kind) + ',' + JsonInt('order', Order)
+                        + ',' + JsonFloat('thickness_mm', Thickness);
+                    If Kind = 'plane' Then
+                    Begin
+                        If LayerObj.Net <> Nil Then Item := Item + ',' + JsonStr('reference_net', LayerObj.Net.Name)
+                        Else Copper_Push(Missing, '"plane reference net unavailable"');
+                    End;
+                    Item := Item + '}';
+                    Copper_Push(Layers, Item); Inc(Order);
+                    Inc(CopperCount);
+                    If Thickness <= 0 Then Copper_Push(Missing, '"invalid copper thickness"');
+                    If LayerObj.Dielectric.DielectricType <> eNoDielectric Then
+                    Begin
+                        Thickness := CoordToMM(LayerObj.Dielectric.DielectricHeight);
+                        Er := LayerObj.Dielectric.DielectricConstant;
+                        Item := '{' + JsonStr('name', LayerName + ' dielectric')
+                            + ',"kind":"dielectric",' + JsonInt('order', Order)
+                            + ',' + JsonFloat('thickness_mm', Thickness);
+                        If Er > 0 Then Item := Item + ',' + JsonFloat('er', Er)
+                        Else Copper_Push(Missing, '"dielectric Er unavailable"');
+                        Item := Item + '}';
+                        If Thickness <= 0 Then Copper_Push(Missing, '"dielectric thickness unavailable"');
+                        Copper_Push(Layers, Item); Inc(Order);
+                        Inc(DielectricCount);
+                    End;
+                Except
+                    Copper_Push(Missing, '"layer stack record unreadable"');
+                End;
+                If Order > 256 Then
+                Begin
+                    Copper_Push(Missing, '"layer stack limit exceeded"'); Break;
+                End;
+                LayerObj := Stack.NextLayer(LayerObj);
+            End;
+            If (CopperCount < 2) Or (DielectricCount < CopperCount - 1) Then
+                Copper_Push(Missing, '"interlayer dielectric stackup unavailable or incomplete"');
+        End;
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, ePadObject,
+                eRegionObject, ePolyObject, eFillObject, eComponentObject, eNetObject, eEmbeddedBoardObject));
+            Iter.AddFilter_LayerSet(AllLayers);
+            Iter.AddFilter_Method(eProcessAll);
+            Obj := Iter.FirstPCBObject;
+            Count := 0;
+            ExcludedNonCopper := 0;
+            While Obj <> Nil Do
+            Begin
+                If Count >= 100000 Then
+                Begin
+                    Copper_Push(Missing, '"primitive limit exceeded"'); Break;
+                End;
+                Inc(Count);
+                Try
+                    LayerName := GetLayerString(Obj.Layer);
+                    NetName := '';
+                    If (Obj.ObjectId <> eComponentObject) And (Obj.ObjectId <> eNetObject) Then
+                        If Obj.Net <> Nil Then NetName := Obj.Net.Name;
+                    IsKeepout := (Obj.Layer = eKeepOutLayer) Or Obj.IsKeepout;
+                    Seen.Add(IntToStr(Obj.I_ObjectAddress));
+                    If (Obj.ObjectId <> eComponentObject) And (Obj.ObjectId <> eNetObject)
+                        And (Obj.ObjectId <> eEmbeddedBoardObject)
+                        And (Not IsKeepout) And (Obj.Layer <> eMultiLayer)
+                        And Not ((Obj.Layer >= eTopLayer) And (Obj.Layer <= eBottomLayer))
+                        And Not ((Obj.Layer >= eInternalPlane1) And (Obj.Layer <= eInternalPlane16)) Then
+                    Begin
+                        Inc(ExcludedNonCopper);
+                        Obj := Iter.NextPCBObject;
+                        Continue;
+                    End;
+                    Common := JsonStr('id', IntToStr(Obj.I_ObjectAddress))
+                        + ',' + JsonStr('layer', LayerName) + ',' + JsonStr('net_name', NetName);
+                    Item := '';
+                    If Obj.ObjectId = eTrackObject Then Begin
+                            Track := Obj;
+                            Item := '{' + Common + ',"start":' + Copper_Point(Track.X1, Track.Y1)
+                                + ',"end":' + Copper_Point(Track.X2, Track.Y2)
+                                + ',' + JsonFloat('width_mm', CoordToMM(Track.Width)) + '}';
+                            If IsKeepout Then Copper_Push(Keepouts, Item) Else Copper_Push(Tracks, Item);
+                        End
+                    Else If Obj.ObjectId = eArcObject Then Begin
+                            Arc := Obj;
+                            Item := '{' + Common + ',"center":' + Copper_Point(Arc.XCenter, Arc.YCenter)
+                                + ',' + JsonFloat('radius_mm', CoordToMM(Arc.Radius))
+                                + ',' + JsonFloat('width_mm', CoordToMM(Arc.LineWidth))
+                                + ',' + JsonFloat('start_angle_deg', Arc.StartAngle)
+                                + ',' + JsonFloat('end_angle_deg', Arc.EndAngle) + '}';
+                            If IsKeepout Then Copper_Push(Keepouts, Item) Else Copper_Push(Arcs, Item);
+                        End
+                    Else If Obj.ObjectId = eViaObject Then Begin
+                            Via := Obj;
+                            LayerGeometries := '';
+                            If Stack <> Nil Then
+                            Begin
+                                LayerObj := Stack.FirstLayer;
+                                Order := 0;
+                                While LayerObj <> Nil Do
+                                Begin
+                                    If Via.IntersectLayer(LayerObj.LayerID) Then
+                                    Begin
+                                        If LayerGeometries <> '' Then LayerGeometries := LayerGeometries + ',';
+                                        LayerGeometries := LayerGeometries + '{'
+                                            + JsonStr('layer', GetLayerString(LayerObj.LayerID)) + ','
+                                            + JsonFloat('diameter_mm', CoordToMM(Via.SizeOnLayer[LayerObj.LayerID])) + '}';
+                                        If Via.SizeOnLayer[LayerObj.LayerID] <> Via.Size Then
+                                            Copper_Push(Missing, '"non-simple via stack requires per-layer audit support"');
+                                    End;
+                                    Inc(Order);
+                                    If Order > 256 Then Raise('Via stack layer limit exceeded');
+                                    LayerObj := Stack.NextLayer(LayerObj);
+                                End;
+                            End;
+                            Item := '{' + Common + ',' + JsonFloat('x_mm', CoordToMM(Via.X))
+                                + ',' + JsonFloat('y_mm', CoordToMM(Via.Y))
+                                + ',' + JsonFloat('diameter_mm', CoordToMM(Via.Size))
+                                + ',' + JsonFloat('drill_mm', CoordToMM(Via.HoleSize))
+                                + ',' + JsonStr('start_layer', GetLayerString(Via.LowLayer))
+                                + ',' + JsonStr('end_layer', GetLayerString(Via.HighLayer))
+                                + ',"layer_geometries":[' + LayerGeometries + ']}';
+                            Copper_Push(Vias, Item);
+                            Copper_Push(Holes, '{' + JsonStr('owner_id', IntToStr(Via.I_ObjectAddress))
+                                + ',' + JsonFloat('x_mm', CoordToMM(Via.X))
+                                + ',' + JsonFloat('y_mm', CoordToMM(Via.Y))
+                                + ',' + JsonFloat('diameter_mm', CoordToMM(Via.HoleSize)) + ',"is_plated":true}');
+                        End
+                    Else If Obj.ObjectId = ePadObject Then Begin
+                            Pad := Obj; Owner := '';
+                            If Pad.Component <> Nil Then Owner := Pad.Component.Name.Text;
+                            Shape := 'unknown';
+                            If Pad.TopShape = eRounded Then Shape := 'round'
+                            Else If Pad.TopShape = eRectangular Then Shape := 'rectangle'
+                            Else If Pad.TopShape = eOctagonal Then Shape := 'octagonal'
+                            Else If Pad.TopShape = eRoundedRectangular Then Shape := 'rounded_rectangle';
+                            If (Shape = 'round') And (Pad.TopXSize <> Pad.TopYSize) Then Shape := 'oval';
+                            If Shape = 'unknown' Then Copper_Push(Missing, '"unsupported pad shape"');
+                            If Pad.Mode <> ePadMode_Simple Then Copper_Push(Missing, '"non-simple pad stack geometry unavailable"');
+                            If Shape = 'octagonal' Then Copper_Push(Missing, '"exact octagonal pad audit support unavailable"');
+                            PadRadius := 0;
+                            If Shape = 'rounded_rectangle' Then
+                            Begin
+                                Pad2 := Pad;
+                                If Pad.Layer = eMultiLayer Then PadRadius := CoordToMM(Pad2.GetState_CornerRadiusOnLayer(eTopLayer))
+                                Else PadRadius := CoordToMM(Pad2.GetState_CornerRadiusOnLayer(Pad.Layer));
+                                If (PadRadius < 0) Or (PadRadius * 2 > CoordToMM(Pad.TopXSize))
+                                    Or (PadRadius * 2 > CoordToMM(Pad.TopYSize)) Then
+                                    Raise('Invalid rounded pad corner radius');
+                            End;
+                            If Pad.HoleType <> eRoundHole Then Copper_Push(Missing, '"slotted/square pad hole outline unavailable"');
+                            Item := '{' + Common + ',' + JsonStr('component', Owner)
+                                + ',' + JsonStr('pad_name', Pad.Name)
+                                + ',' + JsonFloat('x_mm', CoordToMM(Pad.X))
+                                + ',' + JsonFloat('y_mm', CoordToMM(Pad.Y))
+                                + ',' + JsonFloat('width_mm', CoordToMM(Pad.TopXSize))
+                                + ',' + JsonFloat('height_mm', CoordToMM(Pad.TopYSize))
+                                + ',' + JsonFloat('rotation_deg', Pad.Rotation)
+                                + ',' + JsonStr('shape', Shape)
+                                + ',' + JsonFloat('corner_radius_mm', PadRadius)
+                                + ',' + JsonBool('geometry_complete', (Pad.Mode = ePadMode_Simple)
+                                    And ((Shape = 'round') Or (Shape = 'oval') Or (Shape = 'rectangle') Or (Shape = 'rounded_rectangle')))
+                                + ',' + JsonFloat('drill_mm', CoordToMM(Pad.HoleSize))
+                                + ',' + JsonInt('stack_mode', Pad.Mode)
+                                + ',' + JsonInt('hole_type', Pad.HoleType)
+                                + ',' + JsonFloat('hole_width_mm', CoordToMM(Pad.HoleWidth))
+                                + ',' + JsonFloat('hole_rotation_deg', Pad.HoleRotation)
+                                + ',' + JsonBool('is_plated', Pad.Plated) + '}';
+                            Copper_Push(Pads, Item);
+                            If Pad.HoleSize > 0 Then
+                                Copper_Push(Holes, '{' + JsonStr('owner_id', IntToStr(Pad.I_ObjectAddress))
+                                    + ',' + JsonFloat('x_mm', CoordToMM(Pad.X))
+                                    + ',' + JsonFloat('y_mm', CoordToMM(Pad.Y))
+                                    + ',' + JsonFloat('diameter_mm', CoordToMM(Pad.HoleSize))
+                                    + ',' + JsonBool('is_plated', Pad.Plated) + '}');
+                        End
+                    Else If Obj.ObjectId = eRegionObject Then Begin
+                            Region := Obj;
+                            Outline := Copper_Contour(Region.MainContour);
+                            HoleCount := Region.HoleCount;
+                            HoleJson := '';
+                            If HoleCount > 10000 Then Raise('Copper region hole limit exceeded');
+                            For I := 0 To HoleCount - 1 Do
+                            Begin
+                                If HoleJson <> '' Then HoleJson := HoleJson + ',';
+                                HoleJson := HoleJson + Copper_Contour(Region.Holes[I]);
+                            End;
+                            Kind := 'region';
+                            If Region.Kind = eRegionKind_Cutout Then Kind := 'polygon_cutout';
+                            If Region.Kind = eRegionKind_BoardCutout Then Kind := 'board_cutout';
+                            Item := '{' + Common + ',"outline":' + Outline + ',"holes":[' + HoleJson + '],'
+                                + JsonInt('hole_count', HoleCount) + ',' + JsonStr('kind', Kind)
+                                + ',"poured":true,"geometry_complete":true}';
+                            If (Kind = 'board_cutout') Or (Kind = 'polygon_cutout') Then Copper_Push(Cutouts, Item)
+                            Else If Region.Kind <> eRegionKind_Copper Then Copper_Push(Missing, '"unsupported region kind"')
+                            Else If IsKeepout Then Copper_Push(Keepouts, Item)
+                            Else Copper_Push(Regions, Item);
+                        End
+                    Else If Obj.ObjectId = ePolyObject Then Begin
+                            Polygon := Obj; Outline := ''; Curved := False;
+                            If Polygon.PointCount > 100000 Then Raise('Copper polygon vertex limit exceeded');
+                            For I := 0 To Polygon.PointCount - 1 Do
+                            Begin
+                                If Polygon.Segments[I].Kind <> ePolySegmentLine Then Curved := True;
+                                If Outline <> '' Then Outline := Outline + ',';
+                                Outline := Outline + Copper_Point(Polygon.Segments[I].vx, Polygon.Segments[I].vy);
+                            End;
+                            If Curved Then Copper_Push(Missing, '"curved polygon definition outline unavailable"')
+                            Else Copper_Push(Regions, '{' + Common + ',"outline":[' + Outline + '],'
+                                + '"holes":[],"kind":"polygon","poured":false,' + JsonStr('name', Polygon.Name) + '}');
+                            { Prove board-iterator coverage of the actual poured
+                              children. No child/bbox is synthesized from outline. }
+                            ChildIter := Polygon.GroupIterator_Create;
+                            Try
+                                Child := ChildIter.FirstPCBObject;
+                                While Child <> Nil Do
+                                Begin
+                                    PolygonChildren.Add(IntToStr(Child.I_ObjectAddress));
+                                    If PolygonChildren.Count > 100000 Then
+                                        Raise('Polygon child limit exceeded');
+                                    Child := ChildIter.NextPCBObject;
+                                End;
+                            Finally Polygon.GroupIterator_Destroy(ChildIter); End;
+                        End
+                    Else If Obj.ObjectId = eFillObject Then Begin
+                        Fill := Obj;
+                        Item := '{' + Common + ',"outline":' + Copper_FillOutline(Fill)
+                            + ',"holes":[],"kind":"region","primitive_kind":"fill","poured":true}';
+                        If IsKeepout Then Copper_Push(Keepouts, Item) Else Copper_Push(Regions, Item);
+                    End
+                    Else If Obj.ObjectId = eComponentObject Then Begin
+                            Comp := Obj;
+                            Kind := 'unknown';
+                            If Comp.ComponentKind = eComponentKind_Standard Then Kind := 'standard'
+                            Else If Comp.ComponentKind = eComponentKind_Standard_NoBOM Then Kind := 'standard_no_bom'
+                            Else If Comp.ComponentKind = eComponentKind_Mechanical Then Kind := 'mechanical'
+                            Else If Comp.ComponentKind = eComponentKind_Graphical Then Kind := 'graphical'
+                            Else If (Comp.ComponentKind = eComponentKind_NetTie_BOM)
+                                Or (Comp.ComponentKind = eComponentKind_NetTie_NoBOM) Then
+                            Begin Kind := 'net_tie'; Copper_Push(NetTies, Copper_NetTie(Comp)); End;
+                            If Kind = 'unknown' Then Copper_Push(Missing, '"unsupported component kind"');
+                            Copper_Push(Components, '{' + JsonStr('id', IntToStr(Comp.I_ObjectAddress))
+                                + ',' + JsonStr('designator', Comp.Name.Text)
+                                + ',' + JsonStr('comment', Comp.Comment.Text)
+                                + ',' + JsonStr('footprint', Comp.Pattern)
+                                + ',' + JsonStr('source_designator', Comp.SourceDesignator)
+                                + ',' + JsonStr('source_description', Comp.SourceDescription)
+                                + ',' + JsonStr('kind', Kind)
+                                + ',' + JsonFloat('x_mm', CoordToMM(Comp.X))
+                                + ',' + JsonFloat('y_mm', CoordToMM(Comp.Y))
+                                + ',' + JsonFloat('rotation_deg', Comp.Rotation)
+                                + ',"parameters":{},"parameters_source":"physical PCB basic metadata"}');
+                        End
+                    Else If Obj.ObjectId = eNetObject Then Begin
+                            Net := Obj;
+                            Copper_Push(Nets, '"' + EscapeJsonString(Net.Name) + '"');
+                        End
+                    Else Copper_Push(Missing, '"unsupported embedded-board copper geometry"');
+                Except
+                    Copper_Push(Missing, '"unreadable copper primitive ' + IntToStr(Count) + '"');
+                End;
+                Obj := Iter.NextPCBObject;
+            End;
+        Finally Board.BoardIterator_Destroy(Iter); End;
+        Seen.Sort; Seen.Sorted := True;
+        For I := 0 To PolygonChildren.Count - 1 Do
+            If Seen.IndexOf(PolygonChildren[I]) < 0 Then
+                Copper_Push(Missing, '"poured polygon child not exposed by board iterator"');
+        Outline := ''; Curved := False;
+        Try
+            If Board.BoardOutline.PointCount < 3 Then Copper_Push(Missing, '"board outline has fewer than three vertices"');
+            For I := 0 To Board.BoardOutline.PointCount - 1 Do
+            Begin
+                If Board.BoardOutline.Segments[I].Kind <> ePolySegmentLine Then Curved := True;
+                If Outline <> '' Then Outline := Outline + ',';
+                Outline := Outline + Copper_Point(Board.BoardOutline.Segments[I].vx, Board.BoardOutline.Segments[I].vy);
+            End;
+            If Curved Then
+            Begin Outline := ''; Copper_Push(Missing, '"curved board outline unavailable"'); End;
+        Except Outline := ''; Copper_Push(Missing, '"board outline unavailable"'); End;
+        CoverageState := 'partial';
+        If Missing.Count = 0 Then CoverageState := 'complete';
+        Item := '{"schema":1,"units":"mm","source":"live",' + JsonBool('complete', Missing.Count = 0) + ','
+            + JsonStr('board_path', Board.FileName) + ',' + JsonStr('board_identity', Identity)
+            + ',"provenance":{"reader":"pcb.get_copper_snapshot","live":true,"consistency":"single_native_handler"}'
+            + ',"coverage":{' + JsonStr('tracks', CoverageState) + ',' + JsonStr('arcs', CoverageState)
+            + ',' + JsonStr('vias', CoverageState) + ',' + JsonStr('pads', CoverageState)
+            + ',' + JsonStr('regions', CoverageState) + ',' + JsonStr('layers', CoverageState)
+            + ',' + JsonStr('keepouts', CoverageState) + ',' + JsonStr('net_ties', CoverageState)
+            + ',' + JsonStr('stackup', CoverageState) + '}'
+            + ',' + JsonInt('excluded_non_copper_primitives', ExcludedNonCopper)
+            + ',"layers":' + Copper_Array(Layers) + ',"tracks":' + Copper_Array(Tracks)
+            + ',"arcs":' + Copper_Array(Arcs) + ',"vias":' + Copper_Array(Vias)
+            + ',"pads":' + Copper_Array(Pads) + ',"regions":' + Copper_Array(Regions)
+            + ',"keepouts":' + Copper_Array(Keepouts) + ',"holes":' + Copper_Array(Holes)
+            + ',"cutouts":' + Copper_Array(Cutouts) + ',"components":' + Copper_Array(Components)
+            + ',"nets":' + Copper_Array(Nets) + ',"net_ties":' + Copper_Array(NetTies) + ',"board_outline":[' + Outline + ']'
+            + ',"missing":' + Copper_Array(Missing) + '}';
+        If Length(Item) > 24 * 1024 * 1024 Then
+            Result := BuildErrorResponse(RequestId, 'COPPER_LIMIT', 'Copper snapshot exceeds 64 MiB')
+        Else Result := BuildSuccessResponse(RequestId, Copy(Item, 1, Length(Item) - 1)
+            + ',' + JsonStr('native_snapshot_json', Item) + '}');
+    Finally
+        Layers.Free; Tracks.Free; Arcs.Free; Vias.Free; Pads.Free; Regions.Free;
+        Keepouts.Free; Holes.Free; Cutouts.Free; Components.Free; Nets.Free; Missing.Free;
+        NetTies.Free; Seen.Free; PolygonChildren.Free;
+        If PrevView <> Nil Then Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
+    End;
+End;
+
+{ Private cross-probe: board identity is checked before selection or navigation. }
+Function PCB_FocusCopperViolation(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_Primitive;
+    Path, LayerName, NetNames, Name, XText, YText, ExpectedIdentity : String;
+    X, Y, Radius : Double;
+    ViewRect : TCoordRect;
+    NavigationVerified : Boolean;
+    TargetLayer : TLayer;
+    Selected : Integer;
+Begin
+    Path := ExtractJsonValue(Params, 'board_path');
+    If Path = '' Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_BOARD', 'Explicit board_path is required'); Exit; End;
+    Board := Copper_LoadedBoard(Path);
+    If Board = Nil Then
+    Begin Result := BuildErrorResponse(RequestId, 'BOARD_MISMATCH', 'Target board is not loaded'); Exit; End;
+    ExpectedIdentity := ExtractJsonValue(Params, 'board_identity');
+    If (ExpectedIdentity = '') Or (ExpectedIdentity <> IntToStr(Board.I_ObjectAddress)) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BOARD_MISMATCH', 'Loaded board identity changed'); Exit; End;
+    XText := ExtractJsonValue(Params, 'x_mm'); YText := ExtractJsonValue(Params, 'y_mm');
+    If (XText = '') Or (YText = '') Then
+    Begin Result := BuildErrorResponse(RequestId, 'MISSING_LOCATION', 'x_mm and y_mm are required'); Exit; End;
+    Try X := StrToFloat(XText); Y := StrToFloat(YText);
+    Except Result := BuildErrorResponse(RequestId, 'BAD_LOCATION', 'Invalid mm coordinate'); Exit; End;
+    Radius := StrToFloatDef(ExtractJsonValue(Params, 'radius_mm'), 2);
+    If (Radius <= 0) Or (Radius > 100) Then
+    Begin Result := BuildErrorResponse(RequestId, 'BAD_LOCATION', 'Invalid zoom radius'); Exit; End;
+    LayerName := ExtractJsonValue(Params, 'layer');
+    TargetLayer := eNoLayer;
+    If LayerName <> '' Then
+    Begin
+        TargetLayer := ResolveLayerId(Board, LayerName);
+        If TargetLayer = eNoLayer Then
+        Begin Result := BuildErrorResponse(RequestId, 'UNKNOWN_LAYER', 'Violation layer not present on target board'); Exit; End;
+    End;
+    NetNames := ExtractJsonArray(Params, 'net_names');
+    Selected := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, ePadObject, eRegionObject));
+        Iter.AddFilter_LayerSet(AllLayers); Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do
+        Begin
+            Name := '';
+            If Obj.Net <> Nil Then Name := Obj.Net.Name;
+            If (Name <> '') And (Pos('"' + EscapeJsonString(Name) + '"', NetNames) > 0)
+                And ((TargetLayer = eNoLayer) Or (Obj.Layer = TargetLayer) Or (Obj.Layer = eMultiLayer)) Then
+            Begin Obj.Selected := True; Inc(Selected); End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally Board.BoardIterator_Destroy(Iter); End;
+    If TargetLayer <> eNoLayer Then Board.CurrentLayer := TargetLayer;
+    Board.GraphicalView_ZoomOnRect(MMToCoord(X - Radius), MMToCoord(Y - Radius),
+                                  MMToCoord(X + Radius), MMToCoord(Y + Radius));
+    Board.GraphicalView_ZoomRedraw;
+    ViewRect := Board.WindowBoundingRectangle;
+    NavigationVerified := (ViewRect.Left <= MMToCoord(X)) And (ViewRect.Right >= MMToCoord(X))
+        And (ViewRect.Bottom <= MMToCoord(Y)) And (ViewRect.Top >= MMToCoord(Y));
+    Result := BuildSuccessResponse(RequestId, '{"focused":true,' + JsonStr('board_path', Board.FileName)
+        + ',' + JsonFloat('x_mm', X) + ',' + JsonFloat('y_mm', Y)
+        + ',' + JsonInt('highlighted_primitives', Selected) + ',' + JsonBool('navigation_verified', NavigationVerified)
+        + ',"viewport_mm":{' + JsonFloat('left', CoordToMM(ViewRect.Left))
+        + ',' + JsonFloat('right', CoordToMM(ViewRect.Right)) + ',' + JsonFloat('bottom', CoordToMM(ViewRect.Bottom))
+        + ',' + JsonFloat('top', CoordToMM(ViewRect.Top)) + '}}');
+End;
+
+{ Managed classes use a reserved namespace AND a gateway-persisted manifest.
+  A prefix alone never authorizes taking over an existing user class. }
+Var
+    Copper_LastFailure : String;
+
+Procedure Copper_Fail(FailureText : String);
+Begin
+    Copper_LastFailure := FailureText;
+    Raise(FailureText);
+End;
+
+Function Copper_FindClass(Board : IPCB_Board; Name : String) : IPCB_ObjectClass;
+Var
+    Iter : IPCB_BoardIterator;
+    Obj : IPCB_ObjectClass;
+Begin
+    Result := Nil;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eClassObject));
+        Iter.AddFilter_LayerSet(AllLayers); Iter.AddFilter_Method(eProcessAll);
+        Obj := Iter.FirstPCBObject;
+        While Obj <> Nil Do Begin
+            If (Obj.MemberKind = eClassMemberKind_Net) And (UpperCase(Obj.Name) = UpperCase(Name)) Then
+            Begin Result := Obj; Exit; End;
+            Obj := Iter.NextPCBObject;
+        End;
+    Finally Board.BoardIterator_Destroy(Iter); End;
+End;
+
+Function Copper_VerifyRule(Rule : IPCB_Rule; Item : String) : Boolean;
+Var
+    ClearRule : IPCB_ClearanceConstraint;
+    WidthRule : IPCB_MaxMinWidthConstraint;
+    HoleRule : IPCB_MaxMinHoleSizeConstraint;
+    DiffRule : IPCB_DifferentialPairsRoutingRule;
+    MatchRule : IPCB_MatchedNetLengthsConstraint;
+    Kind, Scope : String;
+    Value, MaxValue, Favored, Uncoupled : TCoord;
+    L : TLayer;
+Begin
+    Result := False;
+    If Rule = Nil Then Exit;
+    If (Not Rule.Enabled) Or (Rule.Comment <> 'mcp-altium-suite:copper-si-pi:v1') Then Exit;
+    Scope := ExtractJsonValue(Item, 'scope');
+    If (Scope <> '') And (Rule.Scope1Expression <> Scope) Then Exit;
+    Scope := ExtractJsonValue(Item, 'scope2');
+    If (Scope <> '') And (Rule.Scope2Expression <> Scope) Then Exit;
+    Value := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'value'), 10));
+    MaxValue := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'max_value'), CoordToMils(Value) * 5));
+    Favored := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'favored_value'), CoordToMils(Value)));
+    Kind := ExtractJsonValue(Item, 'rule_type');
+    If Kind = 'clearance' Then Begin
+        ClearRule := Rule;
+        If Abs(ClearRule.Gap - Value) > 1 Then Exit;
+    End Else If Kind = 'width' Then Begin
+        WidthRule := Rule;
+        For L := MinLayer To MaxLayer Do
+            If (Abs(WidthRule.MinWidth(L) - Value) > 1)
+                Or (Abs(WidthRule.MaxWidth(L) - MaxValue) > 1)
+                Or (Abs(WidthRule.FavoredWidth(L) - Favored) > 1) Then Exit;
+    End Else If Kind = 'via_size' Then Begin
+        HoleRule := Rule;
+        If (Abs(HoleRule.MinLimit - Value) > 1) Or (Abs(HoleRule.MaxLimit - MaxValue) > 1) Then Exit;
+    End Else If Kind = 'differential_pairs' Then Begin
+        DiffRule := Rule;
+        For L := MinLayer To MaxLayer Do
+            If (Abs(DiffRule.MinGap(L) - Value) > 1)
+                Or (Abs(DiffRule.MaxGap(L) - MaxValue) > 1)
+                Or (Abs(DiffRule.PreferedGap(L) - Favored) > 1) Then Exit;
+        Uncoupled := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'max_uncoupled_length'), 1000));
+        If Abs(DiffRule.MaxUncoupledLength - Uncoupled) > 1 Then Exit;
+    End Else If Kind = 'matched_lengths' Then Begin
+        MatchRule := Rule;
+        If Abs(MatchRule.Tolerance - Value) > 1 Then Exit;
+    End Else Exit;
+    Result := True;
+End;
+
+{ Full preflight precedes every edit. The copper precondition is recaptured in
+  this same handler immediately before editing. No DoEvents and no automatic
+  retry: DelphiScript does not provide transactional rollback. }
+Function PCB_ApplyCopperRules(Params, RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    ServerDoc : IServerDocument;
+    ExistingRule, CreatedRule : IPCB_Rule;
+    Iter, NetIter : IPCB_BoardIterator;
+    ExistingPair : IPCB_DifferentialPair;
+    NetClass : IPCB_ObjectClass;
+    Net : IPCB_Net;
+    Owned, ActualOwned, ClassNames, RuleNames, PairNames, NetNames, OldRules : TStringList;
+    Path, Item, Reply, Items, Name, Kind, Why, PairPos, PairNeg, Expected, Fresh, Failure : String;
+    ClassCount, RuleCount, PairCount, OwnedCount, I, J, Applied : Integer;
+    Failed, PairExists : Boolean;
+Begin
+    Path := ExtractJsonValue(Params, 'board_path');
+    Board := Copper_LoadedBoard(Path);
+    If Board = Nil Then Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'The exact target PCB must already be loaded'); Exit;
+    End;
+    ClassCount := StrToIntDef(ExtractJsonValue(Params, 'class_count'), -1);
+    RuleCount := StrToIntDef(ExtractJsonValue(Params, 'rule_count'), -1);
+    PairCount := StrToIntDef(ExtractJsonValue(Params, 'pair_count'), -1);
+    OwnedCount := StrToIntDef(ExtractJsonValue(Params, 'owned_class_count'), -1);
+    If (ClassCount < 0) Or (ClassCount > 500) Or (RuleCount < 0) Or (RuleCount > 2000)
+       Or (PairCount < 0) Or (PairCount > 500) Or (OwnedCount < 0) Or (OwnedCount > 500) Then Begin
+        Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS', 'Invalid bounded copper batch counts'); Exit;
+    End;
+    Expected := ExtractJsonValue(Params, 'expected_native_snapshot');
+    If (Expected = '') Or (Length(Expected) > 24 * 1024 * 1024) Then Begin
+        Result := BuildErrorResponse(RequestId, 'STALE_COPPER', 'A bounded native snapshot precondition is required'); Exit;
+    End;
+    Copper_LastFailure := 'Native copper operation failed; inspect item diagnostics';
+    Owned := TStringList.Create; ActualOwned := TStringList.Create;
+    ClassNames := TStringList.Create; RuleNames := TStringList.Create; PairNames := TStringList.Create;
+    NetNames := TStringList.Create; OldRules := TStringList.Create;
+    Try
+        For I := 0 To OwnedCount - 1 Do Begin
+            Name := ExtractJsonValue(Params, 'owned_class_' + IntToStr(I));
+            If (Copy(Name, 1, 9) <> 'MCP_SIPI_') Or (Owned.IndexOf(Name) >= 0) Then
+                Copper_Fail('Invalid persisted class ownership manifest');
+            Owned.Add(Name);
+            If Copper_FindClass(Board, Name) <> Nil Then ActualOwned.Add(Name);
+        End;
+        For I := 0 To ClassCount - 1 Do Begin
+            Item := ExtractJsonValue(Params, 'class_' + IntToStr(I));
+            Name := ExtractJsonValue(Item, 'name');
+            If (Copy(Name, 1, 9) <> 'MCP_SIPI_') Or (ClassNames.IndexOf(Name) >= 0) Then
+                Copper_Fail('Duplicate or unreserved class name: ' + Name);
+            ClassNames.Add(Name);
+            NetClass := Copper_FindClass(Board, Name);
+            If (NetClass <> Nil) And (Owned.IndexOf(Name) < 0) Then
+                Copper_Fail('Existing class is not in the ownership manifest: ' + Name);
+            NetNames.CommaText := ExtractJsonValue(Item, 'nets');
+            If NetNames.Count = 0 Then Copper_Fail('Empty managed class');
+            For J := 0 To NetNames.Count - 1 Do
+                If FindNetByName(Board, NetNames[J]) = Nil Then
+                    Copper_Fail('Managed class references an absent net: ' + NetNames[J]);
+        End;
+        For I := 0 To RuleCount - 1 Do Begin
+            Item := ExtractJsonValue(Params, 'rule_' + IntToStr(I));
+            Name := ExtractJsonValue(Item, 'name'); Kind := ExtractJsonValue(Item, 'rule_type');
+            If (Name = '') Or (RuleNames.IndexOf(Name) >= 0) Or
+                ((Kind <> 'width') And (Kind <> 'clearance') And (Kind <> 'via_size')
+                And (Kind <> 'differential_pairs') And (Kind <> 'matched_lengths')) Then
+                Copper_Fail('Duplicate, unsupported or unnamed copper rule');
+            RuleNames.Add(Name);
+            ExistingRule := PCB_FindRuleByName(Board, Name);
+            If ExistingRule <> Nil Then
+                If ExistingRule.Comment <> 'mcp-altium-suite:copper-si-pi:v1' Then
+                    Copper_Fail('Rule name belongs to an unmanaged rule: ' + Name);
+        End;
+        For I := 0 To PairCount - 1 Do Begin
+            Item := ExtractJsonValue(Params, 'pair_' + IntToStr(I));
+            Name := ExtractJsonValue(Item, 'name'); PairPos := ExtractJsonValue(Item, 'positive_net');
+            PairNeg := ExtractJsonValue(Item, 'negative_net');
+            If (Name = '') Or (PairNames.IndexOf(Name) >= 0) Or (PairPos = PairNeg)
+                Or (FindNetByName(Board, PairPos) = Nil) Or (FindNetByName(Board, PairNeg) = Nil) Then
+                Copper_Fail('Duplicate or invalid differential pair: ' + Name);
+            PairNames.Add(Name);
+            Iter := Board.BoardIterator_Create;
+            Try
+                Iter.AddFilter_ObjectSet(MkSet(eDifferentialPairObject));
+                Iter.AddFilter_LayerSet(AllLayers); Iter.AddFilter_Method(eProcessAll);
+                ExistingPair := Iter.FirstPCBObject;
+                While ExistingPair <> Nil Do Begin
+                    If UpperCase(ExistingPair.Name) = UpperCase(Name) Then
+                        If (ExistingPair.PositiveNet = Nil) Or (ExistingPair.NegativeNet = Nil) Then
+                            Copper_Fail('Existing differential pair has missing nets: ' + Name)
+                        Else If (ExistingPair.PositiveNet.Name <> PairPos) Or (ExistingPair.NegativeNet.Name <> PairNeg) Then
+                            Copper_Fail('Differential pair name collision: ' + Name);
+                    ExistingPair := Iter.NextPCBObject;
+                End;
+            Finally Board.BoardIterator_Destroy(Iter); End;
+        End;
+        Iter := Board.BoardIterator_Create;
+        Try
+            Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+            Iter.AddFilter_LayerSet(AllLayers); Iter.AddFilter_Method(eProcessAll);
+            ExistingRule := Iter.FirstPCBObject;
+            While ExistingRule <> Nil Do Begin
+                If ExistingRule.Comment = 'mcp-altium-suite:copper-si-pi:v1' Then OldRules.Add(ExistingRule.Name);
+                ExistingRule := Iter.NextPCBObject;
+            End;
+        Finally Board.BoardIterator_Destroy(Iter); End;
+        ServerDoc := Client.GetDocumentByPath(Path); Client.ShowDocument(ServerDoc);
+        Board := GetPCBBoardForMutation(Why);
+        If Board = Nil Then Copper_Fail(Why);
+        If UpperCase(ExpandFileName(Board.FileName)) <> UpperCase(ExpandFileName(Path)) Then
+            Copper_Fail('Target PCB changed before rule application');
+        Reply := PCB_GetCopperSnapshot(JsonObj(JsonStr('board_path', Path)), RequestId);
+        Fresh := ExtractJsonValue(ExtractJsonValue(Reply, 'data'), 'native_snapshot_json');
+        If (Fresh = '') Or (Fresh <> Expected) Then
+            Copper_Fail('Copper changed before the first native edit; preview again');
+        Items := ''; Applied := 0; Failed := False; Failure := '';
+        Try
+            { Replace only explicitly owned classes, removing stale memberships. }
+            For I := 0 To Owned.Count - 1 Do Begin
+                NetClass := Copper_FindClass(Board, Owned[I]);
+                If NetClass <> Nil Then Begin
+                    PCBServer.PreProcess;
+                    Try Board.RemovePCBObject(NetClass); Finally PCBServer.PostProcess; End;
+                    J := ActualOwned.IndexOf(Owned[I]); If J >= 0 Then ActualOwned.Delete(J);
+                    Inc(Applied);
+                End;
+            End;
+            For I := 0 To ClassCount - 1 Do Begin
+                Item := ExtractJsonValue(Params, 'class_' + IntToStr(I)); Name := ExtractJsonValue(Item, 'name');
+                NetNames.CommaText := ExtractJsonValue(Item, 'nets');
+                PCBServer.PreProcess;
+                Try
+                    NetClass := PCBServer.PCBClassFactoryByClassMember(eClassMemberKind_Net);
+                    NetClass.SuperClass := False; NetClass.Name := Name;
+                    Board.AddPCBObject(NetClass); ActualOwned.Add(Name);
+                    PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast,
+                        PCBM_BoardRegisteration, NetClass.I_ObjectAddress);
+                    For J := 0 To NetNames.Count - 1 Do Begin
+                        Net := FindNetByName(Board, NetNames[J]);
+                        NetClass.AddMember(Net);
+                    End;
+                Finally PCBServer.PostProcess; End;
+                For J := 0 To NetNames.Count - 1 Do
+                    If Not NetClass.IsMember(FindNetByName(Board, NetNames[J])) Then Copper_Fail('Class membership readback failed: ' + Name);
+                NetIter := Board.BoardIterator_Create;
+                Try
+                    NetIter.AddFilter_ObjectSet(MkSet(eNetObject));
+                    NetIter.AddFilter_LayerSet(AllLayers); NetIter.AddFilter_Method(eProcessAll);
+                    Net := NetIter.FirstPCBObject;
+                    While Net <> Nil Do Begin
+                        If NetClass.IsMember(Net) And (NetNames.IndexOf(Net.Name) < 0) Then
+                            Copper_Fail('Unexpected class membership: ' + Name);
+                        Net := NetIter.NextPCBObject;
+                    End;
+                Finally Board.BoardIterator_Destroy(NetIter); End;
+                Inc(Applied);
+            End;
+            For I := 0 To PairCount - 1 Do Begin
+                Item := ExtractJsonValue(Params, 'pair_' + IntToStr(I));
+                Name := ExtractJsonValue(Item, 'name'); PairExists := False;
+                Iter := Board.BoardIterator_Create;
+                Try
+                    Iter.AddFilter_ObjectSet(MkSet(eDifferentialPairObject));
+                    Iter.AddFilter_LayerSet(AllLayers); Iter.AddFilter_Method(eProcessAll);
+                    ExistingPair := Iter.FirstPCBObject;
+                    While ExistingPair <> Nil Do Begin
+                        If UpperCase(ExistingPair.Name) = UpperCase(Name) Then Begin PairExists := True; Break; End;
+                        ExistingPair := Iter.NextPCBObject;
+                    End;
+                Finally Board.BoardIterator_Destroy(Iter); End;
+                If Not PairExists Then Begin
+                    Reply := PCB_CreateDiffPair(Item, RequestId);
+                    If ExtractJsonValue(Reply, 'success') <> 'true' Then Copper_Fail('Differential pair creation failed');
+                    Inc(Applied);
+                End;
+            End;
+            { Delete the complete previous managed rule set, including removed rules. }
+            For I := 0 To OldRules.Count - 1 Do Begin
+                Reply := PCB_DeleteDesignRule(JsonObj(JsonStr('name', OldRules[I])), RequestId);
+                If ExtractJsonValue(Reply, 'success') <> 'true' Then Copper_Fail('Managed rule removal failed');
+                Inc(Applied);
+            End;
+            For I := 0 To RuleCount - 1 Do Begin
+                Item := ExtractJsonValue(Params, 'rule_' + IntToStr(I));
+                Name := ExtractJsonValue(Item, 'name');
+                Reply := PCB_CreateDesignRule(Item, RequestId);
+                If Items <> '' Then Items := Items + ','; Items := Items + Reply;
+                If ExtractJsonValue(Reply, 'success') <> 'true' Then Copper_Fail('Rule creation failed: ' + Name);
+                CreatedRule := PCB_FindRuleByName(Board, Name);
+                If Not Copper_VerifyRule(CreatedRule, Item) Then Copper_Fail('Native rule readback failed: ' + Name);
+                Inc(Applied);
+            End;
+        Except Failed := True; Failure := Copper_LastFailure; End;
+        MarkDocDirtyByPath(Board.FileName);
+        NetNames.Text := '';
+        For I := 0 To ActualOwned.Count - 1 Do NetNames.Add('"' + EscapeJsonString(ActualOwned[I]) + '",');
+        Result := BuildSuccessResponse(RequestId, JsonObj(JsonBool('success', Not Failed) + ',' +
+            JsonInt('applied_count', Applied) + ',' + JsonBool('possible_partial_native_edit', Failed) + ',' +
+            JsonBool('automatic_retry', False) + ',' + JsonStr('failure', Failure) + ',' +
+            JsonRaw('owned_class_names', Copper_Array(NetNames)) + ',' + JsonRaw('items', '[' + Items + ']')));
+    Except
+        Result := BuildErrorResponse(RequestId, 'COPPER_PREFLIGHT_FAILED', Copper_LastFailure);
+    End;
+    Owned.Free; ActualOwned.Free; ClassNames.Free; RuleNames.Free; PairNames.Free; NetNames.Free; OldRules.Free;
+End;
+
 Function HandlePCBCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
+        'get_copper_snapshot':     Result := PCB_GetCopperSnapshot(Params, RequestId);
+        'focus_copper_violation':  Result := PCB_FocusCopperViolation(Params, RequestId);
         'get_nets':                Result := PCB_GetNets(Params, RequestId);
         'create_nets_from_list':   Result := PCB_CreateNetsFromList(Params, RequestId);
         'bind_pad_nets':           Result := PCB_BindPadNets(Params, RequestId);
@@ -12952,6 +13815,7 @@ Begin
         'place_fill':              Result := PCB_PlaceFill(Params, RequestId);
         'start_polygon_placement': Result := PCB_StartPolygonPlacement(Params, RequestId);
         'create_design_rule':      Result := PCB_CreateDesignRule(Params, RequestId);
+        'apply_copper_rules':      Result := PCB_ApplyCopperRules(Params, RequestId);
         'delete_design_rule':      Result := PCB_DeleteDesignRule(Params, RequestId);
         'get_component_pads':      Result := PCB_GetComponentPads(Params, RequestId);
         'get_pad_connectivity':    Result := PCB_GetPadConnectivity(Params, RequestId);

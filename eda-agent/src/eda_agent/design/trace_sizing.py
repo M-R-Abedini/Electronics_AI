@@ -1,6 +1,7 @@
+# Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
-"""PCB trace sizing from current (IPC-2221 / IPC-2152).
+"""PCB trace sizing from current (legacy IPC-2221 and qualified IPC-2152 data).
 
 The forward question -- "how much current does this track carry?" -- is
 answered by ``pcb_calc_track_current_capacity``. The design-time question is
@@ -143,4 +144,57 @@ __all__ = [
     "current_capacity_amps",
     "trace_resistance_mohm",
     "trace_width_for_current",
+    "trace_width_for_current_qualified",
 ]
+
+
+def trace_width_for_current_qualified(
+    current_a: float, *, dataset: dict | None = None, copper_oz: float,
+    delta_t_c: float, layer: str, margin: float = 0.2,
+) -> dict:
+    """Conservative, bounded interpolation of explicitly qualified IPC-2152 data.
+
+    No IPC-2152 charts are bundled or inferred from IPC-2221. ``dataset`` must
+    identify its source, qualification, conditions, and points. Each point is
+    {current_a,width_mils}; conditions must exactly match copper_oz, delta_t_c,
+    and layer. The integrator is responsible for qualifying the table against
+    the actual board construction/environment; this is not IPC certification.
+    Linear width interpolation is combined with the upper bracketing width
+    (conservative step envelope), never extrapolation. See IPC's primary paper:
+    https://www.ipc.org/system/files/technical_resource/E7%26S22_03.pdf
+    """
+    def positive(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
+    if not all(positive(v) for v in (current_a, copper_oz, delta_t_c)) or not math.isfinite(margin) or margin < 0:
+        raise ValueError("finite positive current/copper/delta_t and nonnegative margin required")
+    _k_for_layer(layer)
+    unsupported = {"supported": False, "model": "IPC-2152-qualified-table",
+                   "certified": False}
+    if not dataset:
+        return {**unsupported, "reason": "qualified IPC-2152 calibration dataset required"}
+    if (dataset.get("standard") != "IPC-2152" or dataset.get("qualified") is not True
+            or not dataset.get("source") or not dataset.get("qualification")
+            or not dataset.get("board_conditions")):
+        return {**unsupported, "reason": "dataset requires IPC-2152 source, qualification and board_conditions"}
+    conditions = dataset.get("conditions", {})
+    requested = {"copper_oz": copper_oz, "delta_t_c": delta_t_c, "layer": layer.strip().lower()}
+    if conditions != requested:
+        return {**unsupported, "reason": "dataset conditions do not match requested construction/temperature/layer"}
+    points = dataset.get("points", [])
+    if len(points) < 2 or any(not isinstance(p, dict) or not positive(p.get("current_a")) or not positive(p.get("width_mils")) for p in points):
+        raise ValueError("dataset needs at least two finite positive current/width points")
+    points = sorted(points, key=lambda p: p["current_a"])
+    if any(b["current_a"] <= a["current_a"] or b["width_mils"] < a["width_mils"] for a, b in zip(points, points[1:])):
+        raise ValueError("dataset current must be unique and width monotonic")
+    if not points[0]["current_a"] <= current_a <= points[-1]["current_a"]:
+        return {**unsupported, "reason": "current outside qualified data range; extrapolation prohibited"}
+    for a, b in zip(points, points[1:]):
+        if a["current_a"] <= current_a <= b["current_a"]:
+            fraction = (current_a-a["current_a"])/(b["current_a"]-a["current_a"])
+            interpolated = a["width_mils"] + fraction * (b["width_mils"]-a["width_mils"])
+            width = a["width_mils"] if fraction == 0 else b["width_mils"]
+            return {"supported": True, "model": "IPC-2152-qualified-table", "certified": False,
+                    "min_width_mils": width, "interpolated_width_mils": interpolated,
+                    "recommended_width_mils": math.ceil(width*(1+margin)*10)/10,
+                    "method": "upper-bracket conservative envelope; no extrapolation",
+                    "provenance": {key: dataset[key] for key in ("source", "qualification", "board_conditions", "conditions")}}

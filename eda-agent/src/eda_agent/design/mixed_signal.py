@@ -1,3 +1,4 @@
+# Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Mixed-signal domain inference for PCB placement.
@@ -33,9 +34,11 @@ from dataclasses import dataclass
 from eda_agent.design.plan import DesignPlan
 
 # Quiet, high-impedance, easily-disturbed nets.
-ANALOG_ROLES = frozenset({"analog_sensitive", "feedback"})
+ANALOG_ROLES = frozenset({"analog_sensitive", "feedback", "opamp_input", "adc_input",
+                          "voltage_reference", "vref", "crystal", "afe_input",
+                          "kelvin_sense", "current_sense"})
 # Fast-edged / switching / digital aggressors.
-DIGITAL_ROLES = frozenset({"control", "clock", "differential", "switch"})
+DIGITAL_ROLES = frozenset({"control", "clock", "differential", "switch", "high_speed"})
 
 
 @dataclass(frozen=True)

@@ -1,3 +1,4 @@
+# Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Design-rule + stackup synthesis from a fab profile and net classes.
@@ -367,4 +368,16 @@ def _assert_traced(rules: list[dict], stackup_ops: list[dict],
                     f"untraced value {field}={d[field]} in {d.get('name', d)}"
 
 
-__all__ = ["synthesize_rules"]
+def synthesize_copper_rules(snapshot: dict, classification: dict, options: Optional[dict] = None) -> dict:
+    """Physical counterpart of the profile-based synthesis entry point.
+
+    This accepts measured millimetre copper and preserves fractional-mil rule
+    values for the native copper batch. It shares the existing impedance,
+    current and length calculators; it does not alter the historical integer
+    public-tool contract of ``synthesize_rules``.
+    """
+    from eda_agent.design.copper_rules import synthesize_copper_rules as physical_rules
+    return physical_rules(snapshot, classification, options)
+
+
+__all__ = ["synthesize_rules", "synthesize_copper_rules"]

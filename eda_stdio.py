@@ -115,6 +115,45 @@ async def _suite_legacy_execute(command: str, params: dict) -> dict:
     # EDA transport envelope is translated here.
     return {'success': True, 'result': data}
 
+
+@mcp.tool()
+async def _suite_copper_snapshot(board_path: str) -> dict:
+    """Internal single-handler live copper capture; not part of EDA discovery."""
+    from eda_agent.bridge import get_bridge
+    return await get_bridge().send_command_async('pcb.get_copper_snapshot', {'board_path': board_path}, timeout=120)
+
+
+@mcp.tool()
+async def _suite_copper_focus(board_path: str, x_mm: float, y_mm: float,
+                              layer: str, net_names: list[str], board_identity: str,
+                              radius_mm: float = 2) -> dict:
+    """Internal viewport cross-probe of a report-bound location."""
+    from eda_agent.bridge import get_bridge
+    return await get_bridge().send_command_async('pcb.focus_copper_violation', {
+        'board_path': board_path, 'x_mm': x_mm, 'y_mm': y_mm, 'layer': layer,
+        'net_names': net_names, 'board_identity': board_identity, 'radius_mm': radius_mm})
+
+
+@mcp.tool()
+async def _suite_copper_apply_rules(board_path: str, net_classes: list[dict],
+                                   rules: list[dict], differential_pairs: list[dict],
+                                   expected_native_snapshot: str,
+                                   owned_class_names: list[str] | None = None) -> dict:
+    """Internal bounded rule batch; the gateway checkpoints before dispatch."""
+    from suite_si_pi import prepare_native_rule_batch
+    from eda_agent.bridge import get_bridge
+    params = prepare_native_rule_batch(board_path, net_classes, rules, differential_pairs)
+    if not expected_native_snapshot or len(expected_native_snapshot) > 64 * 1024 * 1024:
+        raise ValueError('A bounded fresh native copper precondition is required')
+    params['expected_native_snapshot'] = expected_native_snapshot
+    owned = owned_class_names or []
+    if len(owned) > 500 or len(set(owned)) != len(owned) or any(
+            not isinstance(name, str) or not name.startswith('MCP_SIPI_') for name in owned):
+        raise ValueError('Invalid persisted managed-class manifest')
+    params['owned_class_count'] = len(owned)
+    params.update({f'owned_class_{i}': name for i, name in enumerate(owned)})
+    return await get_bridge().send_command_async('pcb.apply_copper_rules', params, timeout=120)
+
 # Keep private compatibility commands callable only by the gateway's direct
 # adapter while preserving the 457-tool public EDA discovery contract.
 _public_list_tools = mcp.list_tools

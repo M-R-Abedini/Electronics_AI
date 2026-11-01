@@ -35,7 +35,9 @@ editing, and cloud library discovery. Call suite_catalog with a query and
 with_schema=true, then suite_invoke with its exact namespaced tool name and
 arguments. eda__ tools drive the coordinated EDA engine; legacy__ compatibility
 tools use that same EDA transport; libraries__ tools edit library files; cloud__
-tools discover and stage external libraries. supply__ tools audit sourced stock/pricing (unknown is not
+tools discover and stage external libraries. si_pi__ tools classify and audit real
+PCB copper, preview qualified physical rules, and cross-probe stored violations.
+Missing geometry or physics data is reported as unknown. supply__ tools audit sourced stock/pricing (unknown is not
 out-of-stock); route__ runs local DSN routing with explicit native-exchange
 limits. suite__ manages disk checkpoints; telemetry__status reports optional
 local collection which is off by default. Opaque script/menu writes require
@@ -363,7 +365,7 @@ class Suite:
                        'backend_metadata': []}
             token = self._call_context.set(context)
             try:
-                if backend in {'libraries', 'legacy'}:
+                if backend in {'libraries', 'legacy', 'si_pi'}:
                     # A client cancellation must not release an in-flight file
                     # mutation or native adapter sequence. Close drains it.
                     task = asyncio.create_task(execute())
@@ -470,11 +472,19 @@ class Suite:
         if name.startswith('_suite_'):
             if 'eda' not in self.workers or not self.workers['eda'].spec.enabled:
                 raise ValueError('The unified EDA backend is disabled')
+            if name == '_suite_copper_apply_rules':
+                required = {'pcb_create_net_class', 'pcb_create_design_rule', 'pcb_delete_design_rule'}
+                if arguments.get('differential_pairs'):
+                    required.add('pcb_create_diff_pair')
+                denied = sorted(tool for tool in required if not self.workers['eda'].spec.allows(tool))
+                if denied:
+                    raise ValueError('Copper rule application requires enabled EDA tools: ' + ', '.join(denied))
             async with self._native_sequence():
                 checkpoint = None
                 from suite_checkpoints import is_mutation
                 original = context.get('original', name)
-                if self.safety is not None and is_mutation(original, arguments.get('params') or arguments):
+                copper_read = name in {'_suite_copper_snapshot', '_suite_copper_focus'}
+                if self.safety is not None and not copper_read and is_mutation(original, arguments.get('params') or arguments):
                     checkpoint = await self.safety.before(original, arguments.get('params') or arguments,
                                                           context.get('checkpoint_files'))
                 response = await self.workers['eda'].request('call_tool', name=name, arguments=arguments,
@@ -591,7 +601,7 @@ META_TOOLS = [
     types.Tool(name="suite_catalog", description="Discover all Altium Suite capabilities by query/backend. Request with_schema=true before unfamiliar calls. Does not execute design operations.",
                inputSchema={"type": "object", "properties": {
                    "query": {"type": "string", "default": ""},
-                   "backend": {"type": ["string", "null"], "enum": ["eda", "legacy", "libraries", "cloud", "suite", "supply", "route", "telemetry", None]},
+                   "backend": {"type": ["string", "null"], "enum": ["eda", "legacy", "libraries", "cloud", "suite", "supply", "route", "telemetry", "si_pi", None]},
                    "with_schema": {"type": "boolean", "default": False},
                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
                    "offset": {"type": "integer", "minimum": 0, "default": 0}}, "additionalProperties": False},
@@ -618,7 +628,7 @@ def create_server(suite: Suite) -> Server:
         finally:
             await suite.close()
 
-    server = Server(SERVER_NAME, version="0.4.0", instructions=INSTRUCTIONS, lifespan=lifespan)
+    server = Server(SERVER_NAME, version="0.5.0", instructions=INSTRUCTIONS, lifespan=lifespan)
 
     @server.list_tools()
     async def list_tools():
@@ -711,6 +721,9 @@ async def serve(options):
         safety = SafetyService(data, suite.native_read)
         suite.safety = safety
         suite.components['suite'] = safety
+        from suite_si_pi import SiPiService
+        suite.components['si_pi'] = SiPiService(data, native_dispatch=suite.compatibility_dispatch,
+                                              native_sequence=suite._native_sequence)
         # Optional product modules are imported only when packaged. A missing
         # transitive dependency must still fail visibly.
         for namespace, module_name, class_name in (
@@ -726,6 +739,8 @@ async def serve(options):
             options = {'data_dir': data}
             if namespace == 'supply':
                 options['bom_reader'] = suite.active_bom
+            if namespace == 'route':
+                options['routing_context_resolver'] = suite.components['si_pi'].resolve_routing_context
             component = getattr(module, class_name)(**options)
             suite.components[namespace] = component
             if namespace == 'telemetry':

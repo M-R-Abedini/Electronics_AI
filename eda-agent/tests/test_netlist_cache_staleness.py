@@ -1,3 +1,4 @@
+# Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The compiled-netlist cache must not outlive the design it describes.
@@ -118,7 +119,7 @@ def command_is_read_only(command: str) -> bool:
     prefixes = ("get_", "list_", "query", "read_", "find_", "count",
                 "audit_", "check_", "calc_", "export_", "render_",
                 "probe_", "inspect_", "diff_", "compare_")
-    return action.startswith(prefixes) or action == "ping"
+    return action.startswith(prefixes) or action in {"ping", "focus_copper_violation"}
 
 
 @pytest.mark.parametrize("command", [
@@ -144,6 +145,7 @@ def test_anything_not_known_to_be_a_read_counts_as_a_write(command):
     "project.get_nets", "generic.query_objects", "application.ping",
     "pcb.list_layers", "audit.audit_find_single_pin_nets",
     "project.export_bom", "pcb.render_svg", "library.compare_libraries",
+    "pcb.focus_copper_violation",
 ])
 def test_reads_keep_the_cache(command):
     assert command_is_read_only(command) is True
@@ -205,6 +207,7 @@ def test_pascal_and_python_agree_on_the_classifier(fpc_executable, tmp_path):
         "project.export_bom", "generic.unknown_future_tool",
         "no_namespace", "", "PROJECT.GET_NETS", "  project.get_nets  ",
         "pcb.render_svg", "generic.compare_documents",
+        "pcb.focus_copper_violation", "pcb.apply_copper_rules", "pcb.get_copper_snapshot",
     ]
     cases = [("CommandIsReadOnly", [c]) for c in commands]
 

@@ -6,6 +6,14 @@ meta-tools. Checkpoint operations are discovered with
 `suite__create_checkpoint`, `suite__list_checkpoints`, and
 `suite__restore_checkpoint`.
 
+The `si_pi__` rule workflow has an additional preview gate. Applying rules
+requires both the reviewed preview identifier and its live snapshot identifier;
+changes to intent, options or DSN bytes require another preview. The native
+handler rechecks the captured board before its first edit and checks reserved
+rule/class ownership. These checks reject stale or conflicting manifests; they
+do not add transactional rollback to DelphiScript. Geometry audit/focus tools
+do not edit copper. See [the copper workflow](COPPER_SI_PI.md).
+
 ## Electrical values
 
 Before native EDA/legacy dispatch, value/comment and component parameter value

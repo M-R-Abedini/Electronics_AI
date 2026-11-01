@@ -1,4 +1,4 @@
-{ Modified 2026-10-10 by M-R-Abedini; see root MODIFICATIONS.md. }
+{ Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md. }
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
@@ -14,7 +14,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.10.29.single-transport1';
+    SCRIPT_VERSION = '2026.11.01.copper-si-pi1';
     SUITE_SCRIPT_PROJECT = '__ALTIUM_MCP_SCRIPT_PROJECT__';
     SUITE_SCRIPT_CATALOG = '__ALTIUM_MCP_SCRIPT_CATALOG__';
     SUITE_SCRIPT_WORKSPACE = '__ALTIUM_MCP_WORKSPACE__';
@@ -402,6 +402,21 @@ End;
 {..............................................................................}
 { GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
 {..............................................................................}
+
+{ Focus-only accessor: never opens a document or chooses another PCB. }
+Function GetFocusedPCBBoard(Dummy : Integer): IPCB_Board;
+Var
+    Workspace : IWorkspace;
+    Doc : IDocument;
+Begin
+    Result := Nil;
+    Workspace := GetWorkspace;
+    If Workspace = Nil Then Exit;
+    Doc := Workspace.DM_FocusedDocument;
+    If Doc = Nil Then Exit;
+    If UpperCase(Doc.DM_DocumentKind) <> 'PCB' Then Exit;
+    Result := PCBServer.GetCurrentPCBBoard;
+End;
 
 Function GetPCBBoardAnywhere(Dummy : Integer): IPCB_Board;
 Var

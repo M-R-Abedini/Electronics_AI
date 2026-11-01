@@ -6663,7 +6663,7 @@ begin
         LibComp.AddPCBObject(Track);
         PCBServer.SendMessageToRobots(Track.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, c_NoEventData);
 
-        // Left silk — split to mark pin 1 (gap at top-left corner for pin 1 indicator)
+        // Left silk, split to mark pin 1 (gap at top-left corner for pin 1 indicator)
         Track := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);
         Track.Layer := SilkLayer;
         Track.x1 := MMsToCoord(CrtX1+0.1); Track.y1 := MMsToCoord(CrtY1+0.1);

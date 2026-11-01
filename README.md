@@ -15,13 +15,14 @@
 - Audit the design: orphan net labels, floating ports, unconnected IC pins, missing decoupling caps, designator collisions, off-grid parts — or 33 lint checks in one call, with optional DRC.
 - Check connectivity with four read-only tools: snapshot pin-to-net assignments (SHA-256 digest), per-pin contracts (expected net, or intentional NC with a reason), before/after diffs, and schematic↔PCB pad parity in both directions.
 - Calculate trace width, impedance, and length budgets. These are calculators, not a signal-integrity proof.
+- Inspect saved or live PCB copper with the `si_pi__` tools: classify net intent, audit actual 2D routing and reference coverage, preview physical design rules, and cross-probe stored violations. Missing stackup, topology or qualified current data remains explicit unknown evidence. See [copper SI/PI workflow](docs/COPPER_SI_PI.md).
 - Read and write `.SchLib` / `.PcbLib` library files.
 - Search ChilaBoard's public catalog and download revision-pinned libraries with source/hash/license receipts. Stage authorized SnapMagic/SamacSys downloads without executing archive contents. Native geometry and pin mapping still need verification. See [unified suite and cloud workflow](docs/review/UNIFIED_SUITE_2026-10-27.md).
 - Use the researched [altium-circuit-design skill](skills/altium-circuit-design/SKILL.md) for requirements, model verification, structured schematic plans and design-check evidence.
 - Manage native assembly variants by GUID, bulk-update fitted states, and export their component matrix. Changes use project backups and native readback; see the [variant workflow](docs/review/STORAGE_VARIANTS_2026-10-08.md).
-- Two bridges, one script engine: a shared lock keeps the two Python bridges from fighting over Altium's script engine, and every request carries an ID so a late answer to an old request is never accepted.
+- One native transport: legacy compatibility and EDA operations share a serialized script engine; every request carries an ID so a late answer to an old request is never accepted.
 - Concurrent clients: a local FIFO service admits native commands in order; health traffic yields to queued work. `pcb_capture_snapshot` reads components, nets and pad assignments in one native pass. Clients can then use `design_read_snapshot` and `design_analyze_snapshot` concurrently without occupying Altium. Snapshots are historical evidence, not live edit preconditions. See [usage and measured limits](docs/review/CONCURRENT_CLIENTS_2026-10-14.md).
-- Script projects have distinct EDA/legacy names. On EDA startup, verified older generated projects are closed; edited sources are retained. [Lifecycle checks](docs/review/SCRIPT_PROJECT_LIFECYCLE_2026-10-10.md).
+- The canonical EDA script project also runs legacy compatibility handlers. Startup recognizes verified older generated projects and retains edited sources. [Lifecycle checks](docs/review/SCRIPT_PROJECT_LIFECYCLE_2026-10-10.md).
 
 ## What's still in development
 
@@ -79,7 +80,7 @@ python -m venv .venv
 
 Merge the generated `mcp.local.json` (or `codex.local.toml`) into your MCP client config and restart its connections. Setup now emits one `mcp-altium-suite` connection, with display identity `mcp altium suite`, and a private `suite-backends.local.json` worker manifest. Open your project in Altium, discover `app_context` with `suite_catalog`, then invoke the returned `eda__app_context` name through `suite_invoke`.
 
-The default `--toolset minimal` advertises only `suite_catalog`, `suite_invoke` and `suite_status`. Discover an operation with `suite_catalog(query="...", backend="eda", with_schema=true)`, then call `suite_invoke(name="eda__...", arguments={...})`. Namespaces are `eda__`, `legacy__`, `libraries__`, `cloud__`, `suite__`, `supply__`, `route__` and `telemetry__`. Schemas load on demand and arguments are validated before forwarding. `--toolset full` advertises every namespaced tool; `--separate-servers` is accepted for migration but still produces the unified endpoint. Existing EDA-only measurements in the [performance review](docs/review/PERFORMANCE_2026-10-08.md) are not unified-suite benchmarks.
+The default `--toolset minimal` advertises only `suite_catalog`, `suite_invoke` and `suite_status`. Discover an operation with `suite_catalog(query="...", backend="eda", with_schema=true)`, then call `suite_invoke(name="eda__...", arguments={...})`. Namespaces are `eda__`, `legacy__`, `libraries__`, `cloud__`, `suite__`, `supply__`, `route__`, `telemetry__` and `si_pi__`. Schemas load on demand and arguments are validated before forwarding. `--toolset full` advertises every namespaced tool; `--separate-servers` is accepted for migration but still produces the unified endpoint. Existing EDA-only measurements in the [performance review](docs/review/PERFORMANCE_2026-10-08.md) are not unified-suite benchmarks.
 
 ```powershell
 .\.venv\Scripts\python.exe setup.py --altium-exe "C:\Program Files\Altium\AD26\X2.EXE" --library-dir "D:\MyProject\Libraries"
@@ -115,7 +116,7 @@ These documents distinguish working public/offline features from API access
 requirements and unfinished native exchange; SES generation does not establish
 Altium import or a DRC-clean board. Collection is disabled by default.
 
-The 0.4.0 development branch replaces the external library implementation with
+The 0.4.0 baseline replaces the external library implementation with
 independent Python codecs and keeps all 34 public library schemas. The 37 legacy
 schemas remain compatibility aliases through the single EDA transport. Historical
 releases retain their original contents and licenses.

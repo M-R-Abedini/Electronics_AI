@@ -41,7 +41,7 @@ The builder creates:
 
 ```text
 dist/
-  mcp-altium-suite-0.4.0.zip
+  mcp-altium-suite-0.5.0.zip
   artifacts.json
   marketplace/
     .agents/plugins/marketplace.json

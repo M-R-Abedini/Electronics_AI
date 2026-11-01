@@ -1,3 +1,4 @@
+# Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Transmission-line / termination sizing for high-speed nets.
@@ -43,6 +44,16 @@ _C_IN_PER_NS = 299.792458 / 25.4  # ~= 11.8028
 # time. 1/6 is the point where the lumped approximation breaks down; looser
 # practice uses 1/4 to 1/2. Exposed as a parameter, never hidden.
 DEFAULT_LENGTH_FRACTION = 1.0 / 6.0
+
+
+def audit_routed_signal_integrity(snapshot: dict, intent: dict, *, policy: dict | None = None) -> dict:
+    """Audit measured copper using the same intent and geometry as PCB checks.
+
+    The report retains coverage unknowns, exact physical evidence, and explicit
+    policy values. It does not infer an edge rate from a clock frequency.
+    """
+    from eda_agent.design.copper_audit import audit_board_copper
+    return audit_board_copper(snapshot, intent, policy=policy)
 
 
 # --------------------------------------------------------------------------- #
@@ -344,6 +355,7 @@ def recommend_termination(
 
 
 __all__ = [
+    "audit_routed_signal_integrity",
     "DEFAULT_LENGTH_FRACTION",
     "effective_dielectric_constant",
     "propagation_delay_ns_per_inch",

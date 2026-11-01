@@ -1,3 +1,4 @@
+# Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Generic motif recognition for schematic layout.
@@ -1107,6 +1108,69 @@ def get_motif_by_name(name: str) -> Optional[Motif]:
     return None
 
 
+def recognize_copper_motifs(plan: DesignPlan, topology: dict | None = None) -> list[dict]:
+    """Reuse circuit motifs and explicit terminal roles for physical auditing.
+
+    A two-terminal low-value resistor alone is deliberately insufficient to
+    infer a shunt or its Kelvin pins. Terminal assignments must be supplied by
+    the topology/pin evidence, never guessed from a manufacturer's part name.
+    """
+    topology = topology or {}
+    found = [{"kind": m.motif_name, "components": sorted(m.components),
+              "nets": sorted(m.nets), "confidence": 0.85,
+              "evidence": ["existing bipartite circuit motif recognizer"]}
+             for m in recognize_motifs(plan)]
+    parts = {p.refdes: p for p in plan.parts}
+    grounds = {n.name for n in plan.nets if n.is_ground or n.role == "ground"}
+    pins = {}
+    for net in plan.nets:
+        for pin in net.pins:
+            pins.setdefault(pin.refdes, []).append({"pin": pin.pin, "net_name": net.name})
+    explicit = {s.get("component", s.get("refdes")): s for s in topology.get("shunts", [])}
+    shunt_roles = {"shunt", "current_shunt", "high_side_shunt", "low_side_shunt"}
+    for ref, part in parts.items():
+        if part.role not in shunt_roles and ref not in explicit:
+            continue
+        item = dict(explicit.get(ref, {}))
+        nets = {p["net_name"] for p in pins.get(ref, [])}
+        side = item.get("side")
+        if side not in {"high", "low"}:
+            side = "low" if nets & grounds or part.role == "low_side_shunt" else (
+                "high" if part.role == "high_side_shunt" else "unknown")
+        found.append({**item, "kind": "current_shunt", "component": ref,
+                      "side": side, "nets": sorted(nets), "pins": pins.get(ref, []),
+                      "confidence": 1.0 if ref in explicit else 0.8,
+                      "evidence": ["explicit topology terminal mapping" if ref in explicit else f"Part.role={part.role}",
+                                   "ground membership" if nets & grounds else "no inferred datasheet pin roles"],
+                      "kelvin_mapping_known": bool(item.get("sense_pads") or item.get("sense_pins"))})
+    for loop in topology.get("switching_loops", []):
+        found.append({**loop, "kind": "switching_loop", "confidence": 1.0,
+                      "evidence": loop.get("evidence", ["explicit topology switching-loop terminals"])})
+    # A cap-to-ground motif plus a declared power net establishes supply-pad
+    # connectivity without needing a guessed IC pinout.
+    for part in plan.parts:
+        legs = pins.get(part.refdes, [])
+        if _kind_from_refdes(part.refdes) != "C" or len(legs) != 2:
+            continue
+        g = next((p for p in legs if p["net_name"] in grounds), None)
+        rail = next((p for p in legs if p["net_name"] not in grounds), None)
+        if not g or not rail:
+            continue
+        net = next(n for n in plan.nets if n.name == rail["net_name"])
+        if not (net.is_power or net.role == "power"):
+            continue
+        for pin in net.pins:
+            if pin.refdes == part.refdes or _kind_from_refdes(pin.refdes) != "U":
+                continue
+            found.append({"kind": "decoupling", "component": part.refdes,
+                          "source_component": pin.refdes, "source_pin": pin.pin,
+                          "cap_power_pin": rail["pin"], "cap_ground_pin": g["pin"],
+                          "net_name": net.name, "ground_net": g["net_name"],
+                          "confidence": 0.8, "evidence": ["capacitor-to-ground on declared IC supply net"],
+                          "intent_verified": part.role in {"decoupling", "bypass", "cin_hf", "decoupling_cap"}})
+    return found
+
+
 __all__ = [
     "Match",
     "Motif",
@@ -1132,6 +1196,7 @@ __all__ = [
     "find_motif_matches",
     "get_motif_by_name",
     "recognize_motifs",
+    "recognize_copper_motifs",
     "resolve_matches",
     "splat_motif",
 ]

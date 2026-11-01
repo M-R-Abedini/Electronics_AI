@@ -1,5 +1,24 @@
 # Local changes
 
+## Added 2026-11-01
+
+- Copper SI/PI gateway (`0.5.0` candidate): four `si_pi__` capabilities connect
+  the existing EDA domain modules to saved/live PCB copper snapshots, physical
+  geometry audits, qualified constraint synthesis and cross-probing. Original
+  MIT geometry/snapshot/routing modules are added; existing Apache-2.0
+  `design/` classifiers, calculators, audit and rule-synthesis modules are
+  extended without replacing their public APIs. Upstream notices are retained.
+- Native `Main.pas`, `PCB.pas` and `Dispatcher.pas` add loaded-board capture,
+  violation focus and guarded managed rule batches. Script identity is
+  `2026.11.01.copper-si-pi1`. Preview-bound intent, native freshness checks and
+  readback do not provide transactional rollback. `LegacyCompat.pas` has a
+  comment punctuation cleanup; its compatibility behavior is unchanged.
+- The local Specctra workflow supports evidence-bearing constraints, protected
+  critical copper and post-session geometry checks. Native Altium SES import
+  remains gated. The independent OLE reader reports unsupported layouts as
+  partial coverage. See [workflow and limits](docs/COPPER_SI_PI.md) and the
+  root `COPPER_SI_PI_REPORT.fa.md` for verification scope.
+
 ## Added 2026-10-28
 
 - Portable Codex plugin manifests, a clean reproducible source package and local

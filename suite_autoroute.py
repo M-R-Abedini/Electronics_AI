@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import inspect
@@ -164,9 +165,12 @@ class AutorouteService:
     """Gateway service. Native exchange is unavailable until qualified."""
 
     def __init__(self, data_dir: Path | str | None = None, *,
-                 provider: RoutingProvider | None = None, exchange: ExchangeAdapter | None = None):
+                 provider: RoutingProvider | None = None, exchange: ExchangeAdapter | None = None,
+                 copper_audit: Callable | None = None, routing_context_resolver: Callable | None = None):
         self.data_dir = Path(data_dir).resolve() if data_dir is not None else data_directory()
         self.provider, self.exchange = provider, exchange
+        self.copper_audit = copper_audit
+        self.routing_context_resolver = routing_context_resolver
         self._native_lock = asyncio.Lock()
 
     @staticmethod
@@ -197,20 +201,84 @@ class AutorouteService:
                 "next_step": "Supply a local DSN export for local routing; a tested native adapter is needed for automatic Altium exchange."}
 
     def route_dsn(self, input_path: str, *, max_passes: int = 10,
-                  timeout_seconds: int = 600) -> dict[str, Any]:
+                  timeout_seconds: int = 600, constraints_context: dict | None = None) -> dict[str, Any]:
         source = _file(input_path, ".dsn")
         _specctra(source, b"pcb")
-        provider = self._configured_provider()
+        is_handle = isinstance(constraints_context, dict) and bool({'snapshot_id', 'preview_id'} & set(constraints_context))
+        # Reject invalid handles before requiring an optional local router.
+        if is_handle and self.routing_context_resolver is None:
+            raise ValueError('SI/PI routing evidence resolver is not connected')
+        provider = None if is_handle else self._configured_provider()
         job = self.data_dir / "routing" / uuid.uuid4().hex
         job.mkdir(parents=True, exist_ok=False)
         # The input copy isolates user files and prevents concurrent editor
         # changes or adjacent .rules files from silently altering the job.
         isolated_input = job / "input.dsn"
         shutil.copyfile(source, isolated_input)
+        original_input_sha256 = _hash(isolated_input)
+        if is_handle:
+            constraints_context = self.routing_context_resolver(deepcopy(constraints_context), original_input_sha256)
+            if inspect.isawaitable(constraints_context) or not isinstance(constraints_context, dict):
+                raise ValueError('A synchronous SI/PI routing context resolver must return an object')
+            provider = self._configured_provider()
+        constraint_evidence = None
+        if constraints_context is not None:
+            from suite_routing_constraints import constrain_dsn
+            capabilities = set(getattr(provider, "constraint_capabilities", ()))
+            transformed, constraint_evidence = constrain_dsn(
+                isolated_input.read_text(encoding="utf-8-sig"), constraints_context, capabilities)
+            isolated_input.write_text(transformed, encoding="utf-8")
         session = job / "result.ses"
-        output = provider.route(isolated_input, session, max_passes=max_passes,
-                                timeout_seconds=timeout_seconds, work_dir=job)
-        receipt = {"schema": 1, **output, "created_at_utc": datetime.now(timezone.utc).isoformat()}
+        route_options = {"max_passes": max_passes, "timeout_seconds": timeout_seconds, "work_dir": job}
+        expected_contract = {}
+        if constraint_evidence is not None:
+            intent = constraint_evidence["constraints"]
+            if "exclude_nets" in capabilities:
+                route_options["exclude_nets"] = deepcopy(constraint_evidence["critical_nets"])
+                expected_contract["excluded_nets"] = sorted(constraint_evidence["critical_nets"])
+            if intent.get("differential_pairs") and "differential_pairs" in capabilities:
+                route_options["differential_pairs"] = deepcopy(intent["differential_pairs"])
+                expected_contract["enforced_differential_pairs"] = deepcopy(intent["differential_pairs"])
+            matched = {net: {key: deepcopy(value) for key, value in values.items()
+                            if key in {"length_tolerance_mils", "match_group", "skew_budget_ps"}}
+                       for net, values in intent.get("constraints", {}).items()
+                       if values.get("length_tolerance_mils") is not None}
+            if matched and "matched_lengths" in capabilities:
+                route_options["matched_lengths"] = deepcopy(matched)
+                expected_contract["enforced_matched_lengths"] = deepcopy(matched)
+        try:
+            output = provider.route(isolated_input, session, **route_options)
+            audit_result = None
+            if constraint_evidence is not None:
+                from suite_routing_constraints import reconstruct_session
+                for key, expected in expected_contract.items():
+                    acknowledged = output.get(key)
+                    if key == "excluded_nets" and isinstance(acknowledged, list):
+                        acknowledged = sorted(acknowledged)
+                    if json.dumps(acknowledged, sort_keys=True, allow_nan=False) != json.dumps(expected, sort_keys=True, allow_nan=False):
+                        raise ValueError("Provider did not acknowledge qualified constraints: " + key)
+                snapshot = reconstruct_session(session.read_text(encoding="utf-8-sig"), constraints_context.get("snapshot", {}), constraint_evidence)
+                audit = self.copper_audit
+                if audit is None:
+                    from eda_agent.design.copper_audit import audit_board_copper
+                    audit = audit_board_copper
+                audit_result = audit(snapshot, constraint_evidence["constraints"])
+                if inspect.isawaitable(audit_result):
+                    raise ValueError("Synchronous copper audit callback required")
+                if not ((audit_result.get("coverage_complete") is True and audit_result.get("status") == "clean")
+                        or (audit_result.get("complete") is True and audit_result.get("passed") is True)):
+                    # Preserve private failure evidence, never return a session
+                    # as ready to import when coverage/constraints are unknown.
+                    (job / "audit-failed.json").write_text(json.dumps(audit_result, indent=2), encoding="utf-8")
+                    raise ValueError("Post-route copper audit failed or incomplete; routed session rejected")
+                (job / "routed-snapshot.json").write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+        except BaseException:
+            session.unlink(missing_ok=True)
+            raise
+        receipt = {"schema": 1, **output, "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                   "original_input_sha256": original_input_sha256, "constrained_input_sha256": _hash(isolated_input),
+                   "copper_constraints_applied": constraint_evidence is not None,
+                   "copper_audit": audit_result}
         (job / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
         return receipt
 
@@ -306,7 +374,8 @@ def list_tools() -> list[dict[str, Any]]:
         ("status", "Inspect local routing and native exchange adapter capabilities without opening Altium.", {}, [], True),
         ("route_dsn", "Run configured local Freerouting on an explicit DSN; produce a private SES. Does not import into Altium, upload a board or certify DRC.",
          {"input_path": string, "max_passes": {"type": "integer", "minimum": 1, "maximum": 1000},
-          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 7200}}, ["input_path"], False),
+          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 7200},
+          "constraints_context": {"type": "object", "description": "Prefer routing_context {snapshot_id,preview_id} returned by si_pi rule preview, with its unchanged original DSN. Alternatively supply complete snapshot, synthesized intent and optional layer/via mappings. Critical connectivity is verified from geometry; unsupported constraints fail closed."}}, ["input_path"], False),
         ("export_specctra_dsn", "Export the explicitly active PCB via a qualified native adapter. Currently requires adapter setup; fallback is Altium File > Export > Specctra Design.",
          {"board_path": string, "allow_modal": {"type": "boolean", "default": False}}, ["board_path"], False),
         ("import_specctra_ses", "Import only through a verified SES translator, host-validated checkpoint and matching PCB hash; run post-import fresh DRC and report metric differences. Raw SES is not native Altium RTE.",

@@ -17,6 +17,12 @@ Setup authorization permits the configuration/dependency work requested; do not 
 
 After setup, reconnect the plugin and verify its actual tools: discover `eda__app_context` through `suite_catalog`, then use `suite_invoke` for a read-only native check if Altium is open and that check is in scope. Test a library reader on an explicit permitted sample. Report which checks actually ran and any unavailable prerequisites; do not infer full readiness from installation or metadata alone.
 
+For a copper-copilot upgrade, also discover the four `si_pi__` tools through
+`suite_catalog` with `backend=si_pi`. Check the installed manifest version and
+the native script version separately. Native freshness/readback requires the
+current packaged script, not just a newer Python gateway. Keep existing private
+runtime/workspace identity during upgrades and retain rollback configuration.
+
 If adoption refers to an obsolete checkout, use `detach` to build independent
 dependencies in the private data directory before archiving the old folder.
 Retain the native runtime/workspace identity and tool restrictions. Setup has

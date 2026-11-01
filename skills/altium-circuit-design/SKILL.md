@@ -50,6 +50,12 @@ Compare fresh compiled net-to-pin data with intended membership: missing pins, s
 
 For requested PCB work establish fabrication capabilities, stackup and interface constraints before routing. Verify schematic-to-PCB mapping/connectivity, placement, returns, decoupling access, mechanics, clearances and unrouted nets. Record actual DRC coverage and unresolved findings. See [engineering-review.md](references/engineering-review.md); cached violations are not a fresh full DRC.
 
+For routed-copper SI/PI or analog review, use the `si_pi__` tools on the explicit
+`.PcbDoc`. Read [copper SI/PI workflow](references/copper-si-pi.md) for topology
+evidence, report cross-probing, preview-bound rule application and constrained
+routing. Missing physical coverage or qualified current/stackup data remains
+unresolved; applying rules does not certify the existing board.
+
 ## Deliver useful evidence
 
 Provide editable files plus concise status: completed blocks, exact part/library sources, assumptions, verification results, remaining issues and relevant physical checks. Distinguish a complete schematic, populated PCB, routed PCB, checked fabrication output and tested hardware. Use real timings by phase for speed investigations and avoid per-pin tool loops. Do not promise manufacturing readiness without evidence.

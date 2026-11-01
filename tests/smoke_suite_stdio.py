@@ -16,7 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 COUNTS = {'eda': 457, 'legacy': 37, 'libraries': 34, 'cloud': 4,
-          'suite': 3, 'supply': 4, 'route': 4, 'telemetry': 1}
+          'suite': 3, 'supply': 4, 'route': 4, 'telemetry': 1, 'si_pi': 4}
 
 
 async def run(root: Path, *, toolset='minimal'):
@@ -49,7 +49,7 @@ async def run(root: Path, *, toolset='minimal'):
                 init = await client.initialize()
                 assert init.serverInfo.name == 'mcp altium suite'
                 listed = (await client.list_tools()).tools
-                assert len(listed) == (3 if toolset == 'minimal' else 547)
+                assert len(listed) == (3 if toolset == 'minimal' else 551)
                 status = (await client.call_tool('suite_status')).structuredContent
                 if toolset == 'minimal':
                     assert not any(item.get('running') for item in status['backends'].values())
@@ -78,7 +78,7 @@ async def run(root: Path, *, toolset='minimal'):
                         assert not item['original_name'].startswith('_suite_')
                     catalogs[backend] = len(gateway_tools)
                     schemas[backend] = {item['original_name']: item['inputSchema'] for item in gateway_tools}
-                assert len(all_names) == 544 and catalogs == COUNTS
+                assert len(all_names) == 548 and catalogs == COUNTS
                 if toolset == 'full':
                     assert {tool.name for tool in listed} == all_names | {'suite_catalog', 'suite_invoke', 'suite_status'}
                 for backend, contract in (('legacy', 'legacy-tools.json'), ('libraries', 'libraries-v0.3.0.json')):
@@ -103,6 +103,35 @@ async def run(root: Path, *, toolset='minimal'):
                     'data': {'pins': [{'component': 'R1', 'pin': '1', 'net': 'VCC'}], 'count': 1}, 'complete': True})
                 assert snapshot['count'] == 1
                 await invoke('cloud__cloud_library_providers')
+                copper = {'schema': 1, 'units': 'mm', 'board_path': str(scratch / 'synthetic.PcbDoc'),
+                    'source': 'file', 'complete': True, 'missing': [], 'coverage': {},
+                    'layers': [{'name': 'Top', 'kind': 'signal', 'order': 0}],
+                    'tracks': [{'id': 'sw', 'net_name': 'SW', 'layer': 'Top',
+                        'start': [0, 0], 'end': [10, 0], 'width_mm': .2},
+                        {'id': 'adc', 'net_name': 'ADC', 'layer': 'Top',
+                        'start': [0, .3], 'end': [10, .3], 'width_mm': .1}],
+                    'arcs': [], 'vias': [], 'pads': [], 'regions': [], 'keepouts': [],
+                    'net_ties': [], 'components': [], 'nets': ['SW', 'ADC']}
+                roles = {'net_roles': {'SW': 'switch', 'ADC': 'sensitive_analog'}}
+                classified = await invoke('si_pi__classify_and_partition', {'snapshot': copper, 'topology': roles})
+                assert classified['classification']['net_classes']['ADC'] == ['SENSITIVE_ANALOG']
+                audited = await invoke('si_pi__audit_copper', {'snapshot': copper, 'topology': roles})
+                assert any(v['check'] == 'parallel_coupling' and v['net_name'] == 'ADC'
+                           for v in audited['violations'])
+                assert audited['board_modified'] is False and not audited['coverage_complete']
+                # A compact review handle must reach the routing adapter without
+                # carrying the physical snapshot through another tool response.
+                control = dict(copper, nets=['CTRL'], tracks=[dict(copper['tracks'][0], net_name='CTRL')])
+                source_dsn = scratch / 'reviewed.dsn'
+                source_dsn.write_text('(pcb board (resolution mil 1000) (network (net CTRL)))')
+                reviewed = await invoke('si_pi__synthesize_and_apply_rules', {
+                    'snapshot': control, 'topology': {'net_roles': {'CTRL': 'control'}}, 'dsn_path': str(source_dsn)})
+                assert set(reviewed['routing_context']) == {'snapshot_id', 'preview_id'}
+                source_dsn.write_text(source_dsn.read_text() + '\n')
+                refused = await client.call_tool('suite_invoke', {'name': 'route__route_dsn',
+                    'arguments': {'input_path': str(source_dsn), 'constraints_context': reviewed['routing_context']}})
+                assert refused.isError and any('DSN bytes changed' in item.text
+                    for item in refused.content if item.type == 'text'), refused
                 sch, pcb = str(scratch / 'synthetic.SchLib'), str(scratch / 'synthetic.PcbLib')
                 await invoke('libraries__write_schlib', {'filepath': sch, 'symbols': [{'name': 'ScratchSymbol',
                     'pins': [{'designator': '1', 'name': 'IN', 'x': 0, 'y': 0, 'length': 20, 'orientation': 'right'}]}]})
@@ -122,8 +151,10 @@ async def run(root: Path, *, toolset='minimal'):
                 assert not (scratch / 'runtime' / 'editor-binding.json').exists()
                 output = {'server': init.serverInfo.name, 'advertised_tools': len(listed),
                     'initialize_list_status_ms': initialization_ms, 'backend_tool_counts': catalogs,
-                    'all_544_input_schemas_valid': True, 'legacy_and_library_contracts_preserved': True,
+                    'all_548_input_schemas_valid': True, 'legacy_and_library_contracts_preserved': True,
                     'eda_direct_schemas_preserved': True, 'retired_processes_required': False,
+                    'si_pi_real_geometry_dispatch': True,
+                    'si_pi_routing_handle_hash_guard': True,
                     'synthetic_schlib_write_read': True, 'synthetic_pcblib_write_edit_read': True,
                     'library_missing_file_error_preserved': True, 'native_editor_commands_executed': 0}
                 print(json.dumps(output, indent=2))

@@ -39,7 +39,26 @@ actual routing constraints in the DSN; arbitrary advanced-rule passthrough is
 not implemented. The receipt retains checksums and elapsed time. It explicitly
 reports `drc_verified: false` and `altium_imported: false`.
 
+The 0.5.0 candidate adds optional `constraints_context` with the captured copper
+snapshot, synthesized intent, and explicit layer/via mappings. The shared
+constraint writer validates net bindings and emits supported per-class widths,
+layer widths and pairwise clearance rules into the isolated DSN. Critical
+sensitive/switching copper is protected only after geometry and complete
+connectivity have been verified; a caller's claim of connectivity is insufficient.
+Unsupported routing constraints require a qualified provider capability or
+cause a refusal. A reconstructed SES is then checked by the same 2D copper
+auditor before acceptance. See [copper SI/PI workflow](COPPER_SI_PI.md) for model
+qualification and coverage limits. Without `constraints_context`, the original
+plain DSN-to-SES workflow remains available and does not claim a copper audit.
+
 ## Altium compatibility boundary
+
+To use a reviewed SI/PI preview without resending copper geometry, pass its
+`routing_context` object as `route__route_dsn.constraints_context` and route its
+unchanged `routing_input_path`. The gateway resolves the two checksum-addressed
+IDs privately and checks the isolated source DSN hash before invoking a router.
+Partial evidence, mismatched snapshot/preview IDs and changed DSN bytes are
+refused. Supplying a full explicit context remains available for standalone use.
 
 [Altium's Specctra documentation](https://www.altium.com/documentation/altium-designer/design-tools-interfacing/specctra-router)
 describes DSN export and the export-options dialog. The

@@ -13,7 +13,12 @@ from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from suite_stdio import BackendSpec, Suite, load_specs
+from suite_stdio import BackendSpec, Suite, load_specs, META_TOOLS
+
+
+def test_public_catalog_accepts_copper_namespace():
+    schema = next(tool.inputSchema for tool in META_TOOLS if tool.name == 'suite_catalog')
+    jsonschema.validate({'backend': 'si_pi', 'with_schema': True}, schema)
 
 
 def fixture_spec(tmp_path, name="eda", **extra):

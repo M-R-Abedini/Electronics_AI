@@ -30,6 +30,7 @@ OFFLINE_TOOLS = {
     'design_job_result', 'design_load_fab_profile', 'design_synthesize_rules',
     'design_learn_from_layout', 'design_connect_bus',
     'design_connectivity_snapshot', 'design_diff_connectivity',
+    'classify_and_partition', 'audit_copper', 'focus_violation',
 }
 
 

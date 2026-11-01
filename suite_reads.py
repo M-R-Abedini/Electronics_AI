@@ -131,3 +131,50 @@ def analyze(envelope, check):
                     groups=[dict(comment=k[0], footprint=k[1], quantity=len(v), designators=sorted(v))
                             for k, v in sorted(groups.items())])
     raise ValueError('Unsupported analysis: ' + str(check))
+
+
+async def capture_copper_snapshot(board_path, native_reader=None, prefer_live=True,
+                                  *, open_in_memory=None):
+    """Capture fresh copper, with no hidden file fallback for a loaded board.
+
+    ``native_reader`` is an async (command, params) bridge. A failed live read
+    may fall back to disk only after an independent probe establishes
+    ``open_in_memory is False``. ``prefer_live=False`` explicitly requests the
+    saved-file view; it still refuses a board known to be open. Modified=False
+    is never proof of disk/editor equality.
+    """
+    from eda_agent.design.copper_snapshot import empty_snapshot, validate_snapshot
+    target = str(board_path)
+    errors = []
+    if prefer_live and native_reader is not None:
+        try:
+            payload = await native_reader('pcb.get_copper_snapshot', {'board_path': target})
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if isinstance(payload, dict) and isinstance(payload.get('result'), dict):
+                payload = payload['result']
+            if isinstance(payload, dict) and isinstance(payload.get('data'), dict):
+                payload = payload['data']
+            validate_snapshot(payload, expected_board_path=target or None)
+            if payload.get('source') != 'live':
+                raise ValueError('Native reader did not return live copper evidence')
+            payload = dict(payload)
+            payload['provenance'] = dict(payload.get('provenance', {}), live=True,
+                                         consistency='single_native_handler', captured_at=time.time())
+            return payload
+        except Exception as exc:
+            errors.append('live snapshot unavailable: ' + str(exc))
+    if (prefer_live and open_in_memory is not False) or open_in_memory is True:
+        errors.append('loaded-board state uncertain; saved-file fallback refused')
+        return empty_snapshot(target, missing=errors)
+    if not target:
+        return empty_snapshot(target, missing=errors + ['board_path required for saved-file read'])
+    try:
+        from suite_pcb_primitives import read_board_copper
+        payload = read_board_copper(target)
+        validate_snapshot(payload, expected_board_path=target)
+        if errors:
+            payload['provenance']['live_read_errors'] = errors
+        return payload
+    except Exception as exc:
+        return empty_snapshot(target, missing=errors + ['saved-file snapshot unavailable: ' + str(exc)])

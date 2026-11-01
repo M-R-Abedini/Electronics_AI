@@ -14,6 +14,33 @@ from suite_stdio import BackendSpec, Suite, result
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_copper_internal_reads_do_not_checkpoint_or_bypass_explicit_write_restrictions(tmp_path):
+    async def check():
+        suite = Suite([BackendSpec('eda', 'never-start.exe', disabled_tools=['pcb_create_design_rule'])])
+        calls, checkpoints = [], []
+        async def request(method, **kwargs):
+            calls.append(kwargs['name'])
+            return result({'success': True})
+        async def before(*args):
+            checkpoints.append(args)
+            return {'checkpoint_id': 'test', 'warnings': []}
+        from types import SimpleNamespace
+        suite.workers['eda'].request = request
+        suite.safety = SimpleNamespace(before=before)
+        token = suite._call_context.set({'original': 'synthesize_and_apply_rules'})
+        try:
+            await suite.compatibility_dispatch('_suite_copper_snapshot', {'board_path': 'fixture'})
+            await suite.compatibility_dispatch('_suite_copper_focus', {})
+            assert calls == ['_suite_copper_snapshot', '_suite_copper_focus'] and not checkpoints
+            with pytest.raises(ValueError, match='pcb_create_design_rule'):
+                await suite.compatibility_dispatch('_suite_copper_apply_rules', {})
+            assert len(calls) == 2 and not checkpoints
+        finally:
+            suite._call_context.reset(token)
+            await suite.close()
+    asyncio.run(check())
+
+
 def native_specs(tmp_path, **libraries):
     config = tmp_path / 'allowed.json'
     config.write_text(json.dumps({'allowed_paths': [str(tmp_path)]}), encoding='utf-8')

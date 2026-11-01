@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "mcp-altium-suite",
-  "version": "0.4.0",
-  "description": "Local Altium circuit design, library inspection and cloud sourcing with a unified MCP and engineering skills.",
+  "version": "0.5.0",
+  "description": "Local Altium circuit design, copper-aware SI/PI review, native library inspection and sourcing with a unified MCP and engineering skills.",
   "author": {
     "name": "M-R-Abedini",
     "url": "https://github.com/M-R-Abedini"
@@ -24,7 +24,7 @@
       "interface": {
         "displayName": "MCP Altium Suite",
         "shortDescription": "Design and inspect circuits in Altium",
-        "longDescription": "One local connection for Altium schematics, PCBs, library files and sourced cloud models. Includes circuit-design and guided setup skills. Windows and separately installed Altium Designer are required.",
+        "longDescription": "One local connection for Altium schematics, PCB copper review, SI/PI rule previews, library files and sourced cloud models. Includes circuit-design and guided setup skills. Windows and separately installed Altium Designer are required.",
         "developerName": "M-R-Abedini",
         "category": "Productivity",
         "capabilities": [
@@ -34,7 +34,8 @@
         "websiteURL": "https://github.com/M-R-Abedini/Altium-MCP-Suite",
         "defaultPrompt": [
           "Set up MCP Altium Suite on this Windows computer.",
-          "Use the circuit-design skill to review my Altium project's libraries and connectivity."
+          "Use the circuit-design skill to review my Altium project's libraries and connectivity.",
+          "Audit my Altium PCB copper and preview SI/PI design rules."
         ]
       }
     }
