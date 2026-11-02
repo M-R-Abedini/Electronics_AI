@@ -50,6 +50,12 @@ Compare fresh compiled net-to-pin data with intended membership: missing pins, s
 
 For requested PCB work establish fabrication capabilities, stackup and interface constraints before routing. Verify schematic-to-PCB mapping/connectivity, placement, returns, decoupling access, mechanics, clearances and unrouted nets. Record actual DRC coverage and unresolved findings. See [engineering-review.md](references/engineering-review.md); cached violations are not a fresh full DRC.
 
+For PCB floorplanning, placement refinement or a placement ECO, use the bundled
+[altium-pcb-layout skill](../altium-pcb-layout/SKILL.md). Select applicable block
+profiles and project constraints from functional intent and actual pad geometry;
+compare alternatives against the baseline and apply a stored, validated plan.
+Example ICs and previous board coordinates are not reusable universal rules.
+
 For routed-copper SI/PI or analog review, use the `si_pi__` tools on the explicit
 `.PcbDoc`. Read [copper SI/PI workflow](references/copper-si-pi.md) for topology
 evidence, report cross-probing, preview-bound rule application and constrained

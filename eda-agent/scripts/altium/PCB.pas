@@ -431,22 +431,16 @@ End;
 { PCB_GetDesignRules - Get all design rules                                   }
 {..............................................................................}
 
-Function PCB_GetDesignRules(Params : String; RequestId : String) : String;
+{ Shared raw data builder. Snapshot callers pass their already-bound board;
+  they never parse a multi-MiB response or resolve another active document. }
+Function PCB_DesignRulesData(Board : IPCB_Board) : String;
 Var
-    Board : IPCB_Board;
     Iterator : IPCB_BoardIterator;
     Rule : IPCB_Rule;
     JsonItems, RuleTypeStr : String;
     First : Boolean;
     Count : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    If Board = Nil Then
-    Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
-        Exit;
-    End;
-
     JsonItems := '';
     First := True;
     Count := 0;
@@ -482,8 +476,20 @@ Begin
     End;
     Board.BoardIterator_Destroy(Iterator);
 
-    Result := BuildSuccessResponse(RequestId,
-        '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}');
+    Result := '{"rules":[' + JsonItems + '],"count":' + IntToStr(Count) + '}';
+End;
+
+Function PCB_GetDesignRules(Params : String; RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+Begin
+    Board := GetPCBBoardAnywhere(0);
+    If Board = Nil Then
+    Begin
+        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Exit;
+    End;
+    Result := BuildSuccessResponse(RequestId, PCB_DesignRulesData(Board));
 End;
 
 {..............................................................................}
@@ -13251,6 +13257,97 @@ Begin
     Finally Names.Free; PadIds.Free; NetItems.Free; End;
 End;
 
+{ Explicitly supported constraint values. Typed iterator-result locals are
+  required by DelphiScript; do not cast a base IPCB_Rule to a subtype. Other
+  rule kinds remain unknown even when their metadata is readable. }
+Function Copper_RuleValues(Board : IPCB_Board) : String;
+Var
+    Iter : IPCB_BoardIterator;
+    ClearRule : IPCB_ClearanceConstraint;
+    WidthRule : IPCB_MaxMinWidthConstraint;
+    HoleRule : IPCB_MaxMinHoleSizeConstraint;
+    DiffRule : IPCB_DifferentialPairsRoutingRule;
+    MatchRule : IPCB_MatchedNetLengthsConstraint;
+    Items, PerLayer : TStringList;
+    Item : String;
+    L : TLayer;
+    Failed : Boolean;
+Begin
+    Items := TStringList.Create; PerLayer := TStringList.Create;
+    Failed := False;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eRuleObject));
+        Iter.AddFilter_Method(eProcessAll);
+        Try
+            ClearRule := Iter.FirstPCBObject;
+            While ClearRule <> Nil Do Begin
+                If (ClearRule.RuleKind = eRule_Clearance) Or (ClearRule.RuleKind = 24)
+                    Or (ClearRule.RuleKind = 52) Then
+                    Copper_Push(Items, '{' + JsonStr('name', ClearRule.Name)
+                        + ',' + JsonInt('rule_kind', ClearRule.RuleKind)
+                        + ',' + JsonInt('gap_coord', ClearRule.Gap) + '}');
+                ClearRule := Iter.NextPCBObject;
+            End;
+            WidthRule := Iter.FirstPCBObject;
+            While WidthRule <> Nil Do Begin
+                If WidthRule.RuleKind = eRule_MaxMinWidth Then Begin
+                    While PerLayer.Count > 0 Do PerLayer.Delete(PerLayer.Count - 1);
+                    For L := MinLayer To MaxLayer Do
+                        Copper_Push(PerLayer, '{' + JsonInt('layer_id', L)
+                            + ',' + JsonInt('min_coord', WidthRule.MinWidth(L))
+                            + ',' + JsonInt('max_coord', WidthRule.MaxWidth(L))
+                            + ',' + JsonInt('preferred_coord', WidthRule.FavoredWidth(L)) + '}');
+                    Copper_Push(Items, '{' + JsonStr('name', WidthRule.Name)
+                        + ',' + JsonInt('rule_kind', WidthRule.RuleKind)
+                        + ',"layers":' + Copper_Array(PerLayer) + '}');
+                End;
+                WidthRule := Iter.NextPCBObject;
+            End;
+            HoleRule := Iter.FirstPCBObject;
+            While HoleRule <> Nil Do Begin
+                If HoleRule.RuleKind = eRule_MaxMinHoleSize Then
+                    Copper_Push(Items, '{' + JsonStr('name', HoleRule.Name)
+                        + ',' + JsonInt('rule_kind', HoleRule.RuleKind)
+                        + ',' + JsonInt('min_coord', HoleRule.MinLimit)
+                        + ',' + JsonInt('max_coord', HoleRule.MaxLimit) + '}');
+                HoleRule := Iter.NextPCBObject;
+            End;
+            DiffRule := Iter.FirstPCBObject;
+            While DiffRule <> Nil Do Begin
+                If DiffRule.RuleKind = eRule_DifferentialPairsRouting Then Begin
+                    While PerLayer.Count > 0 Do PerLayer.Delete(PerLayer.Count - 1);
+                    For L := MinLayer To MaxLayer Do
+                        Copper_Push(PerLayer, '{' + JsonInt('layer_id', L)
+                            + ',' + JsonInt('min_width_coord', DiffRule.MinWidth(L))
+                            + ',' + JsonInt('max_width_coord', DiffRule.MaxWidth(L))
+                            + ',' + JsonInt('preferred_width_coord', DiffRule.PreferedWidth(L))
+                            + ',' + JsonInt('min_gap_coord', DiffRule.MinGap(L))
+                            + ',' + JsonInt('max_gap_coord', DiffRule.MaxGap(L))
+                            + ',' + JsonInt('preferred_gap_coord', DiffRule.PreferedGap(L)) + '}');
+                    Copper_Push(Items, '{' + JsonStr('name', DiffRule.Name)
+                        + ',' + JsonInt('rule_kind', DiffRule.RuleKind)
+                        + ',' + JsonInt('max_uncoupled_coord', DiffRule.MaxUncoupledLength)
+                        + ',"layers":' + Copper_Array(PerLayer) + '}');
+                End;
+                DiffRule := Iter.NextPCBObject;
+            End;
+            MatchRule := Iter.FirstPCBObject;
+            While MatchRule <> Nil Do Begin
+                If MatchRule.RuleKind = eRule_MatchedLengths Then
+                    Copper_Push(Items, '{' + JsonStr('name', MatchRule.Name)
+                        + ',' + JsonInt('rule_kind', MatchRule.RuleKind)
+                        + ',' + JsonInt('tolerance_coord', MatchRule.Tolerance) + '}');
+                MatchRule := Iter.NextPCBObject;
+            End;
+        Except Failed := True; End;
+        Item := '{"units":"native_coord","coord_mm":0.00000254,"complete":false'
+            + ',' + JsonBool('supported_reads_complete', Not Failed)
+            + ',"unsupported_rule_properties":"unknown","items":' + Copper_Array(Items) + '}';
+    Finally Board.BoardIterator_Destroy(Iter); Items.Free; PerLayer.Free; End;
+    Result := Item;
+End;
+
 { One native handler captures the loaded, unsaved board in absolute mm.
   Unsupported SDK members are declared as missing evidence. In particular a
   polygon outline and a bounding rectangle never stand in for poured copper. }
@@ -13258,6 +13355,7 @@ Function PCB_GetCopperSnapshot(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
     PrevView : IServerDocumentView;
+    SnapshotDoc : IServerDocument;
     Iter : IPCB_BoardIterator;
     Obj : IPCB_Primitive;
     Child : IPCB_Primitive;
@@ -13274,6 +13372,7 @@ Var
     Net : IPCB_Net;
     Stack : IPCB_LayerStack_V7;
     LayerObj : IPCB_LayerObject_V7;
+    CompBounds : TCoordRect;
     Layers, Tracks, Arcs, Vias, Pads, Regions, Keepouts, Holes, Cutouts : TStringList;
     Components, Nets, Missing, NetTies, Seen, PolygonChildren : TStringList;
     MissingCounts, ProfileKeys, ProfileCalls, ProfileMillis, Diagnostics : TStringList;
@@ -13281,6 +13380,7 @@ Var
     Count, I, Order, LayerId, HoleCount, ExcludedNonCopper, StackVisited, CopperCount, DielectricCount : Integer;
     Started, LastProgress, ObjectTick, AccessTick, ObjectType, MissingTotal : Integer;
     Stage, ProfileJson, MissingCountsJson, ProofPath : String;
+    SideStr, BoundsJson, RuleJson, RuleValuesJson, DirtyJson : String;
     Er, Thickness, PadRadius : Double;
     IsKeepout, Curved, SkipPrimitive : Boolean;
 Begin
@@ -13311,6 +13411,18 @@ Begin
     Copper_Progress(RequestId, 'layer_stack', Started, 0, 0, LastProgress);
     Try
         Identity := IntToStr(Board.I_ObjectAddress);
+        DirtyJson := 'null';
+        Try
+            SnapshotDoc := Client.GetDocumentByPath(Board.FileName);
+            If SnapshotDoc <> Nil Then DirtyJson := BoolToJsonStr(SnapshotDoc.Modified);
+        Except End;
+        RuleJson := 'null'; RuleValuesJson := 'null';
+        Try
+            RuleJson := PCB_DesignRulesData(Board);
+            RuleValuesJson := Copper_RuleValues(Board);
+        Except
+            Copper_Missing(Missing, MissingCounts, '"native rule state unavailable"', MissingTotal);
+        End;
         Stack := Nil;
         Try Stack := Board.LayerStack_V7; Except End;
         If Stack = Nil Then Copper_Missing(Missing, MissingCounts, '"layer stack unavailable"', MissingTotal)
@@ -13611,7 +13723,19 @@ Begin
                                 Or (Comp.ComponentKind = eComponentKind_NetTie_NoBOM) Then
                             Begin Kind := 'net_tie'; Copper_Push(NetTies, Copper_NetTie(Comp)); End;
                             If Kind = 'unknown' Then Copper_Missing(Missing, MissingCounts, '"unsupported component kind"', MissingTotal);
+                            SideStr := 'unknown';
+                            If Comp.Layer = eTopLayer Then SideStr := 'top';
+                            If Comp.Layer = eBottomLayer Then SideStr := 'bottom';
+                            BoundsJson := 'null';
+                            Try
+                                CompBounds := Comp.BoundingRectangleNoNameComment;
+                                BoundsJson := '[' + FloatToJsonStr(CoordToMM(CompBounds.Left))
+                                    + ',' + FloatToJsonStr(CoordToMM(CompBounds.Bottom))
+                                    + ',' + FloatToJsonStr(CoordToMM(CompBounds.Right))
+                                    + ',' + FloatToJsonStr(CoordToMM(CompBounds.Top)) + ']';
+                            Except End;
                             Copper_Push(Components, '{' + JsonStr('id', IntToStr(Comp.I_ObjectAddress))
+                                + ',' + JsonStr('component_id', IntToStr(Comp.I_ObjectAddress))
                                 + ',' + JsonStr('designator', Comp.Name.Text)
                                 + ',' + JsonStr('comment', Comp.Comment.Text)
                                 + ',' + JsonStr('footprint', Comp.Pattern)
@@ -13621,6 +13745,12 @@ Begin
                                 + ',' + JsonFloat('x_mm', CoordToMM(Comp.X))
                                 + ',' + JsonFloat('y_mm', CoordToMM(Comp.Y))
                                 + ',' + JsonFloat('rotation_deg', Comp.Rotation)
+                                + ',' + JsonBool('locked', Not Comp.Moveable)
+                                + ',' + JsonStr('side', SideStr)
+                                + ',' + JsonStr('layer', GetLayerString(Comp.Layer))
+                                + ',"bbox_mm":' + BoundsJson
+                                + ',"bbox_source":"component.BoundingRectangleNoNameComment"'
+                                + ',"courtyard_coverage":"unknown"'
                                 + ',"parameters":{},"parameters_source":"physical PCB basic metadata"}');
                         End
                     Else If Obj.ObjectId = eNetObject Then Begin
@@ -13675,6 +13805,10 @@ Begin
         Copper_Progress(RequestId, 'serializing', Started, Count, MissingTotal, LastProgress);
         Item := '{"schema":1,"units":"mm","source":"live",' + JsonBool('complete', Missing.Count = 0) + ','
             + JsonStr('board_path', Board.FileName) + ',' + JsonStr('board_identity', Identity)
+            + ',"document_modified":' + DirtyJson
+            + ',"document_modified_source":"observed IServerDocument.Modified flag"'
+            + ',"native_rules":' + RuleJson + ',"native_rule_values":' + RuleValuesJson
+            + ',"native_rule_coverage":{"metadata":"supported","all_constraint_properties":"partial"}'
             + ',"provenance":{"reader":"pcb.get_copper_snapshot","live":true,"consistency":"single_native_handler"}'
             + ',"coverage":{' + JsonStr('tracks', CoverageState) + ',' + JsonStr('arcs', CoverageState)
             + ',' + JsonStr('vias', CoverageState) + ',' + JsonStr('pads', CoverageState)
@@ -14109,6 +14243,313 @@ Begin
     Owned.Free; ActualOwned.Free; ClassNames.Free; RuleNames.Free; PairNames.Free; NetNames.Free; OldRules.Free;
 End;
 
+{ Placement batches use captured object identity, not refdes-only lookup.
+  Reused/ambiguous designators are refused even if one address happens to match. }
+Function Layout_FindComponent(Board : IPCB_Board; ComponentId, Designator : String) : IPCB_Component;
+Var
+    Iter : IPCB_BoardIterator;
+    Comp, Found : IPCB_Component;
+    Matches, Scanned : Integer;
+Begin
+    Found := Nil; Matches := 0; Scanned := 0;
+    Iter := Board.BoardIterator_Create;
+    Try
+        Iter.AddFilter_ObjectSet(MkSet(eComponentObject));
+        Iter.AddFilter_Method(eProcessAll);
+        Comp := Iter.FirstPCBObject;
+        While Comp <> Nil Do Begin
+            Inc(Scanned);
+            If Scanned > 100000 Then Copper_Fail('Component identity scan limit exceeded');
+            If UpperCase(Comp.Name.Text) = UpperCase(Designator) Then Begin
+                Inc(Matches);
+                If (Comp.Name.Text = Designator)
+                    And (IntToStr(Comp.I_ObjectAddress) = ComponentId) Then Found := Comp;
+            End;
+            Comp := Iter.NextPCBObject;
+        End;
+    Finally Board.BoardIterator_Destroy(Iter); End;
+    If Matches <> 1 Then Found := Nil;
+    Result := Found;
+End;
+
+Function Layout_ComponentSide(Comp : IPCB_Component) : String;
+Begin
+    Result := 'unknown';
+    If Comp.Layer = eTopLayer Then Result := 'top';
+    If Comp.Layer = eBottomLayer Then Result := 'bottom';
+End;
+
+{ The wrapper emits short fixed-point decimals. This independent native guard
+  rejects NaN/Inf/exponents/overflow BEFORE any RTL conversion or mutation. }
+Function Layout_Number(Text : String; Limit : Double) : Double;
+Var
+    Value : Double;
+Begin
+    If (Length(Text) < 1) Or (Length(Text) > 32) Or (Not IsFloatStr(Text))
+        Or (Pos('E', UpperCase(Text)) > 0) Then Copper_Fail('Invalid bounded placement number');
+    Value := StrToFloatDef(Text, Limit + 1);
+    If (Value <> Value) Or (Abs(Value) > Limit) Then Copper_Fail('Placement number exceeds native range');
+    Result := Value;
+End;
+
+Function Layout_Readback(Board : IPCB_Board; Item : String) : String;
+Var
+    Comp : IPCB_Component;
+    ComponentId, Designator, SideStr : String;
+    X, Y : TCoord;
+    Rotation, Delta : Double;
+    Verified : Boolean;
+Begin
+    ComponentId := ExtractJsonValue(Item, 'component_id');
+    Designator := ExtractJsonValue(Item, 'designator');
+    Comp := Layout_FindComponent(Board, ComponentId, Designator);
+    If Comp = Nil Then Begin
+        Result := '{' + JsonStr('component_id', ComponentId) + ',' + JsonStr('designator', Designator)
+            + ',"verified":false,"reason":"captured component identity missing or ambiguous"}';
+        Exit;
+    End;
+    X := MMToCoord(Layout_Number(ExtractJsonValue(Item, 'x_mm'), 5454.60866084));
+    Y := MMToCoord(Layout_Number(ExtractJsonValue(Item, 'y_mm'), 5454.60866084));
+    Rotation := Layout_Number(ExtractJsonValue(Item, 'rotation_deg'), 360);
+    SideStr := Layout_ComponentSide(Comp);
+    Delta := Abs(Comp.Rotation - Rotation);
+    If Delta > 180 Then Delta := Abs(Delta - 360);
+    Verified := (Abs(Comp.X / 1.0 - X) <= 1) And (Abs(Comp.Y / 1.0 - Y) <= 1)
+        And (Delta <= 0.000001) And (SideStr = ExtractJsonValue(Item, 'side'));
+    Result := '{' + JsonStr('component_id', ComponentId) + ',' + JsonStr('designator', Designator)
+        + ',' + JsonFloat('x_mm', CoordToMM(Comp.X)) + ',' + JsonFloat('y_mm', CoordToMM(Comp.Y))
+        + ',' + JsonFloat('rotation_deg', Comp.Rotation) + ',' + JsonStr('side', SideStr)
+        + ',' + JsonBool('verified', Verified) + ',"coordinate_tolerance_native":1'
+        + ',"rotation_tolerance_deg":0.000001}';
+End;
+
+{ A plan-bound operation never automatically saves, flips, routes or retries.
+  A separate immutable started marker survives a missing/failed receipt write.
+  Marker removal, stale-ownership reset and transactional rollback are absent. }
+Function PCB_ApplyPlacementPlan(Params, RequestId : String) : String;
+Var
+    Board : IPCB_Board;
+    Comp : IPCB_Component;
+    Path, Identity, Token, OperationId, Item, Id, Name, SideStr, Why : String;
+    Expected, Fresh, Reply, SnapshotPrefix, ProofPath, Manifest, Stored, Claim, Receipt : String;
+    ManifestPath, ClaimPath, ReceiptPath, Status, Failure, Entry, Previous : String;
+    Moves, Ids, Names, AppliedIds, FailedIds, UnverifiedIds, PendingIds, Readbacks : TStringList;
+    Count, I, Attempted : Integer;
+    X, Y : TCoord;
+    Xmm, Ymm, Rotation : Double;
+    Stop, Verified, Partial, Reused, Claimed : Boolean;
+Begin
+    Result := BuildErrorResponse(RequestId, 'LAYOUT_PREFLIGHT', 'Placement preflight did not complete');
+    Copper_LastFailure := 'Placement preflight failed';
+    Claimed := False;
+    Moves := TStringList.Create; Ids := TStringList.Create; Names := TStringList.Create;
+    AppliedIds := TStringList.Create; FailedIds := TStringList.Create;
+    UnverifiedIds := TStringList.Create; PendingIds := TStringList.Create; Readbacks := TStringList.Create;
+    Try
+      Try
+        Path := ExtractJsonValue(Params, 'board_path');
+        Identity := ExtractJsonValue(Params, 'board_identity');
+        Token := ExtractJsonValue(Params, 'expected_native_snapshot_token');
+        OperationId := ExtractJsonValue(Params, 'operation_id');
+        Count := StrToIntDef(ExtractJsonValue(Params, 'move_count'), -1);
+        If (Not IsValidRequestId(RequestId)) Or (Not IsValidRequestId(OperationId))
+            Or (Not IsValidRequestId(Token)) Or (Count < 1) Or (Count > 500)
+            Or (Length(Params) > 1024 * 1024) Or (Path = '') Or (Identity = '') Then
+            Copper_Fail('Invalid bounded placement request');
+        Board := Copper_LoadedBoard(Path);
+        If Board = Nil Then Copper_Fail('The exact target PCB must already be loaded');
+        If IntToStr(Board.I_ObjectAddress) <> Identity Then Copper_Fail('Captured board identity changed');
+        Manifest := '{' + JsonStr('board_path', UpperCase(ExpandFileName(Board.FileName)))
+            + ',' + JsonStr('board_identity', Identity) + ',' + JsonInt('move_count', Count);
+        For I := 0 To Count - 1 Do Begin
+            Item := ExtractJsonValue(Params, 'move_' + IntToStr(I));
+            If (Item = '') Or (Length(Item) > 4096) Then Copper_Fail('Missing or oversized placement move');
+            Id := ExtractJsonValue(Item, 'component_id'); Name := ExtractJsonValue(Item, 'designator');
+            SideStr := ExtractJsonValue(Item, 'side');
+            If (Not IsValidRequestId(Id)) Or (Name = '') Or (Length(Name) > 256)
+                Or (Ids.IndexOf(Id) >= 0) Or (Names.IndexOf(UpperCase(Name)) >= 0)
+                Or ((SideStr <> 'top') And (SideStr <> 'bottom')) Then
+                Copper_Fail('Duplicate, ambiguous or invalid placement identity/side');
+            Xmm := Layout_Number(ExtractJsonValue(Item, 'x_mm'), 5454.60866084);
+            Ymm := Layout_Number(ExtractJsonValue(Item, 'y_mm'), 5454.60866084);
+            Rotation := Layout_Number(ExtractJsonValue(Item, 'rotation_deg'), 360);
+            If (Rotation < 0) Or (Rotation >= 360) Then Copper_Fail('Rotation must be normalized into [0,360)');
+            X := MMToCoord(Xmm); Y := MMToCoord(Ymm);
+            { Native-coordinate canonicalization makes equivalent JSON numbers
+              one request; sub-unit changes cannot create a different edit. }
+            Entry := '{' + JsonStr('component_id', Id) + ',' + JsonStr('designator', Name)
+                + ',' + JsonInt('x_coord', X) + ',' + JsonInt('y_coord', Y)
+                + ',' + JsonFloat('rotation_deg', Rotation) + ',' + JsonStr('side', SideStr) + '}';
+            Manifest := Manifest + ',"move_' + IntToStr(I) + '":' + Entry;
+            Ids.Add(Id); Names.Add(UpperCase(Name)); Moves.Add(Item);
+        End;
+        Manifest := Manifest + '}';
+        ManifestPath := WorkspaceDir + 'placement_request_' + OperationId + '.json';
+        ClaimPath := WorkspaceDir + 'placement_started_' + OperationId + '.json';
+        ReceiptPath := WorkspaceDir + 'placement_receipt_' + OperationId + '.json';
+        Reused := FileExists(ClaimPath) Or FileExists(ReceiptPath);
+        If FileExists(ManifestPath) Then Begin
+            Stored := Trim(ReadFileContent(ManifestPath));
+            If Stored <> Manifest Then Begin
+                Result := BuildErrorResponse(RequestId, 'LAYOUT_OPERATION_CONFLICT',
+                    'operation_id is already bound to a different target or placement request'); Exit;
+            End;
+        End Else If Reused Then Begin
+            Result := BuildErrorResponse(RequestId, 'LAYOUT_OPERATION_UNKNOWN',
+                'Started operation has no verifiable request manifest; no moves replayed'); Exit;
+        End;
+        If Reused Then Begin
+            Previous := Trim(ReadFileContent(ReceiptPath));
+            Status := ExtractJsonValue(Previous, 'status');
+            If (Length(Previous) > 2 * 1024 * 1024) Or ((Status <> 'completed') And (Status <> 'partial'))
+                Or (ExtractJsonValue(Previous, 'operation_id') <> OperationId)
+                Or (ExtractJsonValue(Previous, 'board_identity') <> Identity) Then Begin
+                Result := BuildErrorResponse(RequestId, 'LAYOUT_OPERATION_UNKNOWN',
+                    'Operation started without a durable completed receipt; inspect readback, never replay'); Exit;
+            End;
+            Verified := True;
+            For I := 0 To Moves.Count - 1 Do Begin
+                Try Entry := Layout_Readback(Board, Moves[I]);
+                Except Entry := '{' + JsonStr('component_id', Ids[I]) + ',"verified":false,"reason":"readback unavailable"}'; End;
+                Copper_Push(Readbacks, Entry);
+                If ExtractJsonValue(Entry, 'verified') <> 'true' Then Begin
+                    Verified := False; Copper_Push(UnverifiedIds, '"' + EscapeJsonString(Ids[I]) + '"');
+                End;
+            End;
+            If Not Verified Then Status := 'completed_state_changed';
+            Receipt := '{' + JsonBool('success', Verified And (ExtractJsonValue(Previous, 'success') = 'true'))
+                + ',' + JsonStr('status', Status) + ',' + JsonStr('operation_id', OperationId)
+                + ',' + JsonStr('board_identity', Identity) + ',' + JsonStr('board_path', Board.FileName)
+                + ',"receipt_reused":true,"replayed":false,"automatic_retry":false,"readback_current":true'
+                + ',"applied_ids":' + ExtractJsonValue(Previous, 'applied_ids')
+                + ',"failed_ids":' + ExtractJsonValue(Previous, 'failed_ids')
+                + ',"not_attempted_ids":' + ExtractJsonValue(Previous, 'not_attempted_ids')
+                + ',"unverified_ids":' + Copper_Array(UnverifiedIds)
+                + ',"readback":' + Copper_Array(Readbacks)
+                + ',"possible_partial_native_edit":' + ExtractJsonValue(Previous, 'possible_partial_native_edit')
+                + ',"original_receipt":' + Previous + '}';
+            Result := BuildSuccessResponse(RequestId, Receipt); Exit;
+        End;
+        { Validate EVERY component, side and lock before checking freshness or
+          creating an operation marker. No write occurs for an invalid tail. }
+        For I := 0 To Moves.Count - 1 Do Begin
+            Item := Moves[I]; Name := ExtractJsonValue(Item, 'designator');
+            Comp := Layout_FindComponent(Board, Ids[I], Name);
+            If Comp = Nil Then Copper_Fail('Captured component identity missing or designator ambiguous: ' + Name);
+            If Not Comp.Moveable Then Copper_Fail('Locked component cannot be moved: ' + Name);
+            If Layout_ComponentSide(Comp) <> ExtractJsonValue(Item, 'side') Then
+                Copper_Fail('Placement side changed; flips are unsupported: ' + Name);
+        End;
+        Expected := Trim(ReadFileContent(WorkspaceDir + 'copper_snapshot_' + Token + '.json'));
+        If (Expected = '') Or (Length(Expected) > 24 * 1024 * 1024) Then
+            Copper_Fail('Native placement baseline proof unavailable');
+        Board := GetPCBBoardForMutation(Why);
+        If Board = Nil Then Copper_Fail(Why);
+        If (UpperCase(ExpandFileName(Board.FileName)) <> UpperCase(ExpandFileName(Path)))
+            Or (IntToStr(Board.I_ObjectAddress) <> Identity) Then Copper_Fail('Target PCB changed before placement');
+        Reply := PCB_GetCopperSnapshot(JsonObj(JsonStr('board_path', Path)), RequestId);
+        SnapshotPrefix := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION)
+            + ',"id":"' + RequestId + '","success":true,"data":';
+        If Copy(Reply, 1, Length(SnapshotPrefix)) <> SnapshotPrefix Then
+            Copper_Fail('Native placement freshness capture failed');
+        ProofPath := WorkspaceDir + 'copper_snapshot_' + RequestId + '.json';
+        Fresh := Trim(ReadFileContent(ProofPath)); DeleteFile(ProofPath);
+        If (Fresh = '') Or (Fresh <> Expected) Then Copper_Fail('Board/rules/locks changed since the placement baseline');
+        If Not FileExists(ManifestPath) Then WriteFileContent(ManifestPath, Manifest);
+        If Trim(ReadFileContent(ManifestPath)) <> Manifest Then Copper_Fail('Cannot persist placement operation manifest');
+        Claim := '{"status":"started",' + JsonStr('operation_id', OperationId)
+            + ',' + JsonStr('board_identity', Identity) + ',' + JsonStr('baseline_snapshot_token', Token) + '}';
+        If FileExists(ClaimPath) Then Copper_Fail('Placement operation was already started; never replay');
+        WriteFileContent(ClaimPath, Claim);
+        If Trim(ReadFileContent(ClaimPath)) <> Claim Then Copper_Fail('Cannot persist placement started marker');
+        Claimed := True;
+        Stop := False; Attempted := 0; Failure := '';
+        For I := 0 To Moves.Count - 1 Do Begin
+            If Stop Then Copper_Push(PendingIds, '"' + EscapeJsonString(Ids[I]) + '"')
+            Else Begin
+                Item := Moves[I]; Name := ExtractJsonValue(Item, 'designator');
+                Comp := Layout_FindComponent(Board, Ids[I], Name);
+                Try
+                    If Comp = Nil Then Copper_Fail('Component changed after preflight');
+                    If (Not Comp.Moveable) Or (Layout_ComponentSide(Comp) <> ExtractJsonValue(Item, 'side')) Then
+                        Copper_Fail('Lock/side changed after preflight');
+                    X := MMToCoord(Layout_Number(ExtractJsonValue(Item, 'x_mm'), 5454.60866084));
+                    Y := MMToCoord(Layout_Number(ExtractJsonValue(Item, 'y_mm'), 5454.60866084));
+                    Rotation := Layout_Number(ExtractJsonValue(Item, 'rotation_deg'), 360);
+                    Inc(Attempted);
+                    PCBServer.PreProcess;
+                    Try
+                        PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                        Try
+                            Comp.Rotation := Rotation;
+                            Comp.X := X; Comp.Y := Y;
+                        Finally
+                            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                        End;
+                    Finally PCBServer.PostProcess; End;
+                    Entry := Layout_Readback(Board, Item);
+                    Copper_Push(Readbacks, Entry);
+                    If ExtractJsonValue(Entry, 'verified') = 'true' Then
+                        Copper_Push(AppliedIds, '"' + EscapeJsonString(Ids[I]) + '"')
+                    Else Begin
+                        Copper_Push(UnverifiedIds, '"' + EscapeJsonString(Ids[I]) + '"');
+                        Stop := True; Failure := 'Placement readback differs from the reviewed move';
+                    End;
+                Except
+                    Copper_Push(FailedIds, '"' + EscapeJsonString(Ids[I]) + '"');
+                    Copper_Push(UnverifiedIds, '"' + EscapeJsonString(Ids[I]) + '"');
+                    Stop := True; Failure := Copper_LastFailure;
+                End;
+            End;
+        End;
+        If Attempted > 0 Then MarkDocDirtyByPath(Board.FileName);
+        { A final batch-wide readback is authoritative. Earlier per-move
+          readback only decides whether it is safe to attempt the next item. }
+        While AppliedIds.Count > 0 Do AppliedIds.Delete(AppliedIds.Count - 1);
+        While UnverifiedIds.Count > 0 Do UnverifiedIds.Delete(UnverifiedIds.Count - 1);
+        While Readbacks.Count > 0 Do Readbacks.Delete(Readbacks.Count - 1);
+        For I := 0 To Moves.Count - 1 Do Begin
+            Try Entry := Layout_Readback(Board, Moves[I]);
+            Except Entry := '{' + JsonStr('component_id', Ids[I]) + ',"verified":false,"reason":"final readback unavailable"}'; End;
+            Copper_Push(Readbacks, Entry);
+            Verified := ExtractJsonValue(Entry, 'verified') = 'true';
+            Id := '"' + EscapeJsonString(Ids[I]) + '",';
+            If PendingIds.IndexOf(Id) < 0 Then Begin
+                If Not Verified Then Begin
+                    Copper_Push(UnverifiedIds, '"' + EscapeJsonString(Ids[I]) + '"');
+                    Stop := True;
+                End Else If FailedIds.IndexOf(Id) < 0 Then
+                    Copper_Push(AppliedIds, '"' + EscapeJsonString(Ids[I]) + '"');
+            End;
+        End;
+        Partial := Stop; Status := 'completed'; If Partial Then Status := 'partial';
+        Receipt := '{' + JsonBool('success', Not Partial) + ',' + JsonStr('status', Status)
+            + ',' + JsonStr('operation_id', OperationId) + ',' + JsonStr('board_identity', Identity)
+            + ',' + JsonStr('board_path', Board.FileName) + ',' + JsonInt('attempted_count', Attempted)
+            + ',' + JsonStr('baseline_snapshot_token', Token) + ',"units":"mm"'
+            + ',"receipt_reused":false,"replayed":false,"automatic_retry":false,"native_rollback_available":false'
+            + ',"readback_current":true,"saved":false'
+            + ',' + JsonBool('possible_partial_native_edit', Partial)
+            + ',' + JsonStr('failure', Failure) + ',"applied_ids":' + Copper_Array(AppliedIds)
+            + ',"failed_ids":' + Copper_Array(FailedIds) + ',"unverified_ids":' + Copper_Array(UnverifiedIds)
+            + ',"not_attempted_ids":' + Copper_Array(PendingIds) + ',"readback":' + Copper_Array(Readbacks) + '}';
+        WriteFileContent(ReceiptPath, Receipt);
+        Verified := Trim(ReadFileContent(ReceiptPath)) = Receipt;
+        Result := BuildSuccessResponse(RequestId, Copy(Receipt, 1, Length(Receipt) - 1)
+            + ',' + JsonBool('durable_receipt_saved', Verified) + '}');
+      Except
+        If Claimed Then
+            Result := BuildErrorResponseDetailed(RequestId, 'LAYOUT_OUTCOME_UNKNOWN',
+                'Placement operation started; inspect current readback and durable receipt, never replay',
+                '{"possible_partial_native_edit":true,"automatic_retry":false,' + JsonStr('operation_id', OperationId) + '}')
+        Else Result := BuildErrorResponse(RequestId, 'LAYOUT_PREFLIGHT', Copper_LastFailure);
+      End;
+    Finally
+        Moves.Free; Ids.Free; Names.Free; AppliedIds.Free; FailedIds.Free;
+        UnverifiedIds.Free; PendingIds.Free; Readbacks.Free;
+    End;
+End;
+
 Function HandlePCBCommand(Action : String; Params : String; RequestId : String) : String;
 Begin
     Case Action Of
@@ -14168,6 +14609,7 @@ Begin
         'start_polygon_placement': Result := PCB_StartPolygonPlacement(Params, RequestId);
         'create_design_rule':      Result := PCB_CreateDesignRule(Params, RequestId);
         'apply_copper_rules':      Result := PCB_ApplyCopperRules(Params, RequestId);
+        'apply_placement_plan':    Result := PCB_ApplyPlacementPlan(Params, RequestId);
         'delete_design_rule':      Result := PCB_DeleteDesignRule(Params, RequestId);
         'get_component_pads':      Result := PCB_GetComponentPads(Params, RequestId);
         'get_pad_connectivity':    Result := PCB_GetPadConnectivity(Params, RequestId);

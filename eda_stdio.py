@@ -161,6 +161,18 @@ async def _suite_copper_apply_rules(board_path: str, net_classes: list[dict],
     params.update({f'owned_class_{i}': name for i, name in enumerate(owned)})
     return await get_bridge().send_command_async('pcb.apply_copper_rules', params, timeout=120)
 
+@mcp.tool()
+async def _suite_layout_apply_plan(board_path: str, board_identity: str,
+                                    expected_native_snapshot_token: str,
+                                    moves: list[dict], operation_id: str) -> dict:
+    """Private plan-bound placement. No saves, flips, retries or rollback."""
+    from suite_placement_adapter import prepare_layout_native_batch
+    from eda_agent.bridge import get_bridge
+    params = prepare_layout_native_batch(board_path, board_identity,
+        expected_native_snapshot_token, moves, operation_id)
+    return await get_bridge().send_command_async('pcb.apply_placement_plan', params, timeout=180)
+
+
 # Keep private compatibility commands callable only by the gateway's direct
 # adapter while preserving the 457-tool public EDA discovery contract.
 _public_list_tools = mcp.list_tools

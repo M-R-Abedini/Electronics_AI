@@ -421,6 +421,9 @@ class Suite:
         error = jsonschema.exceptions.best_match(validator.iter_errors(arguments))
         if error is not None:
             raise error
+        layout = self.components.get('layout')
+        if layout is not None and backend in {'eda', 'legacy'}:
+            layout.guard_native_effect(backend, original, arguments)
         if backend in self.components:
             component = self.components[backend]
             warnings = []
@@ -443,7 +446,7 @@ class Suite:
                        'backend_metadata': []}
             token = self._call_context.set(context)
             try:
-                if backend in {'libraries', 'legacy', 'si_pi'}:
+                if backend in {'libraries', 'legacy', 'si_pi', 'layout'}:
                     # A client cancellation must not release an in-flight file
                     # mutation or native adapter sequence. Close drains it.
                     task = asyncio.create_task(execute())
@@ -560,6 +563,15 @@ class Suite:
         if name.startswith('_suite_'):
             if 'eda' not in self.workers or not self.workers['eda'].spec.enabled:
                 raise ValueError('The unified EDA backend is disabled')
+            layout = self.components.get('layout')
+            layout_apply = name == '_suite_layout_apply_plan'
+            if layout_apply:
+                if layout is None or not layout.native_apply_authorized(arguments):
+                    raise ValueError('Native placement requires a validated server plan and its checkpoint')
+                if not self.workers['eda'].spec.allows('pcb_batch_move_components'):
+                    raise ValueError('Managed placement requires enabled eda__pcb_batch_move_components')
+            elif layout is not None:
+                layout.guard_native_effect('eda', name, arguments)
             if name == '_suite_copper_apply_rules':
                 required = {'pcb_create_net_class', 'pcb_create_design_rule', 'pcb_delete_design_rule'}
                 if arguments.get('differential_pairs'):
@@ -572,7 +584,7 @@ class Suite:
                 from suite_checkpoints import is_mutation
                 original = context.get('original', name)
                 copper_read = name in {'_suite_copper_snapshot', '_suite_copper_focus'}
-                if self.safety is not None and not copper_read and is_mutation(original, arguments.get('params') or arguments):
+                if self.safety is not None and not copper_read and not layout_apply and is_mutation(original, arguments.get('params') or arguments):
                     checkpoint = await self.safety.before(original, arguments.get('params') or arguments,
                                                           context.get('checkpoint_files'))
                 response = await self.workers['eda'].request('call_tool', name=name, arguments=arguments,
@@ -692,7 +704,7 @@ META_TOOLS = [
     types.Tool(name="suite_catalog", description="Discover all Altium Suite capabilities by query/backend. Request with_schema=true before unfamiliar calls. Does not execute design operations.",
                inputSchema={"type": "object", "properties": {
                    "query": {"type": "string", "default": ""},
-                   "backend": {"type": ["string", "null"], "enum": ["eda", "legacy", "libraries", "cloud", "suite", "supply", "route", "telemetry", "si_pi", None]},
+                   "backend": {"type": ["string", "null"], "enum": ["eda", "legacy", "libraries", "cloud", "suite", "supply", "route", "telemetry", "si_pi", "layout", None]},
                    "with_schema": {"type": "boolean", "default": False},
                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
                    "offset": {"type": "integer", "minimum": 0, "default": 0}}, "additionalProperties": False},

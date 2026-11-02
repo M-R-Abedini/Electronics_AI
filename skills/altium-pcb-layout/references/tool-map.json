@@ -1,0 +1,1075 @@
+{
+  "catalog_sha256": "99191f020ad7a218629619b6393c224a2e8002764c8cb50be198d7d627bf4489",
+  "catalog_total": 544,
+  "native_editor_verified_by_generator": false,
+  "provenance": {
+    "audit_baseline_commit": "3f2effae37fbb12c81e467f86d4da44ca54c4ab6",
+    "checkout_plugin_version": "0.5.1",
+    "declared_native_script_version": "2026.11.01.field-fixes1",
+    "kind": "source_schema_export",
+    "method": "ToolRegistry/FastMCP source schemas, product list_tools and unchanged native/legacy contracts",
+    "native_editor_probed": false
+  },
+  "schema_version": 1,
+  "selected_tool_count": 30,
+  "tools": [
+    {
+      "description": "Decide the single next action for an autonomous design run.\n\nReads the session journal and returns the next 13-stage pipeline step\nserver-side, so a client need not memorize the workflow: loop\n\"call design_next_action -> do what it says -> design_session_log the\nresult\" until ``status`` is ``complete`` or ``blocked``.\n\nReturns a dict with ``status`` (proceed | retry | blocked | complete),\nthe ``stage``, its ``goal``, ``suggested_tools`` (exact tool names),\nthe ``exit_gate`` that marks it done, and, on ``blocked``, the\n``open_question`` to put to the user. Bounded retries: a stage that\nfails repeatedly escalates to ``blocked`` instead of looping forever.",
+      "inputSchema": {
+        "properties": {
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "title": "design_next_actionArguments",
+        "type": "object"
+      },
+      "name": "eda__design_next_action"
+    },
+    {
+      "description": "Read an existing immutable snapshot without accessing Altium or its queue.\n\nsections: counts (default), components, pads, nets. Several requested\nsections are returned together. Data is historical even if captured\nmoments ago; GUI edits may occur without a reliable Modified flag.",
+      "inputSchema": {
+        "properties": {
+          "sections": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sections"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id"
+        ],
+        "title": "design_read_snapshotArguments",
+        "type": "object"
+      },
+      "name": "eda__design_read_snapshot"
+    },
+    {
+      "description": "Append one event to a design-session journal.\n\n``event`` is one of: ``stage_enter`` (needs ``stage``),\n``stage_result`` (``stage`` + ``status`` = ok|blocked|failed),\n``plan_revision`` (``revision``), ``artifact`` (``path``, ``kind``),\n``blocked`` (``question``), ``resolved`` (``text`` = answer),\n``note`` (``text``). Returns the updated derived state.",
+      "inputSchema": {
+        "properties": {
+          "event": {
+            "title": "Event",
+            "type": "string"
+          },
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "question": {
+            "default": "",
+            "title": "Question",
+            "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stage": {
+            "default": "",
+            "title": "Stage",
+            "type": "string"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event"
+        ],
+        "title": "design_session_logArguments",
+        "type": "object"
+      },
+      "name": "eda__design_session_log"
+    },
+    {
+      "description": "Capture components, pad assignments, nets and physical counts in one native handler.\n\nRequires an absolute path to a loaded PcbDoc and the suite's eda_stdio\nwrapper. Returns an immutable snapshot ID and counts; use\ndesign_read_snapshot or design_analyze_snapshot concurrently afterward.\nEvery capture reads Altium anew. A snapshot is historical evidence,\nnever proof of live state, copper connectivity or permission to edit.",
+      "inputSchema": {
+        "properties": {
+          "board_path": {
+            "title": "Board Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "board_path"
+        ],
+        "title": "pcb_capture_snapshotArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_capture_snapshot"
+    },
+    {
+      "description": "Dry-run check whether moving a component to (x, y[, rotation])\nwould overlap any other placed component on the same side.\n\nDOES NOT actually move the component. Computes the predicted\naxis-aligned bounding box at the proposed pose, then AABB-tests\nagainst every other component's current bounding rect. Use this\nBEFORE every `pcb_move_components` call when placing parts on a\nboard that already has placed parts.\n\nArgs:\n    designator: Component to test (must exist on the board).\n    x: Proposed X position in mils (component reference point).\n    y: Proposed Y position in mils.\n    rotation: Proposed rotation in degrees. When None the target's\n        current rotation is used. Quarter-turn deltas (~+/-90 from\n        current) swap the AABB dimensions; other angles use the\n        current-orientation bbox as an approximation.\n    margin_mils: Extra clearance to require around the target.\n        Default 0 (touching bounding boxes count as collision).\n\nReturns:\n    Dict with:\n      - designator: target.\n      - proposed: {x, y, rotation, bbox:{x1,y1,x2,y2}, margin_mils}.\n      - clear: True if no collisions, False otherwise.\n      - colliding_count: number of collisions.\n      - colliding: list of {designator, bbox:{...}} per collider.\n\nCaveats:\n    - AABB only; rotated non-square footprints will report an\n      inflated bbox.\n    - Same-side check is automatic; the target's bbox is compared\n      only against components on the same layer (Top vs Bottom).\n    - Does not detect courtyard violations or pad-to-pad clearances,\n      only solid-box overlap. Use DRC for actual clearance rules.",
+      "inputSchema": {
+        "properties": {
+          "designator": {
+            "title": "Designator",
+            "type": "string"
+          },
+          "margin_mils": {
+            "default": 0,
+            "title": "Margin Mils",
+            "type": "integer"
+          },
+          "rotation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rotation"
+          },
+          "x": {
+            "title": "X",
+            "type": "integer"
+          },
+          "y": {
+            "title": "Y",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "designator",
+          "x",
+          "y"
+        ],
+        "title": "pcb_check_placement_collisionArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_check_placement_collision"
+    },
+    {
+      "description": "Get the board outline vertices and bounding rectangle.\n\nReturns outline geometry as a list of vertices (line segments and\narcs) plus the bounding rectangle dimensions.\n\nReturns:\n    Dictionary with \"point_count\", \"vertices\" array (each with\n    index, kind, x, y, and optionally cx, cy, angle1, angle2 for arcs),\n    and \"bounding_rect\" (left, bottom, right, top in mils)",
+      "inputSchema": {
+        "properties": {},
+        "title": "pcb_get_board_outlineArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_get_board_outline"
+    },
+    {
+      "description": "Get all components from the active PCB with position and properties.\n\nDATASHEET DISCIPLINE: The response carries a `_datasheet_guidance`\nblock. Before drawing any conclusion about a listed part's\nelectrical behavior, pin function, or voltage rating, fetch its\nmanufacturer datasheet (use WebSearch + WebFetch if you don't\nalready have it). Library metadata here is NOT authoritative.\n\nReturns:\n    Dictionary with \"components\" array (each with designator, x, y,\n    rotation, layer, footprint) and \"count\", plus\n    `_datasheet_guidance` + `_datasheet_parts`.",
+      "inputSchema": {
+        "properties": {},
+        "title": "pcb_get_componentsArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_get_components"
+    },
+    {
+      "description": "Get the full PCB layer stackup information.\n\nReturns copper layers with thickness, dielectric type/height/constant,\nand board name.\n\nReturns:\n    Dictionary with \"layers\" array (each with name, order,\n    copper_thickness_mils, dielectric_type, dielectric_height_mils,\n    dielectric_constant), \"layer_count\", and \"board_name\"",
+      "inputSchema": {
+        "properties": {},
+        "title": "pcb_get_layer_stackupArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_get_layer_stackup"
+    },
+    {
+      "description": "Get all unique net names from the active PCB board.\n\nReturns:\n    Dictionary with \"nets\" array of net name strings and \"count\"",
+      "inputSchema": {
+        "properties": {},
+        "title": "pcb_get_netsArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_get_nets"
+    },
+    {
+      "description": "Get list of nets with unrouted connections (ratsnest lines).\n\nIdentifies nets that still have ratsnest lines, meaning they are\nnot fully routed. Useful for checking routing completion status.\n\nReturns:\n    Dictionary with \"unrouted_nets\" array (each with net name and\n    unrouted_connections count), \"net_count\", and \"total_unrouted\"",
+      "inputSchema": {
+        "properties": {},
+        "title": "pcb_get_unrouted_netsArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_get_unrouted_nets"
+    },
+    {
+      "description": "Move and/or rotate MANY PCB components in ONE IPC round-trip.\n\nPREFER THIS over moving one component per call. Each singular\nmove is a full LLM turn (5-15 s); one call to this tool\nrepositions every component in the list in a single Altium\ntransaction.\n\nTypical uses: applying a full layout pass, running an\nauto-placement result, undoing and redoing a placement set,\nadjusting a row of components relative to each other.\n\nArgs:\n    moves: List of move dicts. Each dict supports:\n        designator (required) , target component\n        x        (optional)   , new X in mils\n        y        (optional)   , new Y in mils\n        rotation (optional)   , new rotation in degrees\n\n    Example:\n        [\n          {\"designator\": \"U1\", \"x\": 5000, \"y\": 5000, \"rotation\": 0},\n          {\"designator\": \"R1\", \"x\": 5200, \"y\": 4800},\n          {\"designator\": \"C1\", \"rotation\": 90},\n        ]\n\nReturns:\n    Dictionary with per-designator results and a count.",
+      "inputSchema": {
+        "properties": {
+          "moves": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Moves",
+            "type": "array"
+          }
+        },
+        "required": [
+          "moves"
+        ],
+        "title": "pcb_move_componentsArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_move_components"
+    },
+    {
+      "description": "Connectivity-driven auto-placement: shorten wirelength, keep\ncomponents legal. **Dry-run by default** -- returns a proposed\nmove list and quality metrics without touching the board.\n\nA pure-Python solver run on the current board. It reads the\ncompiled netlist and every component's real footprint bounding\nbox, then improves positions to minimize half-perimeter\nwirelength (HPWL) while keeping components inside the board\noutline and free of same-layer overlaps.\n\nTwo solver cores are available via ``engine``:\n\n- ``\"refine\"`` (default): a force-directed relaxation that nudges\n  the board's CURRENT positions, then a legalization pass. Best\n  for tidying an already-placed board.\n- ``\"construct\"``: a from-scratch constructor that sizes the\n  placement, seeds parts at connectivity-weighted centroids,\n  chooses orientations, legalizes, and runs a short cooled\n  polish on a full multi-term objective (wirelength, overlap,\n  board-edge, decoupling proximity, connector banding, thermal).\n  Best for an unplaced or badly scrambled board. The full\n  per-term objective is always returned under ``objective_report``.\n\nWith ``optimize_rotation`` (default on) it also picks each\neligible part's orientation (0/90/180/270) to point its pins at\nthe nets they connect -- the classic auto-place win for 2-pin\npassives. This needs per-pin geometry, so the tool also reads the\nboard's pads and maps them to components; orientation is only\nconsidered for top-side parts currently sitting at an orthogonal\nangle (others keep their rotation).\n\nWorkflow: call once with ``apply=False`` (default), read the\n``hpwl_improvement_pct`` and ``overlap_pairs_after``, eyeball the\n``moves``, then call again with ``apply=True`` to commit them in\none ``pcb.batch_move_components`` transaction. Components on\nopposite layers may share an X/Y footprint (they cannot\nphysically collide).\n\nSeeding: by default the solver refines the board's CURRENT\npositions (small, sensible nudges). Pass ``reseed_grid=True`` for\na from-scratch re-place (ignores current positions) -- use only\non an unplaced or badly-scrambled board.\n\nArgs:\n    designators: If given, ONLY these components are moved; every\n        other placed component is held fixed but still attracts\n        its nets and blocks overlaps. If omitted, all components\n        are candidates (minus ``fixed``).\n    fixed: Designators to pin in place (connectors, mounting\n        holes, anything already positioned). Naming-agnostic --\n        you choose which; the tool does not guess by prefix.\n    region: Placement bounds ``{x1, y1, x2, y2}`` in mils. If\n        omitted, the board outline's bounding rectangle is used.\n    iterations: Global-placement relaxation steps (default 400).\n        More iterations = better convergence, longer runtime.\n    grid_mils: Snap grid for final positions (default 5).\n    clearance_mils: Extra copper-to-copper breathing room added\n        to each pair's half-extents (default 15).\n    max_net_fanout: Skip nets touching more than this many\n        components (default 0 = keep all). Set e.g. 20 to ignore\n        power/ground planes that do not usefully guide placement.\n    exclude_nets: Explicit net names to ignore (e.g. ``[\"GND\"]``).\n    critical_nets: Net names to treat as placement-critical (e.g. a\n        clock, a high-speed pair, a sensitive analog feedback line).\n        Their pull is scaled by ``critical_weight`` so the solver\n        keeps their endpoints close and shortens those traces first,\n        at a small cost to ordinary nets. You (the planner) decide\n        which nets matter; the tool does not guess by name.\n    critical_weight: Multiplier applied to ``critical_nets`` pull\n        (default 3.0, clamped to [1, 20]). Higher = more aggressive\n        shortening of the critical nets versus the rest.\n    edge_parts: ``{refdes: band}`` mapping parts that must sit on a\n        board EDGE to which edge -- ``\"L\"``/``\"R\"``/``\"T\"``/``\"B\"``\n        (left/right/top/bottom). The solver seats each against that\n        edge (centred on the free axis) and holds it there. Use for\n        connectors, mounting holes, USB/headers -- anything needing\n        cable or panel access. You (the planner) decide which; the\n        tool does not guess by designator prefix.\n    keepout_groups: ``{refdes: group}`` mixed-signal separation tags.\n        Parts in DIFFERENT groups are pushed apart (the\n        industrial-engineering \"undesirable adjacency\" relationship)\n        -- segregate a noisy switching / digital section from a\n        sensitive analog / RF one. The group string is opaque (only\n        equality matters); you (the planner) assign the domains\n        semantically. ``construct`` engine only. Separating the groups\n        usually also shortens wirelength by de-interleaving them.\n    match_groups: ``{refdes: group}`` matched-pair keep-together tags.\n        Parts in the SAME group are pulled ADJACENT even when they\n        share no net -- the absolutely-necessary-adjacency relationship\n        / analog common-centroid matching (a differential pair's two\n        input resistors, a current mirror, a matched array). HPWL only\n        co-locates parts that share a net; this co-locates matched ones\n        that don't. ``construct`` engine only.\n    match_roles: ``{refdes: role}`` common-centroid sub-device labels\n        WITHIN a match_group (e.g. ``A``/``B`` for the two matched\n        halves of a cross-quad or interdigitated array). The optimiser\n        drives each role's centroid onto a common point so a linear\n        process/thermal gradient cancels -- it picks the balanced\n        ABBA/ABAB arrangement that ``match_groups`` alone (which only\n        keeps the cells compact) cannot distinguish from an unbalanced\n        AABB. Only meaningful with >= 2 roles per group and >= 2 cells\n        per role; needs ``match_groups`` set too. ``construct`` only.\n    plan_json: The DesignPlan (JSON string or dict) you authored. When\n        given, the placer auto-derives matched-pair ``match_groups``\n        from differential nets and analog/digital ``keepout_groups``\n        from the plan's net roles, and MERGES them under the explicit\n        ``match_groups`` / ``keepout_groups`` args (explicit wins per\n        refdes). No-op for a plan with no differential / mixed-signal\n        structure. What was inferred is echoed in ``auto_constraints``.\n    reseed_grid: Re-place from a fresh grid instead of refining\n        current positions (default False).\n    optimize_rotation: Also choose part orientation to shorten\n        pin-level wirelength (default True). Set False to keep\n        every part's current rotation.\n    engine: ``\"refine\"`` (default, nudge current positions) or\n        ``\"construct\"`` (from-scratch placement). ``\"construct\"``\n        implies a from-scratch re-place regardless of\n        ``reseed_grid``.\n    restarts: ``\"construct\"`` engine only. When > 1, run that many\n        seeded restarts and keep the lowest-objective legal\n        placement (variance reduction at a cost linear in\n        ``restarts``). Default 1 (single deterministic run).\n    render_png: Optional file path. When set, also render a preview\n        image of the proposed placement (board outline, courtyards,\n        net stars) to that path and return it as ``preview_png``\n        (offline, matplotlib). Rendering never breaks the move data;\n        failures surface as ``preview_error``.\n    apply: When True, commit the moves to the board. Default\n        False (dry-run).\n\nReturns:\n    Dict with:\n      - ``dry_run``: bool (True unless ``apply`` and moves exist)\n      - ``engine``: the solver core used\n      - ``component_count``, ``movable_count``, ``fixed_count``\n      - ``net_count`` (nets used after filtering)\n      - ``pin_count`` (pads mapped to components for rotation)\n      - ``summary``: a one-line plain-language assessment synthesising\n        legality, utilization, signal routability, decoupling, and the\n        suggested board size -- read this first to judge the placement\n      - ``hpwl_before``, ``hpwl_after``, ``hpwl_improvement_pct``\n      - ``overlap_pairs_before``, ``overlap_pairs_after``\n      - ``objective_report``: every objective term un-weighted\n        (``hpwl``, ``via``, ``cong``, ``clear``, ``edge``,\n        ``decap``, ``conn``, ``therm``) plus ``weighted_total``,\n        ``legal``, and ``utilization`` for the proposed layout\n      - ``net_length_report``: ``longest_nets`` (the few nets with\n        the largest physical bounding span in mils -- the routing\n        risk, and the candidates to mark ``critical_nets``) plus\n        ``critical_net_spans`` echoing the achieved span of each\n        net you flagged critical, so you can confirm it paid off\n      - ``ratsnest``: routability / via-pressure indicator from the\n        straight-line MST of each net. ``signal_crossings`` (rails\n        above ``signal_fanout_cap`` pins excluded, since planes carry\n        no signal via) predicts routing difficulty -- different-net\n        MST edges that cross need a layer change; ``total_crossings``\n        is the conservative all-net count\n      - ``decoupling_report``: the engine's structural decoupling\n        analysis -- a list of ``{decap, ic, distance_mils}`` (worst\n        first) naming which cap decouples which IC (found on the\n        connectivity graph, never by reference) and how close it\n        landed to the served power pin. Empty when no decoupling is\n        structurally identifiable\n      - ``suggested_board``: for the ``construct`` engine, the board\n        rectangle it sized and tightened to the placement\n        (``{x1, y1, x2, y2, width, height}`` in mils) -- the \"best\n        PCB size\" recommendation. ``null`` for the ``refine`` engine,\n        which works inside the existing outline\n      - ``moved_count``, ``rotated_count`` and ``moves`` (each\n        ``{designator, from: {x, y, rotation}, to: {x, y,\n        rotation}}`` in mils/degrees; ``to.rotation`` is null\n        when the orientation was unchanged)\n      - ``region`` used, ``notes`` from the solver, and\n        ``apply_result`` when ``apply=True``.",
+      "inputSchema": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "clearance_mils": {
+            "default": 15.0,
+            "title": "Clearance Mils",
+            "type": "number"
+          },
+          "critical_nets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Critical Nets"
+          },
+          "critical_weight": {
+            "default": 3.0,
+            "title": "Critical Weight",
+            "type": "number"
+          },
+          "designators": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Designators"
+          },
+          "edge_parts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Edge Parts"
+          },
+          "engine": {
+            "default": "refine",
+            "title": "Engine",
+            "type": "string"
+          },
+          "exclude_nets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exclude Nets"
+          },
+          "fixed": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fixed"
+          },
+          "grid_mils": {
+            "default": 5.0,
+            "title": "Grid Mils",
+            "type": "number"
+          },
+          "iterations": {
+            "default": 400,
+            "title": "Iterations",
+            "type": "integer"
+          },
+          "keepout_groups": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Keepout Groups"
+          },
+          "match_groups": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Match Groups"
+          },
+          "match_roles": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Match Roles"
+          },
+          "max_net_fanout": {
+            "default": 0,
+            "title": "Max Net Fanout",
+            "type": "integer"
+          },
+          "optimize_rotation": {
+            "default": true,
+            "title": "Optimize Rotation",
+            "type": "boolean"
+          },
+          "plan_json": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan Json"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Region"
+          },
+          "render_png": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Render Png"
+          },
+          "reseed_grid": {
+            "default": false,
+            "title": "Reseed Grid",
+            "type": "boolean"
+          },
+          "restarts": {
+            "default": 1,
+            "title": "Restarts",
+            "type": "integer"
+          }
+        },
+        "title": "pcb_plan_placementArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_plan_placement"
+    },
+    {
+      "description": "Render the active PcbDoc to an SVG file (in-house renderer).\n\nSCOPE: a VISUAL artifact for when an image is genuinely needed\n(placement / silkscreen / spacing review, sharing a picture).\nIt is NOT an input to a design review's electrical findings.\nNEVER judge connectivity, net assignment, or clearance from this\nrender -- read those from the board data (`pcb_get_nets`,\n`pcb_get_unrouted_nets`, `pcb_get_clearance_violations`,\n`pcb_run_drc`, `proj_compare_sch_pcb`). The render shows\ngeometry; the netlist shows connection.\n\nPulls the board outline, every track, arc, pad, via, and text\nprimitive from the active PCB via the bridge, then emits a\nper-layer SVG. Layers are grouped in render order (KeepOut at\nbottom, then bottom copper, top copper, overlays, outline on\ntop, drills last) and every track / arc / pad / via group\ncarries ``data-net``, ``data-layer``, ``data-shape`` so a\ndownstream dashboard or LLM tool can cross-probe or net-\nhighlight without re-parsing.\n\nv1 surface: board outline + tracks + arcs + pads (round / rect /\noctagonal / rounded-rect) + vias + texts on overlays. Regions\n(polygon fills / copper pours) and component-body silkscreen\noutlines are deferred to v1.1.\n\nArgs:\n    output_path: Where to write the SVG. Defaults to the\n        transient ``<workspace>/renders/`` dir (kept out of the\n        workspace root so renders don't pile up in your folder).\n    layers: Restrict to these Altium layer names (e.g.\n        ``[\"TopLayer\", \"TopOverlay\", \"KeepOutLayer\"]``). When\n        ``None`` (default) every known layer is rendered.\n        ``MultiLayer`` (vias) and the outline are always drawn.\n    margin_mils: Padding around the board bbox in mils.\n    flip_y: When True (default) flip Y so the SVG reads in\n        Altium's bottom-left-origin space.\n    show_drills: Punch hole circles through pads / vias.\n    show_texts: Render text primitives on overlay layers.\n    show_designators: Draw component designators on the overlay.\n    interactive_legend: Emit a clickable per-layer legend group\n        in the SVG (for the dashboard / cross-probe consumers).\n    background: Board-background fill (defaults to a slate\n        review colour; pass ``\"none\"`` for transparent).\n\nReturns:\n    Dict with ``ok``, ``svg_path``, ``counts`` (per primitive\n    kind), ``bbox`` (in mils), ``bytes``.",
+      "inputSchema": {
+        "properties": {
+          "background": {
+            "default": "#1f2937",
+            "title": "Background",
+            "type": "string"
+          },
+          "flip_y": {
+            "default": true,
+            "title": "Flip Y",
+            "type": "boolean"
+          },
+          "interactive_legend": {
+            "default": true,
+            "title": "Interactive Legend",
+            "type": "boolean"
+          },
+          "layers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Layers"
+          },
+          "margin_mils": {
+            "default": 250,
+            "title": "Margin Mils",
+            "type": "integer"
+          },
+          "output_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output Path"
+          },
+          "show_designators": {
+            "default": true,
+            "title": "Show Designators",
+            "type": "boolean"
+          },
+          "show_drills": {
+            "default": true,
+            "title": "Show Drills",
+            "type": "boolean"
+          },
+          "show_texts": {
+            "default": true,
+            "title": "Show Texts",
+            "type": "boolean"
+          }
+        },
+        "title": "pcb_render_svgArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_render_svg"
+    },
+    {
+      "description": "Run Design Rule Check (DRC) on the active PCB. MODAL --\nBLOCKS THE BRIDGE. Opt in with ``allow_modal=True``.\n\nDANGER: Altium has no non-interactive DRC trigger exposed to\nDelphiScript. ``PCB:DesignRuleCheck`` raises the MODAL \"Design\nRule Checker [mil]\" setup dialog and the worker sits behind it\nuntil a HUMAN clicks Cancel/OK. Nothing else on the bridge\nruns meanwhile: one observed call left the loop dead for 30+\nmin, the client timed out at 1800 s, and every in-flight job\nwas stranded. No parameter suppresses the dialog, so this tool\nrefuses to fire unless the caller passes ``allow_modal=True``,\nwhich is a promise that a human is at the keyboard.\n\nPREFER ``pcb_get_clearance_violations`` -- it reads the\nviolations already stored on the board, runs no DRC, and\ncannot block.\n\nPATHOLOGICAL CASE: a full DRC on a placed-but-unrouted board\n(many components, zero tracks, everything unrouted) checks\nevery pad pair against every rule and is enormously slow for\nan answer that is already known -- \"nothing is routed yet\".\nCheck ``pcb_get_board_statistics`` / ``pcb_get_unrouted_nets``\nfirst; if track count is 0, do not run DRC.\n\nWith ``allow_modal=True`` it executes the DRC and returns up\nto 100 violations with full location data, so the agent can\njump straight to the offending spot instead of guessing from\nthe description.\n\nPer-violation shape:\n  - ``name``, ``description``, ``rule``: text from Altium\n  - ``x_mils`` / ``y_mils`` / ``layer``: violation's bbox\n    centre (the \"go here\" hint)\n  - ``primitive1`` / ``primitive2``: objects with\n    ``{detail, type, net, layer, x_mils, y_mils}``. ``type``\n    is the object kind (Track / Pad / Via / Region / Comp);\n    ``net`` is the net name. Two primitives are involved in\n    most rule kinds (Clearance, Short Circuit); a single-\n    primitive violation (e.g. AcuteAngle) leaves\n    ``primitive2`` with empty fields.\n\nUse ``primitive1.net`` and ``primitive2.net`` to spot the\nnets in conflict; use ``x_mils`` / ``y_mils`` to drive\n``proj_cross_probe`` or the dashboard's Drawing tab to the site.\n\nArgs:\n    allow_modal: Must be True to actually run DRC, and it\n        means \"I accept that the bridge blocks on a modal\n        dialog until a human clicks it\". Default False\n        refuses without touching Altium.\n\nReturns:\n    Dict with ``violation_count`` (full count even if > 100),\n    ``drc_triggered``, and ``violations`` array (first 100).\n    With ``allow_modal=False``: ``{ok: False, reason: ...}``\n    and no bridge call at all.",
+      "inputSchema": {
+        "properties": {
+          "allow_modal": {
+            "default": false,
+            "title": "Allow Modal",
+            "type": "boolean"
+          }
+        },
+        "title": "pcb_run_drcArguments",
+        "type": "object"
+      },
+      "name": "eda__pcb_run_drc"
+    },
+    {
+      "description": "Route the board offline (grid A*) and return placeable ops.\n\nPure Python -- no Altium round-trip unless ``fetch_geometry``\nis set. Output ``tracks`` are ``{x1, y1, x2, y2, width, layer,\nnet_name}`` (the ``pcb_place_tracks`` item shape) and ``vias``\nare ``{x, y, net, size, hole_size}`` (the ``pcb_place_via``\nparams), integer mils, so the result applies verbatim. Per-net\nfailure is honest data (status ``failed``), not a tool error.\n\nLive sequence: fetch geometry -> this tool ->\n``pcb_place_tracks`` / ``pcb_place_via`` -> ``pcb_run_drc`` ->\n``route_plan_repairs`` -> apply -> repeat.\n\nArgs:\n    geometry: ``Gen_GetPcbGeometry`` payload (bbox / outline /\n        pads / tracks / vias, all mils). Pads and copper of\n        nets NOT being routed stay in the obstacle map.\n    rules: Routing rules, all mils -- ``clearance_mils``,\n        ``track_width_mils`` (int, or per-class dict with\n        ``\"default\"``), ``via_size_mils``, ``via_drill_mils``,\n        ``layers`` (default TopLayer + BottomLayer). ``None``\n        uses defaults.\n    nets: Route only these net names; everything else stays a\n        static obstacle. Unknown names are reported in\n        ``unknown_nets``. ``None`` routes every netted pad\n        group.\n    net_classes: Net name -> class (``power`` / ``ground`` /\n        ``differential`` / ...). Sets routing order and the\n        per-class track width. Unlisted nets are ``signal``.\n    grid_pitch_mils: Routing grid pitch in mils (default 25).\n    bend_penalty: A* corner cost in grid-pitch units.\n    via_cost: A* layer-change cost in grid-pitch units.\n    max_expansions: Per-connection A* budget so a walled-in\n        net fails fast.\n    fetch_geometry: When True and ``geometry`` is None, pull\n        the live board over the bridge.\n\nReturns:\n    ``{\"ok\": True, \"summary\": {nets_total, routed, failed,\n    skipped, completion, track_count, via_count,\n    total_length_mils}, \"order\": [...], \"nets\": {net:\n    {status, class, width, tracks, vias, ...}}, \"tracks\":\n    [...], \"vias\": [...], \"validation\": {...}}``; with a\n    ``nets`` filter also ``requested_nets`` / ``unknown_nets``.\n    ``{\"ok\": False, \"reason\": ...}`` on malformed input.",
+      "inputSchema": {
+        "properties": {
+          "bend_penalty": {
+            "default": 1.0,
+            "title": "Bend Penalty",
+            "type": "number"
+          },
+          "fetch_geometry": {
+            "default": false,
+            "title": "Fetch Geometry",
+            "type": "boolean"
+          },
+          "geometry": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Geometry"
+          },
+          "grid_pitch_mils": {
+            "default": 25,
+            "title": "Grid Pitch Mils",
+            "type": "integer"
+          },
+          "max_expansions": {
+            "default": 200000,
+            "title": "Max Expansions",
+            "type": "integer"
+          },
+          "net_classes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Net Classes"
+          },
+          "nets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nets"
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rules"
+          },
+          "via_cost": {
+            "default": 10.0,
+            "title": "Via Cost",
+            "type": "number"
+          }
+        },
+        "title": "route_planArguments",
+        "type": "object"
+      },
+      "name": "eda__route_plan"
+    },
+    {
+      "description": "Turn a DRC violation payload into an ordered repair plan.\n\nPure Python, stateless. Classifies the ``pcb_run_drc`` payload\n(or a bare violation list) into buckets (net_clearance /\npad_clearance / unrouted / antenna / width / other), then plans\nactions: ``rip_and_reroute`` (worst clearance offender first),\n``nudge`` {net, dx, dy, x_mils, y_mils} for a lone\npad-clearance conflict, ``widen``/``narrow`` {net} for width\nviolations, ``escalate`` {reason} when the plan cannot converge\nalone. Deltas/coordinates are integer mils.\n\nExecutor contract: apply the actions in order\n(``rip_and_reroute`` = ``pcb_delete_net`` + route that net\nagain via ``route_plan`` with the ``nets`` filter or a DSN\nround-trip; ``nudge`` = ``obj_modify`` on the primitive nearest\n(x_mils, y_mils); ``widen``/``narrow`` =\n``pcb_set_track_width``; ``escalate`` = stop and surface the\nreason). Then ``pcb_run_drc`` again and re-plan from the fresh\nviolations -- the loop's outer iteration bound is the caller's.\n\nArgs:\n    violations: ``pcb_run_drc`` result ``{violation_count,\n        violations}`` or a bare list of violation dicts.\n    max_rounds: Rip budget for the clearance worst-offender\n        loop, integer >= 0 (0 = escalate-only for clearance).\n\nReturns:\n    ``{\"ok\": True, \"actions\": [...], \"rounds_used\": n,\n    \"ripped_nets\": [...], \"counts\": {bucket: n}}``;\n    ``{\"ok\": False, \"reason\": ...}`` on malformed input.",
+      "inputSchema": {
+        "properties": {
+          "max_rounds": {
+            "default": 5,
+            "title": "Max Rounds",
+            "type": "integer"
+          },
+          "violations": {
+            "title": "Violations"
+          }
+        },
+        "required": [
+          "violations"
+        ],
+        "title": "route_plan_repairsArguments",
+        "type": "object"
+      },
+      "name": "eda__route_plan_repairs"
+    },
+    {
+      "description": "Apply the exact validated plan once, with checkpoint, native freshness and readback; never rerun the optimizer.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "validation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_id",
+          "validation_id",
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "name": "layout__apply_plan"
+    },
+    {
+      "description": "Capture an explicit loaded PCB, or register caller-provided offline geometry. Does not save or edit Altium.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "assembly_profile": {
+            "type": "object"
+          },
+          "board_context": {
+            "type": "object"
+          },
+          "board_path": {
+            "type": "string"
+          },
+          "fabrication_profile": {
+            "type": "object"
+          },
+          "package_geometry": {
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "layout__capture_context"
+    },
+    {
+      "description": "Abandon a managed placement scope without marking any gate passed. Enables ordinary unqualified editing again.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "context_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "context_id",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "name": "layout__end_managed_scope"
+    },
+    {
+      "description": "Discover the actual placement context, intent and constraint contracts; no CAD call.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "layout__get_contracts"
+    },
+    {
+      "description": "Read an integrity-checked server-created context, plan, gate or receipt. Does not certify its current freshness.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "contexts",
+              "plans",
+              "validations",
+              "receipts"
+            ]
+          }
+        },
+        "required": [
+          "evidence_id",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "name": "layout__get_evidence"
+    },
+    {
+      "description": "Reuse seeded PCB solvers, compare baseline and alternatives with hard constraints outside score. No CAD edits.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "constraints": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "context_id": {
+            "type": "string"
+          },
+          "design_intent": {
+            "type": "object"
+          },
+          "options": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "context_id"
+        ],
+        "type": "object"
+      },
+      "name": "layout__plan_placement"
+    },
+    {
+      "description": "Re-evaluate the exact stored moves against fresh live geometry and recovery policy; caller stage results cannot pass this gate.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_id"
+        ],
+        "type": "object"
+      },
+      "name": "layout__validate_plan"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Audit real 2D PCB copper, return physical violation coordinates and explicit coverage gaps. File mode analyzes saved bytes, not unsaved edits.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "board_path"
+            ]
+          },
+          {
+            "required": [
+              "snapshot"
+            ]
+          }
+        ],
+        "properties": {
+          "board_path": {
+            "type": "string"
+          },
+          "net_constraints": {
+            "type": "object"
+          },
+          "options": {
+            "type": "object"
+          },
+          "plan": {
+            "type": "object"
+          },
+          "policy": {
+            "type": "object"
+          },
+          "snapshot": {
+            "type": "object"
+          },
+          "source": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "file",
+              "live"
+            ],
+            "type": "string"
+          },
+          "topology": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "name": "si_pi__audit_copper"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Classify physical net intent using existing motifs and mixed-signal/HSD modules; unresolved roles remain unknown.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "board_path"
+            ]
+          },
+          {
+            "required": [
+              "snapshot"
+            ]
+          }
+        ],
+        "properties": {
+          "board_path": {
+            "type": "string"
+          },
+          "net_constraints": {
+            "type": "object"
+          },
+          "plan": {
+            "type": "object"
+          },
+          "snapshot": {
+            "type": "object"
+          },
+          "source": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "file",
+              "live"
+            ],
+            "type": "string"
+          },
+          "topology": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "name": "si_pi__classify_and_partition"
+    },
+    {
+      "annotations": {
+        "readOnlyHint": true
+      },
+      "description": "Cross-probe a stored, still-current copper violation in Altium; zoom and select its net without editing copper.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "radius_mm": {
+            "default": 2,
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "number"
+          },
+          "report_id": {
+            "type": "string"
+          },
+          "violation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "report_id",
+          "violation_id"
+        ],
+        "type": "object"
+      },
+      "name": "si_pi__focus_violation"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Preview stackup/current-aware rules or explicitly apply them after a fresh live preview. Missing qualified physics data remains unsupported.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "board_path"
+            ]
+          },
+          {
+            "required": [
+              "snapshot"
+            ]
+          }
+        ],
+        "properties": {
+          "allow_partial": {
+            "default": false,
+            "type": "boolean"
+          },
+          "apply": {
+            "default": false,
+            "type": "boolean"
+          },
+          "board_path": {
+            "type": "string"
+          },
+          "dsn_path": {
+            "type": "string"
+          },
+          "expected_preview_id": {
+            "type": "string"
+          },
+          "expected_snapshot_id": {
+            "type": "string"
+          },
+          "net_constraints": {
+            "type": "object"
+          },
+          "options": {
+            "type": "object"
+          },
+          "plan": {
+            "type": "object"
+          },
+          "snapshot": {
+            "type": "object"
+          },
+          "source": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "file",
+              "live"
+            ],
+            "type": "string"
+          },
+          "topology": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "name": "si_pi__synthesize_and_apply_rules"
+    },
+    {
+      "description": "Checkpoint explicit saved Altium design/library files without saving or editing Altium.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "type": "object"
+      },
+      "name": "suite__create_checkpoint"
+    },
+    {
+      "description": "List automatic/manual disk snapshots. Does not capture unsaved Altium buffers.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "suite__list_checkpoints"
+    },
+    {
+      "description": "Restore verified disk files. Requires Altium closed; keeps a recovery snapshot. No in-memory undo.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint_id"
+        ],
+        "type": "object"
+      },
+      "name": "suite__restore_checkpoint"
+    }
+  ]
+}
