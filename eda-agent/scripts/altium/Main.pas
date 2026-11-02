@@ -1,4 +1,4 @@
-{ Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md. }
+{ Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md. }
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
@@ -14,7 +14,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.01.copper-si-pi1';
+    SCRIPT_VERSION = '2026.11.01.field-fixes1';
     SUITE_SCRIPT_PROJECT = '__ALTIUM_MCP_SCRIPT_PROJECT__';
     SUITE_SCRIPT_CATALOG = '__ALTIUM_MCP_SCRIPT_CATALOG__';
     SUITE_SCRIPT_WORKSPACE = '__ALTIUM_MCP_WORKSPACE__';

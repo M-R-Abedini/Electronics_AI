@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The dialog driver must work on ALTIUM's controls, not just Win32's.
@@ -25,6 +26,7 @@ are shapes, not values: no design content is involved.
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from eda_agent.ui import windows as w
 
@@ -148,6 +150,11 @@ class _Recorder:
 @pytest.fixture
 def recorder(monkeypatch):
     rec = _Recorder()
+    # The message contract is Win32-specific; the recorder is host-independent.
+    # Supply its constants as well as its message sink on non-Windows CI.
+    monkeypatch.setattr(w, "win32con", SimpleNamespace(
+        BM_CLICK=0x00F5, WM_LBUTTONDOWN=0x0201, WM_LBUTTONUP=0x0202,
+        MK_LBUTTON=0x0001), raising=False)
     monkeypatch.setattr(w, "win32gui", rec, raising=False)
     monkeypatch.setattr(w, "_AVAILABLE", True)
     return rec
@@ -158,23 +165,18 @@ def test_a_vcl_button_is_pressed_with_mouse_messages(recorder):
 
     Measured live: the press returned cleanly and the ECO stayed open.
     """
-    import win32con
-
     w.click(_control("TXPBitBtn", "Close"))
 
-    assert recorder.posted == [win32con.WM_LBUTTONDOWN,
-                               win32con.WM_LBUTTONUP], (
+    assert recorder.posted == [0x0201, 0x0202], (
         "a VCL button needs a posted down/up pair; BM_CLICK is ignored")
-    assert win32con.BM_CLICK not in recorder.sent
+    assert 0x00F5 not in recorder.sent
 
 
 def test_a_stock_button_still_gets_bm_click(recorder):
     """The message-box path must not regress."""
-    import win32con
-
     w.click(_control("Button", "OK"))
 
-    assert recorder.sent == [win32con.BM_CLICK]
+    assert recorder.sent == [0x00F5]
     assert recorder.posted == []
 
 

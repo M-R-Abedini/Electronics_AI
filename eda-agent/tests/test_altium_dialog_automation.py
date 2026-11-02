@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The tool wrapper: what it refuses, and what it authorises.
@@ -41,11 +42,14 @@ def _altium_is_present(monkeypatch):
     eight failures in CI. The tools are about DECIDING what to press,
     which has nothing to do with whether an editor happens to be
     running, so the lookup is answered here and the decisions are what
-    gets tested.
+    gets tested. The Windows availability check is stubbed for the same
+    reason: every driver/menu operation in these cases is already mocked.
     """
     from eda_agent.tools import uiauto
+    from eda_agent.ui import windows
 
     monkeypatch.setattr(uiauto, "_altium_pid", lambda: (4242, None))
+    monkeypatch.setattr(windows, "available", lambda: True)
 
 
 @pytest.fixture

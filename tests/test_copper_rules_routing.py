@@ -115,9 +115,23 @@ def test_differential_target_uses_pair_gap_and_existing_inverse():
                                         dielectric_constant=4.2, copper_oz=1, spacing_mils=6)
     assert result["constraints"]["P"]["required_width_mils"] == pytest.approx(expected.width_mils)
     assert result["constraints"]["N"]["layer_widths"]["TopLayer"]["required_width_mils"] == pytest.approx(expected.width_mils)
+    pair_rule = next(rule for rule in result["rules"] if rule["rule_type"] == "differential_pairs")
+    for key in ("pair_width_min_mils", "pair_width_max_mils", "pair_width_preferred_mils"):
+        assert pair_rule[key] == pytest.approx(expected.width_mils)
     assert "target_zdiff_ohm" not in classification.get("constraints", {}).get("P", {})
     classification["differential_pairs"][0].pop("gap_mils")
     assert not synthesize_copper_rules(snapshot, classification)["coverage"]["complete"]
+
+    # A scalar pair width cannot express different layer impedance geometries.
+    classification["differential_pairs"][0]["gap_mils"] = 6
+    snapshot["layers"].extend([
+        {"name": "Bottom dielectric", "kind": "dielectric", "order": 3, "thickness_mm": .15, "er": 4.2},
+        {"name": "BottomLayer", "kind": "signal", "order": 4, "thickness_mm": .0350012}])
+    snapshot["tracks"].extend({"net_name": net, "layer": "BottomLayer", "width_mm": .2} for net in ("P", "N"))
+    mixed = synthesize_copper_rules(snapshot, classification)
+    assert not mixed["coverage"]["complete"]
+    assert not any(rule["rule_type"] == "differential_pairs" for rule in mixed["rules"])
+    assert any(item["constraint"] == "differential_pair_width" for item in mixed["coverage"]["unsupported"])
 
 
 def test_high_speed_default_fab_width_does_not_claim_controlled_impedance():

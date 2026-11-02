@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Routing tools: the in-house Manhattan router and DRC-feedback
@@ -7,8 +8,8 @@ All computation is pure Python over the board geometry dict the bridge
 returns (the ``Gen_GetPcbGeometry`` shape that ``pcb_render_svg`` also
 consumes). Every tool accepts its data as arguments so calls are
 testable and composable; the bridge is touched ONLY when the explicit
-``fetch_geometry`` flag is set. All coordinates are MILS, integers on
-the wire.
+``fetch_geometry`` flag is set. All coordinates are MILS; live geometry
+retains the native 0.0001 mil resolution before grid planning.
 
 Intended live sequence (the closed routing loop):
 

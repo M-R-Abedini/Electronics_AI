@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The provider that reads the Altium libraries already on this machine.
@@ -67,15 +68,17 @@ def test_an_unreadable_library_does_not_hide_the_others(tmp_path,
     assert AltiumLocalProvider().search("x") == []
 
 
-def test_the_roots_are_configurable_and_not_a_whole_drive_scan(monkeypatch):
+def test_the_roots_are_configurable_and_not_a_whole_drive_scan(tmp_path, monkeypatch):
     """Searching every drive behind the user's back is not acceptable."""
     from eda_agent.libimport.providers import altium_local
 
+    expected = [tmp_path / "one", tmp_path / "two"]
     monkeypatch.setenv("EDA_AGENT_ALTIUM_LIBRARIES",
-                       os.pathsep.join(["A:/one", "B:/two"]))
+                       os.pathsep.join(str(path) for path in expected))
     roots = [str(r) for r in altium_local._roots()]
 
     assert len(roots) == 2
+    assert roots == [str(path) for path in expected]
     assert any("one" in r for r in roots)
     assert any("two" in r for r in roots)
 

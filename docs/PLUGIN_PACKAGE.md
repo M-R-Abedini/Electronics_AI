@@ -5,6 +5,12 @@ the circuit-design skill and a setup/diagnosis skill. The canonical source is
 this repository. An installed cache and a generated ZIP are deployment
 artifacts, not separate copies to develop.
 
+For startup diagnosis, `scripts/plugin_runtime.py doctor --probe-backends`
+initializes the configured EDA worker and reads its tool catalog without calling
+CAD tools. A successful probe establishes worker initialization, not native
+editor readiness. On failure, retain the diagnostic ID, phase and nested causes;
+possible dispatched design writes must not be replayed automatically.
+
 The package follows the [official plugin packaging format](https://developers.openai.com/plugins/build/plugins):
 root `plugin.json`, root `mcp.json` and the maintained `skills/` directory.
 The MCP launcher uses the host's `${PLUGIN_ROOT}` placeholder to locate its

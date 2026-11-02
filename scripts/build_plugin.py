@@ -35,6 +35,7 @@ ROOT_FILES = (
     'contracts/windows-1252-best-fit.json',
     'eda_stdio.py', 'bridge_coordination.py', 'suite_config.py', 'script_projects.py',
     'engine_identity.py', 'engine_queue.py', 'suite_reads.py', 'README.md', 'COPPER_SI_PI_REPORT.fa.md',
+    'FIELD_FIXES_0.5.1.fa.md',
     'LICENSE', 'THIRD_PARTY_NOTICES.md', 'UPSTREAM.json', 'MODIFICATIONS.md',
     '.gitignore', 'CONTRIBUTING.md', 'CONNECTIVITY_VERIFICATION.md',
     'scripts/plugin_runtime.py', 'scripts/launch_plugin.ps1', 'scripts/build_plugin.py',

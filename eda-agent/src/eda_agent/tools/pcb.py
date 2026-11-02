@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """PCB-specific tools for Altium Designer MCP Server.
@@ -7,6 +8,7 @@ component placement, trace lengths, layer stackup, board outline, etc.
 """
 
 import json
+import math
 from typing import Any, Optional, Union
 
 from pydantic import ValidationError
@@ -4326,12 +4328,15 @@ def register_pcb_tools(mcp):
     async def pcb_create_design_rule(
         name: str,
         rule_type: str = "clearance",
-        value: int = 10,
-        max_value: Optional[int] = None,
-        favored_value: Optional[int] = None,
-        max_uncoupled_length: Optional[int] = None,
+        value: float = 10,
+        max_value: Optional[float] = None,
+        favored_value: Optional[float] = None,
+        max_uncoupled_length: Optional[float] = None,
         scope: str = "",
         net_scope: str = "different_nets",
+        pair_width_min_mils: Optional[float] = None,
+        pair_width_max_mils: Optional[float] = None,
+        pair_width_preferred_mils: Optional[float] = None,
     ) -> dict[str, Any]:
         """Create a new design rule on the active PCB.
 
@@ -4357,6 +4362,13 @@ def register_pcb_tools(mcp):
             max_uncoupled_length: For differential_pairs only.
                 MaxUncoupledLength in mils (single scalar, not per-layer).
                 Defaults to 1000 mils when None.
+            pair_width_min_mils / pair_width_max_mils / pair_width_preferred_mils:
+                Differential-pair routing width limits, in mils, applied to
+                every layer. Supply all three together; min <= preferred <= max.
+                The Differential Pairs Routing rule controls pair width; a
+                separate Width rule does not set these limits. When omitted,
+                existing callers retain native defaults and the response
+                explicitly reports pair_width_verified=false.
             scope: Optional query expression for Scope1. Pick the
                 predicate that matches the rule kind:
                   - net-based rules (clearance, width, via_size):
@@ -4384,6 +4396,14 @@ def register_pcb_tools(mcp):
         ``pcb_set_rule_properties`` (gap_mils field), which dispatches
         through Rule.RuleKind without needing the symbol.
         """
+        pair_widths = (pair_width_min_mils, pair_width_max_mils, pair_width_preferred_mils)
+        if any(v is not None for v in pair_widths):
+            if rule_type != "differential_pairs":
+                raise ValueError("Pair width limits apply only to differential_pairs rules")
+            if any(v is None or not math.isfinite(v) or not 0 < v <= 200000 for v in pair_widths):
+                raise ValueError("Supply all three finite positive pair width limits in mils within native coordinate range")
+            if not pair_width_min_mils <= pair_width_preferred_mils <= pair_width_max_mils:
+                raise ValueError("Pair width limits require min <= preferred <= max")
         bridge = get_bridge()
         params: dict[str, Any] = {
             "name": name,
@@ -4397,6 +4417,9 @@ def register_pcb_tools(mcp):
             params["favored_value"] = str(favored_value)
         if max_uncoupled_length is not None:
             params["max_uncoupled_length"] = str(max_uncoupled_length)
+        for key, width in zip(("pair_width_min_mils", "pair_width_max_mils", "pair_width_preferred_mils"), pair_widths):
+            if width is not None:
+                params[key] = str(width)
         if scope:
             params["scope"] = scope
         result = await bridge.send_command_async("pcb.create_design_rule", params)

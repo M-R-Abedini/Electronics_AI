@@ -1,4 +1,4 @@
-{ Modified 2026-11-01 by M-R-Abedini; see root MODIFICATIONS.md. }
+{ Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md. }
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
@@ -5424,9 +5424,11 @@ Var
     RuleMatch : IPCB_MatchedNetLengthsConstraint;
     RuleTypeStr, RuleName, ValueStr, MaxValueStr, FavoredValueStr : String;
     ScopeStr, Scope2Str, NetScopeStr, MaxUncoupStr : String;
+    PairMinStr, PairMaxStr, PairPreferredStr, Readback : String;
     RuleValue, MaxValue, FavoredValue, MaxUncoupVal : Double;
+    PairMin, PairMax, PairPreferred : Double;
     NetScopeVal : Integer;
-    HasMaxValue : Boolean;
+    HasMaxValue, HasPairWidth, GapVerified, PairWidthVerified : Boolean;
     L : TLayer;
 Begin
     Board := GetPCBBoardAnywhere(0);
@@ -5442,6 +5444,9 @@ Begin
     MaxValueStr := ExtractJsonValue(Params, 'max_value');
     FavoredValueStr := ExtractJsonValue(Params, 'favored_value');
     MaxUncoupStr := ExtractJsonValue(Params, 'max_uncoupled_length');
+    PairMinStr := ExtractJsonValue(Params, 'pair_width_min_mils');
+    PairMaxStr := ExtractJsonValue(Params, 'pair_width_max_mils');
+    PairPreferredStr := ExtractJsonValue(Params, 'pair_width_preferred_mils');
     ScopeStr := ExtractJsonValue(Params, 'scope');
     Scope2Str := ExtractJsonValue(Params, 'scope2');
     NetScopeStr := LowerCase(ExtractJsonValue(Params, 'net_scope'));
@@ -5454,6 +5459,21 @@ Begin
 
     If RuleTypeStr = '' Then
         RuleTypeStr := 'clearance';
+
+    { Validate the complete optional width tuple before any native mutation. }
+    HasPairWidth := (PairMinStr <> '') Or (PairMaxStr <> '') Or (PairPreferredStr <> '');
+    PairMin := StrToFloatDef(PairMinStr, -1);
+    PairMax := StrToFloatDef(PairMaxStr, -1);
+    PairPreferred := StrToFloatDef(PairPreferredStr, -1);
+    If HasPairWidth Then
+        If (RuleTypeStr <> 'differential_pairs') Or (PairMin <= 0)
+            Or (PairMax <= 0) Or (PairPreferred <= 0) Or (PairMax > 200000)
+            Or (PairMin > PairPreferred) Or (PairPreferred > PairMax) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'INVALID_PARAM',
+                'Differential pair widths require all three positive mil values: min <= preferred <= max <= 200000');
+            Exit;
+        End;
 
     { Map textual net_scope to the enum used by the rule object.                  }
     { Blank / "any_net" keeps prior default behavior. For clearance rules          }
@@ -5533,12 +5553,11 @@ Begin
         Begin
             { IPCB_DifferentialPairsRoutingRule exposes MinGap / MaxGap /     }
             { PreferedGap (note SDK spelling: one 'r') as layer-indexed      }
-            { properties, and MaxUncoupledLength as a single scalar. value ->}
-            { MinGap, max_value -> MaxGap, favored_value -> PreferedGap. The }
-            { width constraints shown in the rule's descriptor come from a   }
-            { separate Width rule scoped to the diff pair, not from this    }
-            { interface; create that separately with rule_type='width' if   }
-            { needed.                                                          }
+            { properties, and MaxUncoupledLength as a single scalar. Width   }
+            { belongs to this rule as well: MinWidth / MaxWidth /             }
+            { PreferedWidth (also one 'r'). A separate Width rule does not     }
+            { establish the pair routing width. Omitted widths retain native }
+            { defaults for compatibility and are not reported as verified.   }
             RuleDiff := PCBServer.PCBRuleFactory(eRule_DifferentialPairsRouting);
             RuleDiff.Name := RuleName;
             RuleDiff.NetScope := NetScopeVal;
@@ -5548,6 +5567,12 @@ Begin
                 RuleDiff.MinGap(L) := MilsToCoord(RuleValue);
                 RuleDiff.MaxGap(L) := MilsToCoord(MaxValue);
                 RuleDiff.PreferedGap(L) := MilsToCoord(FavoredValue);
+                If HasPairWidth Then
+                Begin
+                    RuleDiff.MinWidth(L) := MilsToCoord(PairMin);
+                    RuleDiff.MaxWidth(L) := MilsToCoord(PairMax);
+                    RuleDiff.PreferedWidth(L) := MilsToCoord(PairPreferred);
+                End;
             End;
             RuleDiff.MaxUncoupledLength := MilsToCoord(MaxUncoupVal);
             If ScopeStr <> '' Then
@@ -5583,11 +5608,44 @@ Begin
 
     MarkDocDirtyByPath(Board.FileName);
 
+    Readback := '';
+    If RuleTypeStr = 'differential_pairs' Then
+    Begin
+        GapVerified := True;
+        PairWidthVerified := HasPairWidth;
+        For L := MinLayer To MaxLayer Do
+        Begin
+            If (Abs(RuleDiff.MinGap(L) - MilsToCoord(RuleValue)) > 1)
+                Or (Abs(RuleDiff.MaxGap(L) - MilsToCoord(MaxValue)) > 1)
+                Or (Abs(RuleDiff.PreferedGap(L) - MilsToCoord(FavoredValue)) > 1) Then GapVerified := False;
+            If HasPairWidth Then
+                If (Abs(RuleDiff.MinWidth(L) - MilsToCoord(PairMin)) > 1)
+                    Or (Abs(RuleDiff.MaxWidth(L) - MilsToCoord(PairMax)) > 1)
+                    Or (Abs(RuleDiff.PreferedWidth(L) - MilsToCoord(PairPreferred)) > 1) Then PairWidthVerified := False;
+        End;
+        If (Not GapVerified) Or (HasPairWidth And (Not PairWidthVerified)) Then
+        Begin
+            Result := BuildErrorResponse(RequestId, 'RULE_READBACK_FAILED',
+                'Rule was created but differential gap/width native readback failed; inspect before retrying');
+            Exit;
+        End;
+        Readback := ',' + JsonBool('gap_verified', GapVerified) + ','
+            + JsonBool('pair_width_verified', PairWidthVerified) + ','
+            + JsonFloat('gap_min_mils', RuleDiff.MinGap(eTopLayer) / 10000.0) + ','
+            + JsonFloat('gap_max_mils', RuleDiff.MaxGap(eTopLayer) / 10000.0) + ','
+            + JsonFloat('gap_preferred_mils', RuleDiff.PreferedGap(eTopLayer) / 10000.0);
+        If HasPairWidth Then
+            Readback := Readback + ','
+                + JsonFloat('pair_width_min_mils', RuleDiff.MinWidth(eTopLayer) / 10000.0) + ','
+                + JsonFloat('pair_width_max_mils', RuleDiff.MaxWidth(eTopLayer) / 10000.0) + ','
+                + JsonFloat('pair_width_preferred_mils', RuleDiff.PreferedWidth(eTopLayer) / 10000.0);
+    End;
+
     Result := BuildSuccessResponse(RequestId,
         '{"created":true,'
         + '"name":"' + EscapeJsonString(RuleName) + '",'
         + '"rule_type":"' + EscapeJsonString(RuleTypeStr) + '",'
-        + '"value_mils":' + FloatToJsonStr(RuleValue) + '}');
+        + '"value_mils":' + FloatToJsonStr(RuleValue) + Readback + '}');
 End;
 
 {..............................................................................}
@@ -10781,32 +10839,90 @@ End;
 { around on a board unsafe: a layer that looks spare can be carrying the       }
 { assembly drawing.                                                            }
 
-Function PCB_CountPrimitivesOnLayer(Board : IPCB_Board; Lyr : TLayer) : Integer;
+Procedure PCB_CountLayerPrimitive(Prim : IPCB_Primitive; Seen, LayerIds, Counts : TStringList);
+Var
+    Key : String;
+    Idx : Integer;
+Begin
+    { Database metadata and cached violations are not drawing primitives. }
+    If (Prim.ObjectId = eNetObject) Or (Prim.ObjectId = eClassObject)
+        Or (Prim.ObjectId = eRuleObject) Or (Prim.ObjectId = eDifferentialPairObject)
+        Or (Prim.ObjectId = eViolationObject) Then Exit;
+    Key := IntToStr(Prim.I_ObjectAddress);
+    If Seen.IndexOf(Key) >= 0 Then Exit;
+    Seen.Add(Key);
+    Key := IntToStr(Prim.Layer);
+    Idx := LayerIds.IndexOf(Key);
+    If Idx < 0 Then
+    Begin
+        LayerIds.Add(Key); Counts.Add('1');
+    End
+    Else Counts[Idx] := IntToStr(StrToIntDef(Counts[Idx], 0) + 1);
+End;
+
+{ Classic layer sets cannot represent extended V7 mechanical IDs (e.g.
+  Mechanical20 = 67108884). Do not pass AllLayers or MkSet(Lyr) here.
+  Include component-owned drawings, deduplicating objects also seen by the
+  board iterator. A failed scan is unknown (-1), never evidence of emptiness. }
+Function PCB_CountPrimitiveLayers(Board : IPCB_Board; LayerIds, Counts : TStringList) : Boolean;
 Var
     Iterator : IPCB_BoardIterator;
+    GroupIter : IPCB_GroupIterator;
     Prim : IPCB_Primitive;
+    Child : IPCB_Primitive;
+    Comp : IPCB_Component;
+    Seen : TStringList;
 Begin
-    Result := 0;
+    Result := False;
     Iterator := Nil;
+    Seen := TStringList.Create;
+    Seen.Sorted := True;
     Try
-        Iterator := Board.BoardIterator_Create;
-        { No object filter. A single-type filter would count tracks and       }
-        { miss the strings, arcs, fills and regions that assembly and         }
-        { fabrication layers are mostly made of, and report a populated       }
-        { layer as empty.                                                     }
-        Iterator.AddFilter_LayerSet(MkSet(Lyr));
-        Iterator.AddFilter_Method(eProcessAll);
-        Prim := Iterator.FirstPCBObject;
-        While Prim <> Nil Do
-        Begin
-            Result := Result + 1;
-            Prim := Iterator.NextPCBObject;
-        End;
-    Except
-        Result := -1;
+        Try
+            Iterator := Board.BoardIterator_Create;
+            Iterator.AddFilter_Method(eProcessAll);
+            Prim := Iterator.FirstPCBObject;
+            While Prim <> Nil Do
+            Begin
+                If Seen.Count >= 200000 Then Raise('Mechanical primitive scan limit exceeded');
+                PCB_CountLayerPrimitive(Prim, Seen, LayerIds, Counts);
+                If Prim.ObjectId = eComponentObject Then
+                Begin
+                    Comp := Prim;
+                    GroupIter := Comp.GroupIterator_Create;
+                    Try
+                        Child := GroupIter.FirstPCBObject;
+                        While Child <> Nil Do
+                        Begin
+                            If Seen.Count >= 200000 Then Raise('Mechanical primitive scan limit exceeded');
+                            PCB_CountLayerPrimitive(Child, Seen, LayerIds, Counts);
+                            Child := GroupIter.NextPCBObject;
+                        End;
+                    Finally Comp.GroupIterator_Destroy(GroupIter); End;
+                End;
+                Prim := Iterator.NextPCBObject;
+            End;
+            Result := True;
+        Except Result := False; End;
+    Finally
+        If Iterator <> Nil Then Try Board.BoardIterator_Destroy(Iterator); Except End;
+        Seen.Free;
     End;
-    If Iterator <> Nil Then
-        Try Board.BoardIterator_Destroy(Iterator); Except End;
+End;
+
+Function PCB_CountPrimitivesOnLayer(Board : IPCB_Board; Lyr : TLayer) : Integer;
+Var
+    LayerIds, Counts : TStringList;
+    Idx : Integer;
+Begin
+    Result := -1;
+    LayerIds := TStringList.Create; Counts := TStringList.Create;
+    Try
+        If Not PCB_CountPrimitiveLayers(Board, LayerIds, Counts) Then Exit;
+        Result := 0;
+        Idx := LayerIds.IndexOf(IntToStr(Lyr));
+        If Idx >= 0 Then Result := StrToIntDef(Counts[Idx], -1);
+    Finally LayerIds.Free; Counts.Free; End;
 End;
 
 Function PCB_GetMechLayerNames(Params : String; RequestId : String) : String;
@@ -10816,8 +10932,9 @@ Var
     LayerObj : IPCB_LayerObject_V7;
     Lyr : TLayer;
     JsonItems, NameStr, CountedStr : String;
-    First, Disp, Enabled, WantAll : Boolean;
-    Count, KindId, Num, Prims, Occupied : Integer;
+    First, Disp, Enabled, WantAll, CountsComplete : Boolean;
+    Count, KindId, Num, Prims, Occupied, Idx : Integer;
+    LayerIds, Counts : TStringList;
 Begin
     Board := GetPCBBoardAnywhere(0);
     If Board = Nil Then
@@ -10833,8 +10950,7 @@ Begin
         Exit;
     End;
 
-    { Counting walks the board once per layer, so it is opt-out rather than }
-    { forced on a caller who only wants the names.                          }
+    { One scan collects counts for every native V7 layer ID. }
     CountedStr := ExtractJsonValue(Params, 'count_primitives');
     WantAll := (CountedStr <> 'false');
 
@@ -10842,6 +10958,10 @@ Begin
     First := True;
     Count := 0;
     Occupied := 0;
+    LayerIds := TStringList.Create; Counts := TStringList.Create;
+    CountsComplete := False;
+    Try
+    If WantAll Then CountsComplete := PCB_CountPrimitiveLayers(Board, LayerIds, Counts);
 
     { ENABLED, NOT DISPLAYED. This reported only layers the view happened to }
     { be showing, so a layer carrying the whole fabrication drawing was      }
@@ -10856,9 +10976,21 @@ Begin
         Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except LayerObj := Nil; End;
         If LayerObj = Nil Then Continue;
 
+        { Compare the primitive's native ID, not the classic alias used to
+          look up this stack object. }
+        Lyr := LayerObj.LayerID;
         Enabled := False;
         Try Enabled := LayerObj.MechanicalLayerEnabled; Except Enabled := False; End;
-        If Not Enabled Then Continue;
+        Prims := -1;
+        If CountsComplete Then
+        Begin
+            Prims := 0;
+            Idx := LayerIds.IndexOf(IntToStr(Lyr));
+            If Idx >= 0 Then Prims := StrToIntDef(Counts[Idx], -1);
+        End;
+        { Disabled layers may still own geometry. On failed coverage include
+          them with unknown counts rather than silently treating them empty. }
+        If (Not Enabled) And ((Not WantAll) Or (CountsComplete And (Prims = 0))) Then Continue;
 
         NameStr := '';
         Try NameStr := LayerObj.Name; Except End;
@@ -10869,8 +11001,6 @@ Begin
         { layer. -1 means this build has no kinds at all.                   }
         KindId := ReadMechKind(LayerObj);
 
-        Prims := -1;
-        If WantAll Then Prims := PCB_CountPrimitivesOnLayer(Board, Lyr);
         If Prims > 0 Then Occupied := Occupied + 1;
 
         If Not First Then JsonItems := JsonItems + ',';
@@ -10878,8 +11008,9 @@ Begin
         JsonItems := JsonItems
             + '{"layer":"Mechanical' + IntToStr(Num) + '",'
             + '"number":' + IntToStr(Num) + ','
+            + '"layer_id":' + IntToStr(Lyr) + ','
             + '"name":"' + EscapeJsonString(NameStr) + '",'
-            + '"enabled":true,'
+            + '"enabled":' + BoolToJsonStr(Enabled) + ','
             + '"displayed":' + BoolToJsonStr(Disp) + ','
             + '"kind":"' + EscapeJsonString(MechKindToString(KindId)) + '",'
             + '"kind_id":' + IntToStr(KindId) + ','
@@ -10892,9 +11023,12 @@ Begin
         + '"count":' + IntToStr(Count) + ','
         + '"occupied_count":' + IntToStr(Occupied) + ','
         + '"counted_primitives":' + BoolToJsonStr(WantAll) + ','
+        + '"primitive_counts_complete":' + BoolToJsonStr(CountsComplete) + ','
+        + '"primitive_count_method":"unfiltered_board_and_component_iterators",'
         { The scan stops here, so a layer above it is unreported rather   }
         { than reported empty.                                             }
         + '"scanned_to":' + IntToStr(MechScanLimit) + '}');
+    Finally LayerIds.Free; Counts.Free; End;
 End;
 
 {..............................................................................}
@@ -12952,6 +13086,101 @@ Begin
     Result := '[' + Result + ']';
 End;
 
+{ Bound diagnostics by reason, retaining every occurrence. Repeated complex
+  pads or unreadable copper never generate thousands of duplicate strings. }
+Procedure Copper_Missing(Items, Counts : TStringList; Item : String; Var Total : Integer);
+Var
+    Idx : Integer;
+Begin
+    Inc(Total);
+    Idx := Items.IndexOf(Item + ',');
+    If (Idx < 0) And (Items.Count >= 128) Then
+    Begin
+        Item := '"additional missing evidence reasons omitted"';
+        Idx := Items.IndexOf(Item + ',');
+    End;
+    If Idx < 0 Then
+    Begin Copper_Push(Items, Item); Counts.Add('1'); End
+    Else Counts[Idx] := IntToStr(StrToIntDef(Counts[Idx], 0) + 1);
+End;
+
+Procedure Copper_Profile(Keys, Calls, Millis : TStringList; Key : String; Elapsed : Integer);
+Var
+    Idx : Integer;
+Begin
+    Idx := Keys.IndexOf(Key);
+    If Idx < 0 Then
+    Begin Keys.Add(Key); Calls.Add('1'); Millis.Add(IntToStr(Elapsed)); End
+    Else
+    Begin
+        Calls[Idx] := IntToStr(StrToIntDef(Calls[Idx], 0) + 1);
+        Millis[Idx] := IntToStr(StrToIntDef(Millis[Idx], 0) + Elapsed);
+    End;
+End;
+
+{ Keep the dispatcher's ownership marker; never replace its start time or
+  clear it. At most one update per second, plus initial/final phase updates. }
+Procedure Copper_Progress(RequestId, Phase : String; Started, Scanned, MissingTotal : Integer;
+    Var LastUpdate : Integer);
+Var
+    Tick : Integer;
+    MarkerPath, StartedText : String;
+Begin
+    Tick := GetTickCount;
+    If (LastUpdate <> 0) And (Tick - LastUpdate < 1000) Then Exit;
+    LastUpdate := Tick;
+    If Not IsValidRequestId(RequestId) Then Exit;
+    MarkerPath := ProgressFilePath(RequestId);
+    { Direct handler calls do not own a dispatch marker. Only enrich the
+      dispatcher's existing marker, preserving its original ownership tick. }
+    If Not FileExists(MarkerPath) Then Exit;
+    Try
+        StartedText := ExtractJsonValue(ReadFileContent(MarkerPath), 'started_ms');
+        If StartedText = '' Then Exit;
+        WriteFileContent(MarkerPath, '{"started_ms":' + StartedText + ',' + JsonInt('updated_ms', Tick)
+        + ',' + JsonStr('phase', Phase) + ',' + JsonInt('scanned_primitives', Scanned)
+        + ',' + JsonInt('missing_evidence_events', MissingTotal) + '}'); Except End;
+End;
+
+{ Only geometric types expose electrical/keepout properties. Metadata objects
+  must never be probed for them: unsupported dispatch can be very expensive. }
+Function Copper_TypedNet(Obj : IPCB_Primitive; ObjectType : Integer) : IPCB_Net;
+Var
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Via : IPCB_Via;
+    Pad : IPCB_Pad;
+    Region : IPCB_Region;
+    Polygon : IPCB_Polygon;
+    Fill : IPCB_Fill;
+Begin
+    Result := Nil;
+    If ObjectType = eTrackObject Then Begin Track := Obj; Result := Track.Net; End
+    Else If ObjectType = eArcObject Then Begin Arc := Obj; Result := Arc.Net; End
+    Else If ObjectType = eViaObject Then Begin Via := Obj; Result := Via.Net; End
+    Else If ObjectType = ePadObject Then Begin Pad := Obj; Result := Pad.Net; End
+    Else If ObjectType = eRegionObject Then Begin Region := Obj; Result := Region.Net; End
+    Else If ObjectType = ePolyObject Then Begin Polygon := Obj; Result := Polygon.Net; End
+    Else If ObjectType = eFillObject Then Begin Fill := Obj; Result := Fill.Net; End;
+End;
+
+Function Copper_TypedKeepout(Obj : IPCB_Primitive; ObjectType : Integer) : Boolean;
+Var
+    Track : IPCB_Track;
+    Arc : IPCB_Arc;
+    Region : IPCB_Region;
+    Polygon : IPCB_Polygon;
+    Fill : IPCB_Fill;
+Begin
+    Result := False;
+    { Pads and vias are never keepout drawing objects. }
+    If ObjectType = eTrackObject Then Begin Track := Obj; Result := Track.IsKeepout; End
+    Else If ObjectType = eArcObject Then Begin Arc := Obj; Result := Arc.IsKeepout; End
+    Else If ObjectType = eRegionObject Then Begin Region := Obj; Result := Region.IsKeepout; End
+    Else If ObjectType = ePolyObject Then Begin Polygon := Obj; Result := Polygon.IsKeepout; End
+    Else If ObjectType = eFillObject Then Begin Fill := Obj; Result := Fill.IsKeepout; End;
+End;
+
 Function Copper_Point(X, Y : TCoord) : String;
 Begin
     Result := '[' + FloatToJsonStr(CoordToMM(X)) + ',' + FloatToJsonStr(CoordToMM(Y)) + ']';
@@ -13047,11 +13276,19 @@ Var
     LayerObj : IPCB_LayerObject_V7;
     Layers, Tracks, Arcs, Vias, Pads, Regions, Keepouts, Holes, Cutouts : TStringList;
     Components, Nets, Missing, NetTies, Seen, PolygonChildren : TStringList;
+    MissingCounts, ProfileKeys, ProfileCalls, ProfileMillis, Diagnostics : TStringList;
     Path, Item, Common, NetName, LayerName, Kind, Outline, Shape, Owner, Identity, HoleJson, CoverageState, LayerGeometries : String;
     Count, I, Order, LayerId, HoleCount, ExcludedNonCopper, StackVisited, CopperCount, DielectricCount : Integer;
+    Started, LastProgress, ObjectTick, AccessTick, ObjectType, MissingTotal : Integer;
+    Stage, ProfileJson, MissingCountsJson, ProofPath : String;
     Er, Thickness, PadRadius : Double;
-    IsKeepout, Curved : Boolean;
+    IsKeepout, Curved, SkipPrimitive : Boolean;
 Begin
+    If Not IsValidRequestId(RequestId) Then
+    Begin Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS', 'Invalid snapshot request identity'); Exit; End;
+    ProofPath := WorkspaceDir + 'copper_snapshot_' + RequestId + '.json';
+    If FileExists(ProofPath) Then
+    Begin Result := BuildErrorResponse(RequestId, 'COPPER_PROOF_EXISTS', 'Snapshot identity already used; capture with a fresh request'); Exit; End;
     PrevView := Client.GetCurrentView;
     Path := ExtractJsonValue(Params, 'board_path');
     Board := Copper_LoadedBoard(Path);
@@ -13067,11 +13304,16 @@ Begin
     Keepouts := TStringList.Create; Holes := TStringList.Create; Cutouts := TStringList.Create;
     Components := TStringList.Create; Nets := TStringList.Create; Missing := TStringList.Create;
     NetTies := TStringList.Create; Seen := TStringList.Create; PolygonChildren := TStringList.Create;
+    MissingCounts := TStringList.Create; ProfileKeys := TStringList.Create;
+    ProfileCalls := TStringList.Create; ProfileMillis := TStringList.Create;
+    Diagnostics := TStringList.Create;
+    Started := GetTickCount; LastProgress := 0; MissingTotal := 0;
+    Copper_Progress(RequestId, 'layer_stack', Started, 0, 0, LastProgress);
     Try
         Identity := IntToStr(Board.I_ObjectAddress);
         Stack := Nil;
         Try Stack := Board.LayerStack_V7; Except End;
-        If Stack = Nil Then Copper_Push(Missing, '"layer stack unavailable"')
+        If Stack = Nil Then Copper_Missing(Missing, MissingCounts, '"layer stack unavailable"', MissingTotal)
         Else
         Begin
             Order := 0;
@@ -13082,7 +13324,7 @@ Begin
             Begin
                 Inc(StackVisited);
                 If StackVisited > 256 Then
-                Begin Copper_Push(Missing, '"layer stack iteration limit exceeded"'); Break; End;
+                Begin Copper_Missing(Missing, MissingCounts, '"layer stack iteration limit exceeded"', MissingTotal); Break; End;
                 Try
                     LayerId := LayerObj.LayerID;
                     LayerName := GetLayerString(LayerId);
@@ -13090,7 +13332,7 @@ Begin
                     If (LayerId >= eInternalPlane1) And (LayerId <= eInternalPlane16) Then
                     Begin
                         Kind := 'plane';
-                        Copper_Push(Missing, '"implicit plane void/copper contours and reference-net binding unavailable"');
+                        Copper_Missing(Missing, MissingCounts, '"implicit plane void/copper contours and reference-net binding unavailable"', MissingTotal);
                     End;
                     Thickness := CoordToMM(LayerObj.CopperThickness);
                     Item := '{' + JsonStr('name', LayerName) + ',' + JsonStr('display_name', LayerObj.Name)
@@ -13099,12 +13341,12 @@ Begin
                     If Kind = 'plane' Then
                     Begin
                         If LayerObj.Net <> Nil Then Item := Item + ',' + JsonStr('reference_net', LayerObj.Net.Name)
-                        Else Copper_Push(Missing, '"plane reference net unavailable"');
+                        Else Copper_Missing(Missing, MissingCounts, '"plane reference net unavailable"', MissingTotal);
                     End;
                     Item := Item + '}';
                     Copper_Push(Layers, Item); Inc(Order);
                     Inc(CopperCount);
-                    If Thickness <= 0 Then Copper_Push(Missing, '"invalid copper thickness"');
+                    If Thickness <= 0 Then Copper_Missing(Missing, MissingCounts, '"invalid copper thickness"', MissingTotal);
                     If LayerObj.Dielectric.DielectricType <> eNoDielectric Then
                     Begin
                         Thickness := CoordToMM(LayerObj.Dielectric.DielectricHeight);
@@ -13113,29 +13355,30 @@ Begin
                             + ',"kind":"dielectric",' + JsonInt('order', Order)
                             + ',' + JsonFloat('thickness_mm', Thickness);
                         If Er > 0 Then Item := Item + ',' + JsonFloat('er', Er)
-                        Else Copper_Push(Missing, '"dielectric Er unavailable"');
+                        Else Copper_Missing(Missing, MissingCounts, '"dielectric Er unavailable"', MissingTotal);
                         Item := Item + '}';
-                        If Thickness <= 0 Then Copper_Push(Missing, '"dielectric thickness unavailable"');
+                        If Thickness <= 0 Then Copper_Missing(Missing, MissingCounts, '"dielectric thickness unavailable"', MissingTotal);
                         Copper_Push(Layers, Item); Inc(Order);
                         Inc(DielectricCount);
                     End;
                 Except
-                    Copper_Push(Missing, '"layer stack record unreadable"');
+                    Copper_Missing(Missing, MissingCounts, '"layer stack record unreadable"', MissingTotal);
                 End;
                 If Order > 256 Then
                 Begin
-                    Copper_Push(Missing, '"layer stack limit exceeded"'); Break;
+                    Copper_Missing(Missing, MissingCounts, '"layer stack limit exceeded"', MissingTotal); Break;
                 End;
                 LayerObj := Stack.NextLayer(LayerObj);
             End;
             If (CopperCount < 2) Or (DielectricCount < CopperCount - 1) Then
-                Copper_Push(Missing, '"interlayer dielectric stackup unavailable or incomplete"');
+                Copper_Missing(Missing, MissingCounts, '"interlayer dielectric stackup unavailable or incomplete"', MissingTotal);
         End;
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, ePadObject,
                 eRegionObject, ePolyObject, eFillObject, eComponentObject, eNetObject, eEmbeddedBoardObject));
-            Iter.AddFilter_LayerSet(AllLayers);
+            { No classic layer filter: V7 mechanical IDs are excluded below
+              by numeric layer before any electrical/geometry accessor. }
             Iter.AddFilter_Method(eProcessAll);
             Obj := Iter.FirstPCBObject;
             Count := 0;
@@ -13144,28 +13387,64 @@ Begin
             Begin
                 If Count >= 100000 Then
                 Begin
-                    Copper_Push(Missing, '"primitive limit exceeded"'); Break;
+                    Copper_Missing(Missing, MissingCounts, '"primitive limit exceeded"', MissingTotal); Break;
                 End;
                 Inc(Count);
+                ObjectTick := GetTickCount;
+                AccessTick := ObjectTick;
+                ObjectType := Obj.ObjectId;
+                Stage := 'layer';
                 Try
-                    LayerName := GetLayerString(Obj.Layer);
+                  Try
                     NetName := '';
-                    If (Obj.ObjectId <> eComponentObject) And (Obj.ObjectId <> eNetObject) Then
-                        If Obj.Net <> Nil Then NetName := Obj.Net.Name;
-                    IsKeepout := (Obj.Layer = eKeepOutLayer) Or Obj.IsKeepout;
+                    IsKeepout := False;
+                    SkipPrimitive := False;
                     Seen.Add(IntToStr(Obj.I_ObjectAddress));
-                    If (Obj.ObjectId <> eComponentObject) And (Obj.ObjectId <> eNetObject)
-                        And (Obj.ObjectId <> eEmbeddedBoardObject)
-                        And (Not IsKeepout) And (Obj.Layer <> eMultiLayer)
-                        And Not ((Obj.Layer >= eTopLayer) And (Obj.Layer <= eBottomLayer))
-                        And Not ((Obj.Layer >= eInternalPlane1) And (Obj.Layer <= eInternalPlane16)) Then
+                    Common := '';
+                    If (ObjectType <> eComponentObject) And (ObjectType <> eNetObject)
+                        And (ObjectType <> eEmbeddedBoardObject) Then
                     Begin
-                        Inc(ExcludedNonCopper);
-                        Obj := Iter.NextPCBObject;
-                        Continue;
+                        AccessTick := GetTickCount;
+                        LayerId := Obj.Layer;
+                        Copper_Profile(ProfileKeys, ProfileCalls, ProfileMillis,
+                            IntToStr(ObjectType) + ':layer_id', GetTickCount - AccessTick);
+                        If (LayerId <> eKeepOutLayer) And (LayerId <> eMultiLayer)
+                            And Not ((LayerId >= eTopLayer) And (LayerId <= eBottomLayer))
+                            And Not ((LayerId >= eInternalPlane1) And (LayerId <= eInternalPlane16)) Then
+                        Begin
+                            Inc(ExcludedNonCopper);
+                            SkipPrimitive := True;
+                        End;
+                        { DelphiScript can intercept Continue in Except as a
+                          script exception. Keep iteration outside this block. }
+                        If Not SkipPrimitive Then Begin
+                        Stage := 'layer_name';
+                        Copper_Progress(RequestId, IntToStr(ObjectType) + ':' + Stage,
+                            Started, Count, MissingTotal, LastProgress);
+                        AccessTick := GetTickCount;
+                        LayerName := GetLayerString(LayerId);
+                        Copper_Profile(ProfileKeys, ProfileCalls, ProfileMillis,
+                            IntToStr(ObjectType) + ':' + Stage, GetTickCount - AccessTick);
+                        Stage := 'net'; AccessTick := GetTickCount;
+                        Copper_Progress(RequestId, IntToStr(ObjectType) + ':' + Stage,
+                            Started, Count, MissingTotal, LastProgress);
+                        Net := Copper_TypedNet(Obj, ObjectType);
+                        If Net <> Nil Then NetName := Net.Name;
+                        Copper_Profile(ProfileKeys, ProfileCalls, ProfileMillis,
+                            IntToStr(ObjectType) + ':' + Stage, GetTickCount - AccessTick);
+                        Stage := 'keepout'; AccessTick := GetTickCount;
+                        IsKeepout := (LayerId = eKeepOutLayer);
+                        If Not IsKeepout Then IsKeepout := Copper_TypedKeepout(Obj, ObjectType);
+                        Copper_Profile(ProfileKeys, ProfileCalls, ProfileMillis,
+                            IntToStr(ObjectType) + ':' + Stage, GetTickCount - AccessTick);
+                        Common := JsonStr('id', IntToStr(Obj.I_ObjectAddress))
+                            + ',' + JsonStr('layer', LayerName) + ',' + JsonStr('net_name', NetName);
+                        End;
                     End;
-                    Common := JsonStr('id', IntToStr(Obj.I_ObjectAddress))
-                        + ',' + JsonStr('layer', LayerName) + ',' + JsonStr('net_name', NetName);
+                    If Not SkipPrimitive Then Begin
+                    Stage := 'geometry'; AccessTick := GetTickCount;
+                    Copper_Progress(RequestId, IntToStr(ObjectType) + ':' + Stage,
+                        Started, Count, MissingTotal, LastProgress);
                     Item := '';
                     If Obj.ObjectId = eTrackObject Then Begin
                             Track := Obj;
@@ -13199,7 +13478,7 @@ Begin
                                             + JsonStr('layer', GetLayerString(LayerObj.LayerID)) + ','
                                             + JsonFloat('diameter_mm', CoordToMM(Via.SizeOnLayer[LayerObj.LayerID])) + '}';
                                         If Via.SizeOnLayer[LayerObj.LayerID] <> Via.Size Then
-                                            Copper_Push(Missing, '"non-simple via stack requires per-layer audit support"');
+                                            Copper_Missing(Missing, MissingCounts, '"non-simple via stack requires per-layer audit support"', MissingTotal);
                                     End;
                                     Inc(Order);
                                     If Order > 256 Then Raise('Via stack layer limit exceeded');
@@ -13228,9 +13507,9 @@ Begin
                             Else If Pad.TopShape = eOctagonal Then Shape := 'octagonal'
                             Else If Pad.TopShape = eRoundedRectangular Then Shape := 'rounded_rectangle';
                             If (Shape = 'round') And (Pad.TopXSize <> Pad.TopYSize) Then Shape := 'oval';
-                            If Shape = 'unknown' Then Copper_Push(Missing, '"unsupported pad shape"');
-                            If Pad.Mode <> ePadMode_Simple Then Copper_Push(Missing, '"non-simple pad stack geometry unavailable"');
-                            If Shape = 'octagonal' Then Copper_Push(Missing, '"exact octagonal pad audit support unavailable"');
+                            If Shape = 'unknown' Then Copper_Missing(Missing, MissingCounts, '"unsupported pad shape"', MissingTotal);
+                            If Pad.Mode <> ePadMode_Simple Then Copper_Missing(Missing, MissingCounts, '"non-simple pad stack geometry unavailable"', MissingTotal);
+                            If Shape = 'octagonal' Then Copper_Missing(Missing, MissingCounts, '"exact octagonal pad audit support unavailable"', MissingTotal);
                             PadRadius := 0;
                             If Shape = 'rounded_rectangle' Then
                             Begin
@@ -13241,7 +13520,7 @@ Begin
                                     Or (PadRadius * 2 > CoordToMM(Pad.TopYSize)) Then
                                     Raise('Invalid rounded pad corner radius');
                             End;
-                            If Pad.HoleType <> eRoundHole Then Copper_Push(Missing, '"slotted/square pad hole outline unavailable"');
+                            If Pad.HoleType <> eRoundHole Then Copper_Missing(Missing, MissingCounts, '"slotted/square pad hole outline unavailable"', MissingTotal);
                             Item := '{' + Common + ',' + JsonStr('component', Owner)
                                 + ',' + JsonStr('pad_name', Pad.Name)
                                 + ',' + JsonFloat('x_mm', CoordToMM(Pad.X))
@@ -13285,7 +13564,7 @@ Begin
                                 + JsonInt('hole_count', HoleCount) + ',' + JsonStr('kind', Kind)
                                 + ',"poured":true,"geometry_complete":true}';
                             If (Kind = 'board_cutout') Or (Kind = 'polygon_cutout') Then Copper_Push(Cutouts, Item)
-                            Else If Region.Kind <> eRegionKind_Copper Then Copper_Push(Missing, '"unsupported region kind"')
+                            Else If Region.Kind <> eRegionKind_Copper Then Copper_Missing(Missing, MissingCounts, '"unsupported region kind"', MissingTotal)
                             Else If IsKeepout Then Copper_Push(Keepouts, Item)
                             Else Copper_Push(Regions, Item);
                         End
@@ -13298,7 +13577,7 @@ Begin
                                 If Outline <> '' Then Outline := Outline + ',';
                                 Outline := Outline + Copper_Point(Polygon.Segments[I].vx, Polygon.Segments[I].vy);
                             End;
-                            If Curved Then Copper_Push(Missing, '"curved polygon definition outline unavailable"')
+                            If Curved Then Copper_Missing(Missing, MissingCounts, '"curved polygon definition outline unavailable"', MissingTotal)
                             Else Copper_Push(Regions, '{' + Common + ',"outline":[' + Outline + '],'
                                 + '"holes":[],"kind":"polygon","poured":false,' + JsonStr('name', Polygon.Name) + '}');
                             { Prove board-iterator coverage of the actual poured
@@ -13331,7 +13610,7 @@ Begin
                             Else If (Comp.ComponentKind = eComponentKind_NetTie_BOM)
                                 Or (Comp.ComponentKind = eComponentKind_NetTie_NoBOM) Then
                             Begin Kind := 'net_tie'; Copper_Push(NetTies, Copper_NetTie(Comp)); End;
-                            If Kind = 'unknown' Then Copper_Push(Missing, '"unsupported component kind"');
+                            If Kind = 'unknown' Then Copper_Missing(Missing, MissingCounts, '"unsupported component kind"', MissingTotal);
                             Copper_Push(Components, '{' + JsonStr('id', IntToStr(Comp.I_ObjectAddress))
                                 + ',' + JsonStr('designator', Comp.Name.Text)
                                 + ',' + JsonStr('comment', Comp.Comment.Text)
@@ -13348,9 +13627,19 @@ Begin
                             Net := Obj;
                             Copper_Push(Nets, '"' + EscapeJsonString(Net.Name) + '"');
                         End
-                    Else Copper_Push(Missing, '"unsupported embedded-board copper geometry"');
-                Except
-                    Copper_Push(Missing, '"unreadable copper primitive ' + IntToStr(Count) + '"');
+                    Else Copper_Missing(Missing, MissingCounts, '"unsupported embedded-board copper geometry"', MissingTotal);
+                    Copper_Profile(ProfileKeys, ProfileCalls, ProfileMillis,
+                        IntToStr(ObjectType) + ':' + Stage, GetTickCount - AccessTick);
+                    End;
+                  Except
+                    Copper_Profile(ProfileKeys, ProfileCalls, ProfileMillis,
+                        IntToStr(ObjectType) + ':' + Stage + ':failed', GetTickCount - AccessTick);
+                    Copper_Missing(Missing, MissingCounts, '"unreadable copper primitive type '
+                        + IntToStr(ObjectType) + ' accessor ' + Stage + '"', MissingTotal);
+                  End;
+                Finally
+                    Copper_Profile(ProfileKeys, ProfileCalls, ProfileMillis,
+                        IntToStr(ObjectType) + ':total', GetTickCount - ObjectTick);
                 End;
                 Obj := Iter.NextPCBObject;
             End;
@@ -13358,10 +13647,10 @@ Begin
         Seen.Sort; Seen.Sorted := True;
         For I := 0 To PolygonChildren.Count - 1 Do
             If Seen.IndexOf(PolygonChildren[I]) < 0 Then
-                Copper_Push(Missing, '"poured polygon child not exposed by board iterator"');
+                Copper_Missing(Missing, MissingCounts, '"poured polygon child not exposed by board iterator"', MissingTotal);
         Outline := ''; Curved := False;
         Try
-            If Board.BoardOutline.PointCount < 3 Then Copper_Push(Missing, '"board outline has fewer than three vertices"');
+            If Board.BoardOutline.PointCount < 3 Then Copper_Missing(Missing, MissingCounts, '"board outline has fewer than three vertices"', MissingTotal);
             For I := 0 To Board.BoardOutline.PointCount - 1 Do
             Begin
                 If Board.BoardOutline.Segments[I].Kind <> ePolySegmentLine Then Curved := True;
@@ -13369,10 +13658,21 @@ Begin
                 Outline := Outline + Copper_Point(Board.BoardOutline.Segments[I].vx, Board.BoardOutline.Segments[I].vy);
             End;
             If Curved Then
-            Begin Outline := ''; Copper_Push(Missing, '"curved board outline unavailable"'); End;
-        Except Outline := ''; Copper_Push(Missing, '"board outline unavailable"'); End;
+            Begin Outline := ''; Copper_Missing(Missing, MissingCounts, '"curved board outline unavailable"', MissingTotal); End;
+        Except Outline := ''; Copper_Missing(Missing, MissingCounts, '"board outline unavailable"', MissingTotal); End;
         CoverageState := 'partial';
         If Missing.Count = 0 Then CoverageState := 'complete';
+        For I := 0 To Missing.Count - 1 Do
+            Copper_Push(Diagnostics, '{"reason":' + Copy(Missing[I], 1, Length(Missing[I]) - 1)
+                + ',"occurrences":' + MissingCounts[I] + '}');
+        MissingCountsJson := Copper_Array(Diagnostics);
+        While Diagnostics.Count > 0 Do Diagnostics.Delete(Diagnostics.Count - 1);
+        For I := 0 To ProfileKeys.Count - 1 Do
+            Copper_Push(Diagnostics, '{' + JsonStr('type_accessor', ProfileKeys[I])
+                + ',"calls":' + ProfileCalls[I] + ',"elapsed_ms":' + ProfileMillis[I] + '}');
+        ProfileJson := Copper_Array(Diagnostics);
+        LastProgress := 0;
+        Copper_Progress(RequestId, 'serializing', Started, Count, MissingTotal, LastProgress);
         Item := '{"schema":1,"units":"mm","source":"live",' + JsonBool('complete', Missing.Count = 0) + ','
             + JsonStr('board_path', Board.FileName) + ',' + JsonStr('board_identity', Identity)
             + ',"provenance":{"reader":"pcb.get_copper_snapshot","live":true,"consistency":"single_native_handler"}'
@@ -13382,6 +13682,8 @@ Begin
             + ',' + JsonStr('keepouts', CoverageState) + ',' + JsonStr('net_ties', CoverageState)
             + ',' + JsonStr('stackup', CoverageState) + '}'
             + ',' + JsonInt('excluded_non_copper_primitives', ExcludedNonCopper)
+            + ',' + JsonInt('missing_evidence_events', MissingTotal)
+            + ',"missing_counts":' + MissingCountsJson
             + ',"layers":' + Copper_Array(Layers) + ',"tracks":' + Copper_Array(Tracks)
             + ',"arcs":' + Copper_Array(Arcs) + ',"vias":' + Copper_Array(Vias)
             + ',"pads":' + Copper_Array(Pads) + ',"regions":' + Copper_Array(Regions)
@@ -13390,13 +13692,24 @@ Begin
             + ',"nets":' + Copper_Array(Nets) + ',"net_ties":' + Copper_Array(NetTies) + ',"board_outline":[' + Outline + ']'
             + ',"missing":' + Copper_Array(Missing) + '}';
         If Length(Item) > 24 * 1024 * 1024 Then
-            Result := BuildErrorResponse(RequestId, 'COPPER_LIMIT', 'Copper snapshot exceeds 64 MiB')
-        Else Result := BuildSuccessResponse(RequestId, Copy(Item, 1, Length(Item) - 1)
-            + ',' + JsonStr('native_snapshot_json', Item) + '}');
+            Result := BuildErrorResponse(RequestId, 'COPPER_LIMIT', 'Copper snapshot exceeds 24 MiB')
+        Else Begin
+            { Save the exact, deterministic native evidence once. Do not escape
+              another multi-MiB copy into the response: DelphiScript string
+              concatenation makes that quadratic. Timing is outside the proof. }
+            WriteFileContent(ProofPath, Item);
+            If Trim(ReadFileContent(ProofPath)) <> Item Then
+                Result := BuildErrorResponse(RequestId, 'COPPER_PROOF_WRITE', 'Native snapshot evidence could not be persisted exactly')
+            Else Result := BuildSuccessResponse(RequestId, Copy(Item, 1, Length(Item) - 1)
+                + ',' + JsonStr('native_snapshot_token', RequestId)
+                + ',"capture_metrics":{' + JsonInt('elapsed_ms', GetTickCount - Started)
+                + ',"profile":' + ProfileJson + '}}');
+        End;
     Finally
         Layers.Free; Tracks.Free; Arcs.Free; Vias.Free; Pads.Free; Regions.Free;
         Keepouts.Free; Holes.Free; Cutouts.Free; Components.Free; Nets.Free; Missing.Free;
         NetTies.Free; Seen.Free; PolygonChildren.Free;
+        MissingCounts.Free; ProfileKeys.Free; ProfileCalls.Free; ProfileMillis.Free; Diagnostics.Free;
         If PrevView <> Nil Then Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
     End;
 End;
@@ -13510,6 +13823,8 @@ Var
     MatchRule : IPCB_MatchedNetLengthsConstraint;
     Kind, Scope : String;
     Value, MaxValue, Favored, Uncoupled : TCoord;
+    PairMin, PairMax, PairPreferred : TCoord;
+    HasPairWidth : Boolean;
     L : TLayer;
 Begin
     Result := False;
@@ -13520,8 +13835,8 @@ Begin
     Scope := ExtractJsonValue(Item, 'scope2');
     If (Scope <> '') And (Rule.Scope2Expression <> Scope) Then Exit;
     Value := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'value'), 10));
-    MaxValue := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'max_value'), CoordToMils(Value) * 5));
-    Favored := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'favored_value'), CoordToMils(Value)));
+    MaxValue := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'max_value'), Value / 10000.0 * 5));
+    Favored := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'favored_value'), Value / 10000.0));
     Kind := ExtractJsonValue(Item, 'rule_type');
     If Kind = 'clearance' Then Begin
         ClearRule := Rule;
@@ -13537,10 +13852,25 @@ Begin
         If (Abs(HoleRule.MinLimit - Value) > 1) Or (Abs(HoleRule.MaxLimit - MaxValue) > 1) Then Exit;
     End Else If Kind = 'differential_pairs' Then Begin
         DiffRule := Rule;
+        HasPairWidth := (ExtractJsonValue(Item, 'pair_width_min_mils') <> '')
+            Or (ExtractJsonValue(Item, 'pair_width_max_mils') <> '')
+            Or (ExtractJsonValue(Item, 'pair_width_preferred_mils') <> '');
+        If HasPairWidth Then Begin
+            PairMin := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'pair_width_min_mils'), -1));
+            PairMax := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'pair_width_max_mils'), -1));
+            PairPreferred := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'pair_width_preferred_mils'), -1));
+            If (PairMin <= 0) Or (PairMin > PairPreferred) Or (PairPreferred > PairMax) Then Exit;
+        End;
         For L := MinLayer To MaxLayer Do
+        Begin
             If (Abs(DiffRule.MinGap(L) - Value) > 1)
                 Or (Abs(DiffRule.MaxGap(L) - MaxValue) > 1)
                 Or (Abs(DiffRule.PreferedGap(L) - Favored) > 1) Then Exit;
+            If HasPairWidth Then
+                If (Abs(DiffRule.MinWidth(L) - PairMin) > 1)
+                    Or (Abs(DiffRule.MaxWidth(L) - PairMax) > 1)
+                    Or (Abs(DiffRule.PreferedWidth(L) - PairPreferred) > 1) Then Exit;
+        End;
         Uncoupled := MilsToCoord(StrToFloatDef(ExtractJsonValue(Item, 'max_uncoupled_length'), 1000));
         If Abs(DiffRule.MaxUncoupledLength - Uncoupled) > 1 Then Exit;
     End Else If Kind = 'matched_lengths' Then Begin
@@ -13564,6 +13894,7 @@ Var
     Net : IPCB_Net;
     Owned, ActualOwned, ClassNames, RuleNames, PairNames, NetNames, OldRules : TStringList;
     Path, Item, Reply, Items, Name, Kind, Why, PairPos, PairNeg, Expected, Fresh, Failure : String;
+    ProofToken, ProofPath, FreshToken, SnapshotPrefix : String;
     ClassCount, RuleCount, PairCount, OwnedCount, I, J, Applied : Integer;
     Failed, PairExists : Boolean;
 Begin
@@ -13580,7 +13911,15 @@ Begin
        Or (PairCount < 0) Or (PairCount > 500) Or (OwnedCount < 0) Or (OwnedCount > 500) Then Begin
         Result := BuildErrorResponse(RequestId, 'INVALID_PARAMS', 'Invalid bounded copper batch counts'); Exit;
     End;
-    Expected := ExtractJsonValue(Params, 'expected_native_snapshot');
+    ProofToken := ExtractJsonValue(Params, 'expected_native_snapshot_token');
+    Expected := '';
+    If ProofToken <> '' Then Begin
+        If Not IsValidRequestId(ProofToken) Then Begin
+            Result := BuildErrorResponse(RequestId, 'STALE_COPPER', 'Invalid native snapshot token'); Exit;
+        End;
+        ProofPath := WorkspaceDir + 'copper_snapshot_' + ProofToken + '.json';
+        Expected := Trim(ReadFileContent(ProofPath));
+    End Else Expected := ExtractJsonValue(Params, 'expected_native_snapshot');
     If (Expected = '') Or (Length(Expected) > 24 * 1024 * 1024) Then Begin
         Result := BuildErrorResponse(RequestId, 'STALE_COPPER', 'A bounded native snapshot precondition is required'); Exit;
     End;
@@ -13663,7 +14002,20 @@ Begin
         If UpperCase(ExpandFileName(Board.FileName)) <> UpperCase(ExpandFileName(Path)) Then
             Copper_Fail('Target PCB changed before rule application');
         Reply := PCB_GetCopperSnapshot(JsonObj(JsonStr('board_path', Path)), RequestId);
-        Fresh := ExtractJsonValue(ExtractJsonValue(Reply, 'data'), 'native_snapshot_json');
+        { The handler owns this exact request ID. Check its success envelope,
+          then read its deterministic proof directly; do not interpret every
+          character of the multi-MiB response merely to find the small token. }
+        SnapshotPrefix := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION)
+            + ',"id":"' + RequestId + '","success":true,"data":';
+        FreshToken := '';
+        If Copy(Reply, 1, Length(SnapshotPrefix)) = SnapshotPrefix Then FreshToken := RequestId;
+        Fresh := '';
+        If IsValidRequestId(FreshToken) Then Begin
+            ProofPath := WorkspaceDir + 'copper_snapshot_' + FreshToken + '.json';
+            Fresh := Trim(ReadFileContent(ProofPath));
+            { Internal preflight evidence is not a reusable public capture. }
+            DeleteFile(ProofPath);
+        End;
         If (Fresh = '') Or (Fresh <> Expected) Then
             Copper_Fail('Copper changed before the first native edit; preview again');
         Items := ''; Applied := 0; Failed := False; Failure := '';

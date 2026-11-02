@@ -1,4 +1,4 @@
-# Modified 2026-10-06 by M-R-Abedini; see root MODIFICATIONS.md.
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Thin Win32 window and control access. No Altium knowledge lives here.
@@ -376,6 +376,8 @@ class Window:
     title: str
     pid: int
     controls: list = field(default_factory=list)
+    enabled: bool = True
+    visible: bool = True
 
     def buttons(self) -> list:
         """Controls a plan may legitimately press.
@@ -599,7 +601,9 @@ def enumerate_windows(pid: Optional[int] = None,
             out.append(Window(hwnd=hwnd,
                               class_name=win32gui.GetClassName(hwnd),
                               title=win32gui.GetWindowText(hwnd),
-                              pid=wpid))
+                              pid=wpid,
+                              enabled=bool(win32gui.IsWindowEnabled(hwnd)),
+                              visible=bool(win32gui.IsWindowVisible(hwnd))))
         except Exception:                        # pragma: no cover - races
             pass
         return True
@@ -622,7 +626,9 @@ def capture(hwnd: int) -> Optional[Window]:
         window = Window(hwnd=hwnd,
                         class_name=win32gui.GetClassName(hwnd),
                         title=win32gui.GetWindowText(hwnd),
-                        pid=win32process.GetWindowThreadProcessId(hwnd)[1])
+                        pid=win32process.GetWindowThreadProcessId(hwnd)[1],
+                        enabled=bool(win32gui.IsWindowEnabled(hwnd)),
+                        visible=bool(win32gui.IsWindowVisible(hwnd)))
     except Exception:
         return None
 

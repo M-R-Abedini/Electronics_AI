@@ -70,6 +70,16 @@ The older IPC-2221 calculator remains explicitly labelled. Default fabrication
 widths and 3W/5W isolation are engineering policies, not manufacturer approval.
 
 Native batches preflight their bounded manifest and report readback/failure.
+Differential Pairs Routing rules carry their own width constraints: a separate
+Width rule does not set pair width. `pcb_create_design_rule` accepts fractional
+`pair_width_min_mils`, `pair_width_max_mils` and `pair_width_preferred_mils`;
+supply all three together with min <= preferred <= max. These apply to every
+layer and are read back through the typed differential rule alongside its gap.
+Gap-only callers retain native width defaults and receive
+`pair_width_verified=false`. Synthesis sends the actual qualified impedance
+width to the differential rule. Missing or different member/layer geometries
+remain incomplete; differing controlled-impedance layer widths require a
+future per-layer pair-width API and the differential rule is omitted.
 They still do not provide transactional rollback: a mid-handler native error
 can leave partial changes. Retain saved checkpoints and inspect any partial
 result before retrying. A disk checkpoint does not capture unsaved editor work.

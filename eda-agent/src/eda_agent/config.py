@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Configuration management for EDA Agent MCP Server.
@@ -68,6 +69,8 @@ def write_workspace_pointer(workspace_dir: Path) -> None:
     UnicodeEncodeError for an accented user-profile path (and that error
     escaped the OSError guard), while utf-8 would mojibake the same path
     on the Pascal side.
+    Non-Windows hosts use UTF-8 for offline tooling and scratch pointers;
+    Windows pointers always retain the native ANSI encoding.
     """
     target = workspace_pointer_file()
 
@@ -92,10 +95,9 @@ def write_workspace_pointer(workspace_dir: Path) -> None:
         path_str = str(workspace_dir)
         if not path_str.endswith("\\"):
             path_str += "\\"
-        target.write_text(path_str, encoding="mbcs")
-    except (OSError, PermissionError, UnicodeEncodeError, LookupError):
-        # LookupError: "mbcs" only exists on Windows; the pointer file is
-        # meaningless elsewhere anyway.
+        encoding = "mbcs" if sys.platform == "win32" else "utf-8"
+        target.write_text(path_str, encoding=encoding)
+    except (OSError, PermissionError, UnicodeEncodeError):
         pass
 
 

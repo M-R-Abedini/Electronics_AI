@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: MIT
 """Compose existing sizing engines into evidence-bearing copper constraints.
 
@@ -179,7 +180,9 @@ def synthesize_copper_rules(snapshot: dict, classification: dict, options: dict 
     gap = _positive(opts.get("min_clearance_mils", 6), "min_clearance_mils")
     rules, evidence, unsupported, critical = [], list(classification.get("evidence", [])), [], set(opts.get("critical_nets", []))
     unsupported.extend({"constraint": "classification", "reason": str(item)} for item in classification.get("unknowns", []))
-    widths, matched_groups = {}, {}
+    widths, matched_groups, differential_widths = {}, {}, {}
+    qualified_differential_nets = set()
+    explicit_width_nets = {net for net, values in constraints.items() if 'required_width_mils' in values}
     net_names = _names(classes)
     for net, tags in sorted(classes.items()):
         constraint = constraints.setdefault(net, {})
@@ -314,6 +317,12 @@ def synthesize_copper_rules(snapshot: dict, classification: dict, options: dict 
             constraint["max_width_mils"] = max(v["max_width_mils"] for v in layer_widths.values())
         else:
             rules.append({"name": f"{name}_Width_{len(rules)}", "rule_type": "width", "value": applied_width, "favored_value": applied_width, "max_value": applied_width if target is not None else constraint.get("max_width_mils", applied_width*5), "scope": _scope(net)})
+        if differential_target is not None:
+            if not any(item.get("net") == net and item.get("constraint") == "impedance" for item in unsupported):
+                differential_widths[net] = [v["required_width_mils"] for v in layer_widths.values()] or [applied_width]
+                qualified_differential_nets.add(net)
+        elif net in explicit_width_nets:
+            differential_widths[net] = [applied_width]
     class_names = {tag: managed_class_name(tag) for tag in sorted({tag for tags in classes.values() for tag in tags})}
     for group, tolerance in sorted(matched_groups.items()):
         native_class = class_names[group]
@@ -349,7 +358,29 @@ def synthesize_copper_rules(snapshot: dict, classification: dict, options: dict 
         name = pair.get("name")
         if name and pair.get("gap_mils") is not None:
             pgap = _positive(pair["gap_mils"], "pair gap")
-            rules.append({"name": "Copper_Diff_" + pair_names[name], "rule_type": "differential_pairs", "value": pgap, "max_value": pgap, "favored_value": pgap, "scope": "InDifferentialPair('" + name.replace("'", "''") + "')"})
+            rule = {"name": "Copper_Diff_" + pair_names[name], "rule_type": "differential_pairs", "value": pgap, "max_value": pgap, "favored_value": pgap, "scope": "InDifferentialPair('" + name.replace("'", "''") + "')"}
+            width_keys = ("pair_width_min_mils", "pair_width_max_mils", "pair_width_preferred_mils")
+            explicit = any(key in pair for key in width_keys)
+            candidates = [value for net in pair["nets"] for value in differential_widths.get(net, [])]
+            all_members_sized = all(net in differential_widths for net in pair["nets"])
+            uniform = all_members_sized and max(candidates) - min(candidates) <= .00005
+            controlled = any(constraints[net].get("target_zdiff_ohm") is not None for net in pair["nets"])
+            if explicit:
+                values = [_positive(pair.get(key), key) for key in width_keys]
+                if not values[0] <= values[2] <= values[1] <= 200000:
+                    raise ValueError("Differential pair widths require min <= preferred <= max <= 200000")
+                rule.update(zip(width_keys, values))
+            elif uniform:
+                rule.update({key: candidates[0] for key in width_keys})
+            else:
+                unsupported.append({"constraint": "differential_pair_width", "pair": name,
+                                    "reason": "matching explicit or qualified widths for both members/all used layers required; scalar pair width cannot represent missing or heterogeneous geometry"})
+            if controlled and (not uniform or not all(net in qualified_differential_nets for net in pair["nets"])
+                               or (explicit and any(abs(value - candidates[0]) > .00005 for value in values))):
+                unsupported.append({"constraint": "differential_pair_width", "pair": name,
+                                    "reason": "pair routing width must equal the qualified impedance width on both members/all used layers; differential rule omitted"})
+            else:
+                rules.append(rule)
         else:
             unsupported.append({"constraint": "differential_pair", "reason": "explicit existing Altium pair name and gap_mils required"})
     return {"ok": True, "net_classes": classes, "constraints": constraints, "rules": rules,

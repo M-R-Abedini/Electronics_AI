@@ -32,6 +32,22 @@ Caller-supplied snapshots are analysis inputs, never live-write preconditions.
    retained checkpoint; do not blindly retry or claim transactional rollback.
    Disk checkpoints do not include unsaved work.
 
+Native copper captures carry `native_snapshot_token`; the suite retains the
+corresponding private evidence and recaptures copper inside the rule handler
+before its first edit. Keep the reviewed snapshot/preview IDs in the workflow;
+do not substitute a saved-file hash for native freshness. `capture_metrics` is
+performance evidence, separate from geometric coverage. Missing/partial copper
+remains incomplete even when capture is faster.
+
+Differential routing width is part of the Differential Pairs Routing rule.
+When creating one directly, supply `pair_width_min_mils`,
+`pair_width_max_mils` and `pair_width_preferred_mils` together, separately from
+the gap fields (`value`, `max_value`, `favored_value`). A separate Width rule
+does not set the pair routing width. Check `pair_width_verified` and fractional
+native width readback; gap-only success explicitly leaves width unverified.
+Synthesis writes matching qualified pair widths, and marks missing or different
+member/layer widths unsupported rather than claiming impedance closure.
+
 For routing, the preview can write a constrained private DSN. Pass the returned
 synthesis plus its matching complete snapshot as `constraints_context` to
 `route__route_dsn`. Existing critical copper needs exact DSN agreement and a

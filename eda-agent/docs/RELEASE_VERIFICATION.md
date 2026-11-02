@@ -950,3 +950,9 @@ it. A library edit is real in memory and absent from disk until then.
 
 
 Local bridge update: SCRIPT_VERSION `2026.10.29.single-transport1`. Name access is type-guarded; eNote is queryable/deletable; custom dimensions use UseCustomSheet; batch modification reads child-envelope data, handles single modern operations, and preserves child failures. Native validation and known save/library limitations are recorded in the root MODIFICATIONS.md. These checks supplement the historical upstream procedure above; they do not imply every upstream step has been rerun.
+
+# Field regression candidate 0.5.1
+
+The field fixes use native `SCRIPT_VERSION = 2026.11.01.field-fixes1` and
+Python package `0.5.1`. Snapshot coverage, native rule widths and recovery UI
+bindings require separate acceptance; metadata-only doctor is not a live probe.

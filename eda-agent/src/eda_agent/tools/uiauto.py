@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Tools that drive the Altium GUI, for operations with no API.
@@ -541,7 +542,8 @@ def register_uiauto_tools(mcp):
     @mcp.tool()
     async def app_press_dialog_button(button_caption: str,
                                       dialog_title: str = "",
-                                      allow_irreversible: bool = False
+                                      allow_irreversible: bool = False,
+                                      recovery_binding: dict[str, Any] | None = None
                                       ) -> dict[str, Any]:
         """Press ONE named button in an open Altium dialog.
 
@@ -573,6 +575,10 @@ def register_uiauto_tools(mcp):
             dialog_title: substring picking one dialog when several are
                 open. Empty uses the first.
             allow_irreversible: permit a committing press.
+            recovery_binding: exact short-lived binding from a button in
+                app_list_open_dialogs. Only known DRC Run/report/Cancel and
+                Error OK/Cancel actions qualify for bridge-free suite recovery.
+                The binding is consumed once and revalidated before pressing.
 
         Returns:
             ``ok``, the dialog and button actually matched, and whether
@@ -583,20 +589,40 @@ def register_uiauto_tools(mcp):
             return problem
 
         def press():
+            if recovery_binding is not None:
+                from ..ui import dialog_recovery
+                try:
+                    target, button = dialog_recovery.resolve(
+                        pid, recovery_binding, button_caption, dialog_title)
+                except (ValueError, RuntimeError, OSError) as exc:
+                    return {"ok": False, "reason": str(exc), "recovery_refused": True}
+                windows.click(button)
+                closed = windows.wait_for_close(target.hwnd, timeout=5.0)
+                dismissing = dialog_recovery.normalise(button.text) in {"ok", "cancel"}
+                return {"ok": bool(closed) if dismissing else True,
+                        "dialog": target.title, "pressed": button.text,
+                        "dialog_closed": closed, "outcome_verified": bool(closed),
+                        "recovery": {**recovery_binding, "action_dispatched": True,
+                                     "native_operation_completion_proven": False}}
             open_dialogs = windows.dialogs(pid)
             if not open_dialogs:
                 return {"ok": False, "reason": "no dialog is open"}
-            target = None
-            for dialog in open_dialogs:
-                title = (dialog.title or "").lower()
-                if not dialog_title or dialog_title.lower() in title:
-                    target = dialog
-                    break
-            if target is None:
+            matches = [dialog for dialog in open_dialogs
+                       if not dialog_title or dialog_title.casefold() in (dialog.title or "").casefold()]
+            if not matches:
                 return {"ok": False,
                         "reason": f"no open dialog matches {dialog_title!r}",
                         "open": [d.title for d in open_dialogs]}
+            if len(matches) != 1:
+                return {"ok": False, "reason": "multiple dialogs match; use an exact observed recovery binding",
+                        "open": [d.title for d in matches]}
+            target = matches[0]
 
+            from ..ui import dialog_recovery
+            matching_buttons = [b for b in target.buttons()
+                                if dialog_recovery.normalise(b.text) == dialog_recovery.normalise(button_caption)]
+            if len(matching_buttons) > 1:
+                return {"ok": False, "reason": "multiple buttons have the requested caption; nothing was pressed"}
             button = target.find_button(button_caption)
             if button is None:
                 offered = [b.text for b in target.buttons()]

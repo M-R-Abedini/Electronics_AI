@@ -137,15 +137,22 @@ async def _suite_copper_focus(board_path: str, x_mm: float, y_mm: float,
 @mcp.tool()
 async def _suite_copper_apply_rules(board_path: str, net_classes: list[dict],
                                    rules: list[dict], differential_pairs: list[dict],
-                                   expected_native_snapshot: str,
-                                   owned_class_names: list[str] | None = None) -> dict:
+                                   expected_native_snapshot: str = '',
+                                   owned_class_names: list[str] | None = None,
+                                   expected_native_snapshot_token: str = '') -> dict:
     """Internal bounded rule batch; the gateway checkpoints before dispatch."""
     from suite_si_pi import prepare_native_rule_batch
     from eda_agent.bridge import get_bridge
     params = prepare_native_rule_batch(board_path, net_classes, rules, differential_pairs)
-    if not expected_native_snapshot or len(expected_native_snapshot) > 64 * 1024 * 1024:
-        raise ValueError('A bounded fresh native copper precondition is required')
-    params['expected_native_snapshot'] = expected_native_snapshot
+    if expected_native_snapshot_token:
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', expected_native_snapshot_token):
+            raise ValueError('Invalid native copper snapshot token')
+        params['expected_native_snapshot_token'] = expected_native_snapshot_token
+    else:
+        if not expected_native_snapshot or len(expected_native_snapshot) > 24 * 1024 * 1024:
+            raise ValueError('A bounded fresh native copper precondition is required')
+        params['expected_native_snapshot'] = expected_native_snapshot
     owned = owned_class_names or []
     if len(owned) > 500 or len(set(owned)) != len(owned) or any(
             not isinstance(name, str) or not name.startswith('MCP_SIPI_') for name in owned):

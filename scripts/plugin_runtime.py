@@ -357,6 +357,40 @@ def doctor(data, plugin_root=ROOT, probe=True):
     return output
 
 
+def probe_backend_initialization(manifest, *, timeout_seconds=30, plugin_root=ROOT):
+    """Initialize/list the EDA MCP only. Never call a native/editor tool."""
+    import asyncio
+    # Direct invocation places scripts/, not the plugin root, on sys.path.
+    # The launcher is also supported from an unrelated working directory.
+    sys.path.insert(0, str(Path(plugin_root).resolve()))
+    from suite_stdio import Worker, load_specs, worker_diagnostic
+    spec = next((s for s in load_specs(Path(manifest)) if s.name == 'eda'), None)
+    if spec is None or not spec.enabled:
+        return {'initialized': False, 'status': 'disabled', 'native_editor_probed': False}
+    async def run():
+        worker = Worker(spec)
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                await worker.request('_capabilities')
+                catalog = await worker.request('list_tools')
+            return {'initialized': True, 'status': 'ready', 'tool_count': len(catalog.tools),
+                    'native_editor_probed': False}
+        except Exception as error:
+            diagnostic = getattr(error, 'diagnostic', None) or worker.failure_diagnostic
+            if diagnostic is None:
+                diagnostic = worker_diagnostic(error, worker.phase, dict(os.environ, **spec.env))
+            return {'initialized': False, 'status': 'failed', 'diagnostic': diagnostic,
+                    'native_editor_probed': False, 'automatic_retry': False}
+        finally:
+            # This actor only initializes/lists tools. Cancelling its bounded
+            # diagnostic cannot interrupt/replay any native design operation.
+            if worker.task is not None and not worker.task.done():
+                worker.task.cancel()
+                await asyncio.gather(worker.task, return_exceptions=True)
+            await worker.close()
+    return asyncio.run(run())
+
+
 def launch_configuration(data, plugin_root=ROOT):
     state, template = checked_state(data)
     validate_template(template)
@@ -464,7 +498,9 @@ def main(argv=None):
     parser.add_argument('--client', choices=('codex', 'claude-desktop', 'claude-code', 'cursor', 'windsurf', 'vscode', 'all'),
                         help='Configure clients after successful setup (otherwise no client files change)')
     sub = parser.add_subparsers(dest='operation', required=True)
-    sub.add_parser('doctor')
+    diagnose = sub.add_parser('doctor')
+    diagnose.add_argument('--probe-backends', action='store_true',
+                          help='Read-only MCP initialize/list-tools probe; no native editor commands')
     adopt_parser = sub.add_parser('adopt')
     adopt_parser.add_argument('--backend-config', type=Path, required=True)
     adopt_parser.add_argument('--python', type=Path, required=True)
@@ -491,6 +527,13 @@ def main(argv=None):
             output = bootstrap(args, data, args.plugin_root)
         elif args.operation == 'doctor':
             output = doctor(data, args.plugin_root)
+            if args.probe_backends and output['ready']:
+                _, manifest = launch_configuration(data, args.plugin_root)
+                output['backend_initialization'] = {'eda': probe_backend_initialization(manifest, plugin_root=args.plugin_root)}
+                output['backend_initialization_probed'] = True
+                if not output['backend_initialization']['eda']['initialized']:
+                    output['ready'] = False
+                    output['issues'].append('EDA backend MCP initialization failed; inspect its diagnostic')
         elif args.operation == 'detach':
             output = detach(data, args.plugin_root)
         elif args.operation == 'configure-clients':

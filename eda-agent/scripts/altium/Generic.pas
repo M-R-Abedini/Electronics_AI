@@ -1,3 +1,4 @@
+{ Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md. }
 { SPDX-License-Identifier: Apache-2.0                                   }
 { Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>                                      }
 {..............................................................................}
@@ -9474,9 +9475,16 @@ End;
 {   - vias (location, size, hole, high/low layer, net)                        }
 {   - texts (location, text, size, width, rotation, layer)                    }
 {                                                                              }
-{ Coordinates in mils. Layer names come back as Altium's GetLayerString      }
+{ Coordinates in mils, retaining the native 0.0001mil resolution. Integer    }
+{ CoordToMils rounds pad centres and sizes enough to hide clearance errors. }
+{ Layer names come back as Altium's GetLayerString                           }
 { form so the renderer can z-order, colour, and toggle by name.              }
 { Deferred to v2: regions / polygon fills, component bodies, drill drawing. }
+Function Gen_PcbCoordMils(Coord : TCoord) : String;
+Begin
+    Result := FloatToJsonStr(Coord / 10000.0);
+End;
+
 Function Gen_GetPcbGeometry(Params : String; RequestId : String) : String;
 Var
     Board : IPCB_Board;
@@ -9532,20 +9540,20 @@ Begin
             Begin
                 OutlineJson := OutlineJson +
                     '{"kind":"line"' +
-                    ',"x":' + IntToStr(CoordToMils(Seg.vx)) +
-                    ',"y":' + IntToStr(CoordToMils(Seg.vy)) + '}';
+                    ',"x":' + Gen_PcbCoordMils(Seg.vx) +
+                    ',"y":' + Gen_PcbCoordMils(Seg.vy) + '}';
             End
             Else
             Begin
                 OutlineJson := OutlineJson +
                     '{"kind":"arc"' +
-                    ',"x":' + IntToStr(CoordToMils(Seg.vx)) +
-                    ',"y":' + IntToStr(CoordToMils(Seg.vy)) +
-                    ',"cx":' + IntToStr(CoordToMils(Seg.cx)) +
-                    ',"cy":' + IntToStr(CoordToMils(Seg.cy)) +
+                    ',"x":' + Gen_PcbCoordMils(Seg.vx) +
+                    ',"y":' + Gen_PcbCoordMils(Seg.vy) +
+                    ',"cx":' + Gen_PcbCoordMils(Seg.cx) +
+                    ',"cy":' + Gen_PcbCoordMils(Seg.cy) +
                     ',"angle1":' + FloatToJsonStr(Seg.Angle1) +
                     ',"angle2":' + FloatToJsonStr(Seg.Angle2) +
-                    ',"radius":' + IntToStr(CoordToMils(Seg.Radius)) + '}';
+                    ',"radius":' + Gen_PcbCoordMils(Seg.Radius) + '}';
             End;
             Inc(NumOutline);
         End;
@@ -9581,11 +9589,11 @@ Begin
                 Try If Track.Net <> Nil Then NetName := Track.Net.Name; Except End;
                 If NumTracks > 0 Then TracksJson := TracksJson + ',';
                 TracksJson := TracksJson +
-                    '{"x1":' + IntToStr(CoordToMils(Track.X1)) +
-                    ',"y1":' + IntToStr(CoordToMils(Track.Y1)) +
-                    ',"x2":' + IntToStr(CoordToMils(Track.X2)) +
-                    ',"y2":' + IntToStr(CoordToMils(Track.Y2)) +
-                    ',"width":' + IntToStr(CoordToMils(Track.Width)) +
+                    '{"x1":' + Gen_PcbCoordMils(Track.X1) +
+                    ',"y1":' + Gen_PcbCoordMils(Track.Y1) +
+                    ',"x2":' + Gen_PcbCoordMils(Track.X2) +
+                    ',"y2":' + Gen_PcbCoordMils(Track.Y2) +
+                    ',"width":' + Gen_PcbCoordMils(Track.Width) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"net":"' + EscapeJsonString(NetName) + '"}';
                 Inc(NumTracks);
@@ -9597,12 +9605,12 @@ Begin
                 Try If Arc.Net <> Nil Then NetName := Arc.Net.Name; Except End;
                 If NumArcs > 0 Then ArcsJson := ArcsJson + ',';
                 ArcsJson := ArcsJson +
-                    '{"cx":' + IntToStr(CoordToMils(Arc.XCenter)) +
-                    ',"cy":' + IntToStr(CoordToMils(Arc.YCenter)) +
-                    ',"r":' + IntToStr(CoordToMils(Arc.Radius)) +
+                    '{"cx":' + Gen_PcbCoordMils(Arc.XCenter) +
+                    ',"cy":' + Gen_PcbCoordMils(Arc.YCenter) +
+                    ',"r":' + Gen_PcbCoordMils(Arc.Radius) +
                     ',"start":' + FloatToJsonStr(Arc.StartAngle) +
                     ',"end":' + FloatToJsonStr(Arc.EndAngle) +
-                    ',"width":' + IntToStr(CoordToMils(Arc.LineWidth)) +
+                    ',"width":' + Gen_PcbCoordMils(Arc.LineWidth) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"net":"' + EscapeJsonString(NetName) + '"}';
                 Inc(NumArcs);
@@ -9639,14 +9647,14 @@ Begin
                 Except End;
                 If NumPads > 0 Then PadsJson := PadsJson + ',';
                 PadsJson := PadsJson +
-                    '{"x":' + IntToStr(CoordToMils(Pad.X)) +
-                    ',"y":' + IntToStr(CoordToMils(Pad.Y)) +
-                    ',"x_size":' + IntToStr(CoordToMils(Pad.TopXSize)) +
-                    ',"y_size":' + IntToStr(CoordToMils(Pad.TopYSize)) +
+                    '{"x":' + Gen_PcbCoordMils(Pad.X) +
+                    ',"y":' + Gen_PcbCoordMils(Pad.Y) +
+                    ',"x_size":' + Gen_PcbCoordMils(Pad.TopXSize) +
+                    ',"y_size":' + Gen_PcbCoordMils(Pad.TopYSize) +
                     ',"shape":"' + EscapeJsonString(ShapeStr) + '"' +
-                    ',"hole_size":' + IntToStr(CoordToMils(Pad.HoleSize)) +
+                    ',"hole_size":' + Gen_PcbCoordMils(Pad.HoleSize) +
                     ',"hole_type":"' + EscapeJsonString(HoleStr) + '"' +
-                    ',"hole_width":' + IntToStr(CoordToMils(Pad.HoleWidth)) +
+                    ',"hole_width":' + Gen_PcbCoordMils(Pad.HoleWidth) +
                     ',"hole_rotation":' + FloatToJsonStr(Pad.HoleRotation) +
                     ',"rotation":' + FloatToJsonStr(Pad.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
@@ -9662,10 +9670,10 @@ Begin
                 Try If Via.Net <> Nil Then NetName := Via.Net.Name; Except End;
                 If NumVias > 0 Then ViasJson := ViasJson + ',';
                 ViasJson := ViasJson +
-                    '{"x":' + IntToStr(CoordToMils(Via.X)) +
-                    ',"y":' + IntToStr(CoordToMils(Via.Y)) +
-                    ',"size":' + IntToStr(CoordToMils(Via.Size)) +
-                    ',"hole_size":' + IntToStr(CoordToMils(Via.HoleSize)) +
+                    '{"x":' + Gen_PcbCoordMils(Via.X) +
+                    ',"y":' + Gen_PcbCoordMils(Via.Y) +
+                    ',"size":' + Gen_PcbCoordMils(Via.Size) +
+                    ',"hole_size":' + Gen_PcbCoordMils(Via.HoleSize) +
                     ',"high_layer":"' + EscapeJsonString(GetLayerString(Via.HighLayer)) + '"' +
                     ',"low_layer":"' + EscapeJsonString(GetLayerString(Via.LowLayer)) + '"' +
                     ',"net":"' + EscapeJsonString(NetName) + '"}';
@@ -9698,11 +9706,11 @@ Begin
                 End;
                 If NumTexts > 0 Then TextsJson := TextsJson + ',';
                 TextsJson := TextsJson +
-                    '{"x":' + IntToStr(CoordToMils(Text.XLocation)) +
-                    ',"y":' + IntToStr(CoordToMils(Text.YLocation)) +
+                    '{"x":' + Gen_PcbCoordMils(Text.XLocation) +
+                    ',"y":' + Gen_PcbCoordMils(Text.YLocation) +
                     ',"text":"' + EscapeJsonString(TextStr) + '"' +
-                    ',"size":' + IntToStr(CoordToMils(Text.Size)) +
-                    ',"width":' + IntToStr(CoordToMils(Text.Width)) +
+                    ',"size":' + Gen_PcbCoordMils(Text.Size) +
+                    ',"width":' + Gen_PcbCoordMils(Text.Width) +
                     ',"rotation":' + FloatToJsonStr(Text.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"hidden":false}';
@@ -9734,8 +9742,8 @@ Begin
                     Begin
                         If K > 1 Then RegionsJson := RegionsJson + ',';
                         RegionsJson := RegionsJson + '['
-                            + IntToStr(CoordToMils(Contour.X[K])) + ','
-                            + IntToStr(CoordToMils(Contour.Y[K])) + ']';
+                            + Gen_PcbCoordMils(Contour.X[K]) + ','
+                            + Gen_PcbCoordMils(Contour.Y[K]) + ']';
                     End;
                     RegionsJson := RegionsJson + ']}';
                     Inc(NumRegions);
@@ -9763,8 +9771,8 @@ Begin
                 If NumComps > 0 Then CompsJson := CompsJson + ',';
                 CompsJson := CompsJson +
                     '{"des":"' + EscapeJsonString(TextStr) + '"' +
-                    ',"x":' + IntToStr(CoordToMils(CompObj.X)) +
-                    ',"y":' + IntToStr(CoordToMils(CompObj.Y)) +
+                    ',"x":' + Gen_PcbCoordMils(CompObj.X) +
+                    ',"y":' + Gen_PcbCoordMils(CompObj.Y) +
                     ',"rotation":' + FloatToJsonStr(CompObj.Rotation) +
                     ',"layer":"' + EscapeJsonString(LayerName) + '"' +
                     ',"name_on":' + BoolToJsonStr(NameOnFlag) +
@@ -9821,7 +9829,7 @@ Begin
     LayersJson := LayersJson + '}';
 
     RespJson :=
-        '{"counts":{"outline":' + IntToStr(NumOutline) +
+        '{"units":"mils","coordinate_precision_mils":0.0001,"counts":{"outline":' + IntToStr(NumOutline) +
         ',"tracks":' + IntToStr(NumTracks) +
         ',"arcs":' + IntToStr(NumArcs) +
         ',"pads":' + IntToStr(NumPads) +
@@ -9829,10 +9837,10 @@ Begin
         ',"texts":' + IntToStr(NumTexts) +
         ',"regions":' + IntToStr(NumRegions) +
         ',"components":' + IntToStr(NumComps) + '}' +
-        ',"bbox":{"x1":' + IntToStr(CoordToMils(BR.X1)) +
-        ',"y1":' + IntToStr(CoordToMils(BR.Y1)) +
-        ',"x2":' + IntToStr(CoordToMils(BR.X2)) +
-        ',"y2":' + IntToStr(CoordToMils(BR.Y2)) + '}' +
+        ',"bbox":{"x1":' + Gen_PcbCoordMils(BR.X1) +
+        ',"y1":' + Gen_PcbCoordMils(BR.Y1) +
+        ',"x2":' + Gen_PcbCoordMils(BR.X2) +
+        ',"y2":' + Gen_PcbCoordMils(BR.Y2) + '}' +
         ',"outline":' + OutlineJson +
         ',"tracks":' + TracksJson +
         ',"arcs":' + ArcsJson +

@@ -240,6 +240,7 @@ class SafetyService:
     def __init__(self, data_dir: Path, native_read):
         self.store = CheckpointStore(data_dir)
         self.native_read = native_read
+        self._last_native_checkpoint = None
 
     def list_tools(self):
         return checkpoint_tools()
@@ -252,6 +253,91 @@ class SafetyService:
         if name == 'restore_checkpoint':
             return self.store.restore(**arguments)
         raise ValueError('Unknown checkpoint tool')
+
+    async def prepare_dialog_recovery(self, arguments):
+        """Fresh Win32 observation, never app_context, for one benign UI action.
+
+        The worker consumes and validates the observation again immediately
+        before the press. This does not classify the tool as a non-mutation or
+        authorize any other UI tool, native edit, wizard or ECO action.
+        """
+        import re
+        supplied = arguments.get('recovery_binding')
+        try:
+            report = await self.native_read('app_list_open_dialogs', {})
+        except (RuntimeError, ValueError):
+            if supplied is not None:
+                raise
+            # Recovery never relaxes a disabled-tool policy. An ordinary
+            # bridge-backed press may still use its usual checkpoint path.
+            return None
+        if not isinstance(report, dict) or report.get('ok') is not True:
+            if supplied is not None:
+                raise RuntimeError('Cannot freshly observe Altium dialogs for recovery')
+            return None
+        session = report.get('recovery_session')
+        matches = [dialog for dialog in report.get('dialogs', [])
+                   if not arguments.get('dialog_title') or arguments['dialog_title'].casefold()
+                   in str(dialog.get('title', '')).casefold()]
+        if supplied is not None:
+            if not isinstance(supplied, dict):
+                raise ValueError('recovery_binding must be an observed object')
+            matches = [dialog for dialog in matches if dialog.get('hwnd') == supplied.get('dialog_hwnd')]
+        if len(matches) > 1:
+            raise ValueError('Multiple dialogs match; use an exact observed recovery_binding')
+        if not matches:
+            if supplied is not None:
+                raise ValueError('Observed recovery dialog is gone; list dialogs again')
+            return None
+        dialog = matches[0]
+        normalise = lambda value: re.sub(r'[&\s.]+', '', str(value or '')).casefold()
+        caption = normalise(arguments.get('button_caption'))
+        drc = (dialog.get('class') == 'TDesignRuleCheckForm'
+               and re.fullmatch(r'Design Rule Checker(?: \[(?:mil|mm)\])?', dialog.get('title', '')))
+        error = dialog.get('title') == 'Error' and dialog.get('class') in {'TMessageForm', '#32770'}
+        approved = ((drc and caption in {'rundesignrulecheck', 'run', 'report', 'cancel'})
+                    or (error and caption in {'ok', 'cancel'}))
+        if not approved:
+            if supplied is not None:
+                raise ValueError('This dialog/action is not approved for recovery')
+            return None
+        buttons = [button for button in dialog.get('buttons', [])
+                   if normalise(button.get('caption')) == caption]
+        if len(buttons) != 1:
+            raise ValueError('Recovery requires exactly one observed matching button')
+        button = buttons[0]
+        binding = button.get('recovery_binding')
+        if session is None or binding is None:
+            if supplied is not None:
+                raise RuntimeError('Recovery cannot verify the existing native session; list dialogs again')
+            return None
+        if (not isinstance(session, dict) or not isinstance(binding, dict)
+                or not binding.get('token') or not session.get('native_session_id')
+                or any(binding.get(key) != value for key, value in session.items())
+                or binding.get('pid') != report.get('pid')
+                or binding.get('dialog_hwnd') != dialog.get('hwnd')
+                or binding.get('dialog_title') != dialog.get('title')
+                or binding.get('dialog_class') != dialog.get('class')
+                or binding.get('button_hwnd') != button.get('hwnd')
+                or binding.get('button_caption') != button.get('caption')
+                or binding.get('button_class') != button.get('class')
+                or dialog.get('enabled') is not True or dialog.get('visible') is not True
+                or button.get('enabled') is not True or button.get('visible') is not True):
+            raise RuntimeError('Recovery cannot verify the existing session and enabled dialog/button binding')
+        if supplied is not None and supplied != binding:
+            raise ValueError('Recovery observation changed or expired; list dialogs again')
+        checkpoint = None
+        previous = self._last_native_checkpoint
+        if previous:
+            coordination = previous['coordination']
+            if (coordination.get('native_session_id') == session['native_session_id']
+                    and coordination.get('workspace_path') == session.get('workspace')):
+                checkpoint = previous['checkpoint']
+        receipt = {**binding, 'route': 'observed_benign_dialog',
+                   'checkpoint_reused': checkpoint['checkpoint_id'] if checkpoint else None,
+                   'checkpoint_status': 'prior_native_session_checkpoint' if checkpoint else 'not_required_for_benign_dialog_action',
+                   'native_operation_completion_proven': False}
+        return {**arguments, 'recovery_binding': binding}, receipt, checkpoint
 
     async def before(self, name, arguments, checkpoint_files=None):
         """Snapshot explicit targets and all visible project members.
@@ -330,7 +416,10 @@ class SafetyService:
             notices.append('Fresh schematic connectivity not captured: recompilation may persist documents.')
         if not files and name not in {'app_create_document', 'create_project'}:
             raise RuntimeError('No saved target could be resolved for a pre-edit checkpoint; edit was not dispatched')
-        return await asyncio.to_thread(self.store.create, sorted(files), tool=name,
+        checkpoint = await asyncio.to_thread(self.store.create, sorted(files), tool=name,
                                       connectivity=connectivity, connectivity_status=status,
                                       connectivity_target=connectivity_target,
                                       scope='explicit targets + active document + visible project members', warnings=notices)
+        coordination = context.get('coordination') or {}
+        self._last_native_checkpoint = {'checkpoint': checkpoint, 'coordination': dict(coordination)}
+        return checkpoint

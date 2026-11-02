@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "mcp-altium-suite",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Local Altium circuit design, copper-aware SI/PI review, native library inspection and sourcing with a unified MCP and engineering skills.",
   "author": {
     "name": "M-R-Abedini",

@@ -281,3 +281,86 @@ def test_native_source_has_loaded_only_identity_checks_and_private_dispatch():
     assert '"poured":false' in source
     assert 'Region.Kind = eRegionKind_BoardCutout' in source
     assert 'Region.Kind = 2' not in source
+
+
+def test_live_diagnostic_counts_survive_adapter_without_claiming_coverage(tmp_path):
+    value = live_snapshot(tmp_path / 'fixture.PcbDoc')
+    value.update(complete=False, missing=['unreadable copper primitive type 1 accessor geometry'],
+                 missing_evidence_events=3672,
+                 missing_counts=[{'reason': 'unreadable copper primitive type 1 accessor geometry',
+                                  'occurrences': 3672}])
+    value['coverage']['arcs'] = 'partial'
+    value['capture_metrics'] = {'elapsed_ms': 140,
+        'profile': [{'type_accessor': '1:geometry:failed', 'calls': 3672, 'elapsed_ms': 120}]}
+    async def native(command, params):
+        return {'data': value}
+    result = asyncio.run(capture_copper_snapshot(value['board_path'], native, open_in_memory=True))
+    assert result['complete'] is False
+    assert result['missing_counts'][0]['occurrences'] == 3672
+    assert result['capture_metrics']['profile'][0]['calls'] == 3672
+    other = copy.deepcopy(result)
+    other['capture_metrics']['profile'][0]['elapsed_ms'] = 9999
+    other['native_snapshot_token'] = 'another-request'
+    assert content_fingerprint(other) == content_fingerprint(result)
+
+
+def test_live_snapshot_filters_graphics_before_electrical_accessors():
+    source = (Path(__file__).resolve().parents[1] / 'eda-agent/scripts/altium/PCB.pas').read_text(encoding='utf-8')
+    handler = source.split('Function PCB_GetCopperSnapshot(', 1)[1].split('Function PCB_FocusCopperViolation(', 1)[0]
+    classify = handler.split('While Obj <> Nil Do', 1)[1].split("Stage := 'geometry'", 1)[0]
+    excluded = classify.index('Inc(ExcludedNonCopper)')
+    assert excluded < classify.index('GetLayerString(LayerId)')
+    assert excluded < classify.index('Copper_TypedNet(Obj, ObjectType)')
+    assert excluded < classify.index('Copper_TypedKeepout(Obj, ObjectType)')
+    assert ' Obj.Net' not in handler and ' Obj.IsKeepout' not in handler
+    loop_body = handler.split('While Obj <> Nil Do', 1)[1].split('Finally Board.BoardIterator_Destroy', 1)[0]
+    protected = loop_body.split('Try', 1)[1].split('Finally', 1)[0]
+    assert 'Continue;' not in protected and 'Obj := Iter.NextPCBObject' not in protected
+    assert 'SkipPrimitive := True' in protected and protected.count('If Not SkipPrimitive Then Begin') == 2
+    assert 'AddFilter_LayerSet(AllLayers)' not in handler
+    assert 'Copper_Push(Missing,' not in handler
+    assert 'If Missing.Count = 0 Then CoverageState' in handler
+    assert 'type_accessor' in handler and ':failed' in handler
+    diagnostic = source.split('Procedure Copper_Missing(', 1)[1].split('Procedure Copper_Profile(', 1)[0]
+    assert 'Inc(Total)' in diagnostic and 'Items.Count >= 128' in diagnostic
+    progress = source.split('Procedure Copper_Progress(', 1)[1].split('Function Copper_TypedNet(', 1)[0]
+    assert progress.index('If Not FileExists(MarkerPath) Then Exit') < progress.index('WriteFileContent(')
+    assert "ExtractJsonValue(ReadFileContent(MarkerPath), 'started_ms')" in progress
+    assert "JsonInt('started_ms', Started)" not in progress
+
+
+def test_mechanical_counts_cover_v7_and_component_graphics_without_classic_sets():
+    source = (Path(__file__).resolve().parents[1] / 'eda-agent/scripts/altium/PCB.pas').read_text(encoding='utf-8')
+    scanner = source.split('Function PCB_CountPrimitiveLayers(', 1)[1].split('Function PCB_CountPrimitivesOnLayer(', 1)[0]
+    assert 'AddFilter_LayerSet' not in scanner and 'AddFilter_ObjectSet' not in scanner
+    assert 'Comp.GroupIterator_Create' in scanner and 'Comp.GroupIterator_Destroy' in scanner
+    assert 'PCB_CountLayerPrimitive(Child, Seen, LayerIds, Counts)' in scanner
+    count_one = source.split('Procedure PCB_CountLayerPrimitive(', 1)[1].split('Function PCB_CountPrimitiveLayers(', 1)[0]
+    assert 'Seen.IndexOf(Key)' in count_one and 'IntToStr(Prim.Layer)' in count_one
+    listing = source.split('Function PCB_GetMechLayerNames(', 1)[1].split('Function RectsOverlap(', 1)[0]
+    assert 'Lyr := LayerObj.LayerID' in listing
+    assert 'primitive_counts_complete' in listing and 'Prims := -1' in listing
+    assert 'If Not Enabled Then Continue' not in listing
+    assert listing.count('PCB_CountPrimitiveLayers(Board, LayerIds, Counts)') == 1
+
+
+def test_native_proof_is_private_deterministic_and_checked_before_first_edit():
+    source = (Path(__file__).resolve().parents[1] / 'eda-agent/scripts/altium/PCB.pas').read_text(encoding='utf-8')
+    capture = source.split('Function PCB_GetCopperSnapshot(', 1)[1].split('Function PCB_FocusCopperViolation(', 1)[0]
+    assert capture.index('If Not IsValidRequestId(RequestId)') < capture.index("'copper_snapshot_' + RequestId")
+    assert capture.index('If FileExists(ProofPath)') < capture.index('WriteFileContent(ProofPath, Item)')
+    proof = capture.split("Item := '{\"schema\":1", 1)[1].split('If Length(Item)', 1)[0]
+    assert 'elapsed_ms' not in proof and 'ProfileJson' not in proof and 'RequestId' not in proof
+    assert "JsonStr('native_snapshot_json', Item)" not in capture
+    assert "JsonStr('native_snapshot_token', RequestId)" in capture
+    assert '"capture_metrics":' in capture
+    apply = source.split('Function PCB_ApplyCopperRules(', 1)[1]
+    assert apply.index('If Not IsValidRequestId(ProofToken)') < apply.index('Expected := Trim(ReadFileContent(ProofPath))')
+    assert apply.index('Fresh := Trim(ReadFileContent(ProofPath))') < apply.index('Fresh <> Expected')
+    assert "ExtractJsonValue(Reply, 'data')" not in apply
+    assert 'If Copy(Reply, 1, Length(SnapshotPrefix)) = SnapshotPrefix Then FreshToken := RequestId' in apply
+    assert apply.index('Fresh <> Expected') < apply.index('PCBServer.PreProcess')
+    wrapper = (Path(__file__).resolve().parents[1] / 'eda_stdio.py').read_text(encoding='utf-8')
+    boundary = wrapper.split('async def _suite_copper_apply_rules(', 1)[1].split('# Keep private', 1)[0]
+    assert "re.fullmatch(r'[A-Za-z0-9_-]{1,64}', expected_native_snapshot_token)" in boundary
+    assert boundary.index('Invalid native copper snapshot token') < boundary.index('send_command_async(')

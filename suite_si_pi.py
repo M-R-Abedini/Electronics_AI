@@ -32,7 +32,10 @@ def _path(value):
     path = Path(value)
     if not path.is_absolute() or path.suffix.casefold() != '.pcbdoc':
         raise ValueError('An absolute .PcbDoc board_path is required')
-    return str(path.resolve())
+    # A loaded Altium document is bound to its logical path. Resolving a
+    # Windows workspace junction can change D:\\a into another volume/path
+    # and falsely reject the same caller-supplied snapshot (also seen in CI).
+    return os.path.abspath(path)
 
 
 def _editor_absent():
@@ -84,6 +87,16 @@ def prepare_native_rule_batch(board_path, net_classes, rules, differential_pairs
             raise ValueError('Maximum rule dimension is below its minimum')
         if rule['rule_type'] in {'width', 'differential_pairs'} and not rule['value'] <= rule.get('favored_value', rule['value']) <= rule.get('max_value', rule['value'] * 5):
             raise ValueError('Preferred rule dimension is outside minimum/maximum')
+        pair_width_keys = ('pair_width_min_mils', 'pair_width_max_mils', 'pair_width_preferred_mils')
+        if any(key in rule for key in pair_width_keys):
+            pair_widths = [rule.get(key) for key in pair_width_keys]
+            if rule['rule_type'] != 'differential_pairs' or any(
+                type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 200000
+                for value in pair_widths
+            ):
+                raise ValueError('Differential pair widths require all three finite positive mil values within native coordinate range')
+            if not pair_widths[0] <= pair_widths[2] <= pair_widths[1]:
+                raise ValueError('Differential pair width requires min <= preferred <= max')
         for key in ('scope', 'scope2'):
             if key in rule and (not isinstance(rule[key], str) or not rule[key].strip()):
                 raise ValueError('Rule scopes must be nonempty query strings')
@@ -341,7 +354,9 @@ class SiPiService:
             complete = record['snapshot']['complete'] and synthesis.get('coverage', {}).get('complete') is True
             if not complete and not allow_partial:
                 raise ValueError('Incomplete copper or physics evidence; review coverage before allowing partial rule application')
-            native_snapshot = record['snapshot'].get('native_snapshot_json')
+            proof_key = ('native_snapshot_token' if record['snapshot'].get('native_snapshot_token')
+                         else 'native_snapshot_json')
+            native_snapshot = record['snapshot'].get(proof_key)
             if not isinstance(native_snapshot, str) or not native_snapshot:
                 raise ValueError('Native copper freshness proof unavailable; rule application refused')
             for pair in synthesis.get('differential_pairs', []):
@@ -350,7 +365,8 @@ class SiPiService:
             owned_names = await asyncio.to_thread(self._load_ownership, record['snapshot']['board_path'])
             native = await self._native('_suite_copper_apply_rules', {
                 'board_path': record['snapshot']['board_path'],
-                'expected_native_snapshot': native_snapshot, 'owned_class_names': owned_names,
+                ('expected_native_snapshot_token' if proof_key == 'native_snapshot_token'
+                 else 'expected_native_snapshot'): native_snapshot, 'owned_class_names': owned_names,
                 'net_classes': [{'name': name, 'net_names': members} for name, members in
                                 synthesis.get('class_memberships', {}).items() if members],
                 'rules': synthesis.get('rules', []),

@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Say what is on screen, what it says, and whether Altium is stuck.
@@ -169,12 +170,16 @@ def describe_dialog(window, use_ocr: bool = True) -> dict:
         "kind": kind,
         "message": message,
         "buttons": [
-            {"caption": b.text, "class": b.class_name, "enabled": b.enabled}
+            {"caption": b.text, "class": b.class_name, "enabled": b.enabled,
+             "visible": b.visible, "hwnd": b.hwnd}
             for b in buttons
         ],
         "needs_a_human": kind in NEEDS_A_HUMAN,
         "has_unreadable_content": unreadable,
         "hwnd": window.hwnd,
+        "pid": window.pid,
+        "enabled": window.enabled,
+        "visible": window.visible,
     }
     if not message:
         # Never let an empty list read as "the dialog said nothing".
@@ -226,12 +231,16 @@ def report(pid: int) -> dict:
                           "inspected from this host"}
 
     found = [describe_dialog(w) for w in win.dialogs(pid)]
+    from . import dialog_recovery
+    recovery_session = dialog_recovery.observe(pid, found)
     blocked = win.is_blocked(pid)
     blocked_without_visible_dialog = blocked and not found
     kinds = [d["kind"] for d in found]
     return {
         "ok": True,
         "pid": pid,
+        "recovery_session": recovery_session,
+        "recovery_binding_max_age_seconds": dialog_recovery.MAX_AGE_SECONDS,
         "blocked": blocked,
         "blocked_without_visible_dialog": blocked_without_visible_dialog,
         "dialog_count": len(found),

@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Synthesised input must never reach another application.
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -167,8 +169,15 @@ def test_disabling_stops_input_but_not_reading(monkeypatch):
     remove the checks that keep it safe.
     """
     monkeypatch.setenv(win.UI_AUTOMATION_ENV, "0")
+    # Exercise the real reader and input gate without requiring a desktop.
+    read_calls = []
+    def enumerate_empty(callback, context):
+        read_calls.append(True)
+    monkeypatch.setattr(win, "_AVAILABLE", True)
+    monkeypatch.setattr(win, "win32gui", SimpleNamespace(EnumWindows=enumerate_empty), raising=False)
     assert win.automation_enabled() is False
-    assert win.enumerate_windows() is not None
+    assert win.enumerate_windows() == []
+    assert read_calls == [True]
 
     with pytest.raises(win.AutomationDisabled):
         win.send_keys("escape")

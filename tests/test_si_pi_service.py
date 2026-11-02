@@ -86,6 +86,70 @@ def test_native_apply_requires_live_preview_unchanged_copper_and_preserves_decim
     asyncio.run(run())
 
 
+def test_native_token_precondition_survives_new_capture_timing_and_replaces_inline_proof(tmp_path):
+    async def run():
+        data = snapshot(tmp_path)
+        data['native_snapshot_token'] = 'preview-native-request'
+        data['capture_metrics'] = {'elapsed_ms': 10, 'profile': []}
+        writes = []
+        async def reader(*args, **kwargs):
+            return copy.deepcopy(data)
+        async def native(name, args):
+            writes.append((name, args))
+            return {'success': True, 'applied_count': 1}
+        service = SiPiService(tmp_path, native_dispatch=native, snapshot_reader=reader)
+        kwargs = dict(board_path=data['board_path'], topology=ROLES)
+        preview = await service.synthesize_and_apply_rules(**kwargs)
+        data['native_snapshot_token'] = 'fresh-native-request'
+        data['capture_metrics'] = {'elapsed_ms': 200, 'profile': [{'calls': 42}]}
+        result = await service.synthesize_and_apply_rules(**kwargs, apply=True,
+            expected_snapshot_id=preview['snapshot_id'], expected_preview_id=preview['preview_id'])
+        assert result['applied'] and len(writes) == 1
+        assert writes[0][1]['expected_native_snapshot_token'] == 'fresh-native-request'
+        assert 'expected_native_snapshot' not in writes[0][1]
+    asyncio.run(run())
+
+
+def test_native_apply_without_freshness_proof_refuses_before_dispatch(tmp_path):
+    async def run():
+        data = snapshot(tmp_path)
+        data.pop('native_snapshot_json')
+        async def reader(*args, **kwargs):
+            return copy.deepcopy(data)
+        async def forbidden(*args):
+            pytest.fail('A snapshot without native evidence reached a write')
+        service = SiPiService(tmp_path, native_dispatch=forbidden, snapshot_reader=reader)
+        kwargs = dict(board_path=data['board_path'], topology=ROLES)
+        preview = await service.synthesize_and_apply_rules(**kwargs)
+        with pytest.raises(ValueError, match='freshness proof unavailable'):
+            await service.synthesize_and_apply_rules(**kwargs, apply=True,
+                expected_snapshot_id=preview['snapshot_id'], expected_preview_id=preview['preview_id'])
+    asyncio.run(run())
+
+
+def test_native_missing_or_changed_proof_rejection_does_not_claim_edits(tmp_path):
+    async def run():
+        data = snapshot(tmp_path)
+        data.pop('native_snapshot_json')
+        data['native_snapshot_token'] = 'missing-or-changed-proof'
+        async def reader(*args, **kwargs):
+            return copy.deepcopy(data)
+        calls = []
+        async def native(name, args):
+            calls.append((name, args))
+            return {'success': False, 'applied_count': 0,
+                    'error': {'code': 'STALE_COPPER', 'message': 'Native evidence is unavailable or changed'}}
+        service = SiPiService(tmp_path, native_dispatch=native, snapshot_reader=reader)
+        kwargs = dict(board_path=data['board_path'], topology=ROLES)
+        preview = await service.synthesize_and_apply_rules(**kwargs)
+        result = await service.synthesize_and_apply_rules(**kwargs, apply=True,
+            expected_snapshot_id=preview['snapshot_id'], expected_preview_id=preview['preview_id'])
+        assert len(calls) == 1
+        assert not result['ok'] and not result['applied'] and not result['board_modified']
+        assert result['native']['error']['code'] == 'STALE_COPPER'
+    asyncio.run(run())
+
+
 def test_native_rule_batch_rejects_invalid_tail_before_any_dispatch(tmp_path):
     target = str(tmp_path / 'board.PcbDoc')
     valid = {'name': 'width', 'rule_type': 'width', 'value': 6.125, 'max_value': 8, 'favored_value': 7}

@@ -1,5 +1,24 @@
 # Local changes
 
+## Added 2026-11-02
+
+- Field regression fixes for `0.5.1`: independent fractional differential-pair
+  rule widths with typed native readback; precise general PCB geometry export;
+  V7 mechanical occupancy counts including component children; and copper
+  capture diagnostics that retain unsupported evidence as partial coverage.
+  `Main.pas`, `PCB.pas` and `Generic.pas` are locally modified upstream files;
+  native script identity is `2026.11.01.field-fixes1`.
+- Large live copper captures use a private native proof token instead of an
+  escaped duplicate JSON payload. Capture timing stays outside deterministic
+  evidence; the same-handler copper precondition remains before any rule edit.
+- Narrow, session/window/button-bound modal recovery avoids the generic
+  checkpoint deadlock for approved DRC/error buttons. Structured bounded Worker
+  failures retain causes and complete pending requests without replay. Optional
+  `doctor --probe-backends` checks EDA initialization without calling CAD tools.
+- Windows/POSIX test fixtures, workspace pointer encoding and native-bundle CI
+  ordering are corrected. Scope, remaining issues and release acceptance are
+  recorded in `FIELD_FIXES_0.5.1.fa.md`.
+
 ## Added 2026-11-01
 
 - Copper SI/PI gateway (`0.5.0` candidate): four `si_pi__` capabilities connect

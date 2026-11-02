@@ -17,13 +17,18 @@ import inspect
 import json
 import os
 from pathlib import Path
+import re
 import sys
+import traceback
+import uuid
 sys.dont_write_bytecode = True  # Installed package roots are read-only; state has its own data directory.
 from typing import Any
 
 import jsonschema
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import McpError
+from mcp.shared.session import CONNECTION_CLOSED
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
@@ -120,6 +125,51 @@ def load_specs(path: Path | None = None) -> list[BackendSpec]:
     return specs
 
 
+def worker_diagnostic(exc, phase, environment=None):
+    """Bounded nested transport evidence, without process arguments or secrets."""
+    secrets = [str(v) for k, v in (environment or {}).items() if v and
+               re.search(r'token|secret|password|passwd|credential|api.?key|authorization|cookie|private.?key', k, re.I)]
+    def clean(value):
+        value = str(value)
+        for secret in sorted(secrets, key=len, reverse=True):
+            value = value.replace(secret, '[redacted]')
+        value = re.sub(r'(?i)(Bearer\s+)\S+', r'\1[redacted]', value)
+        value = re.sub(r'(https?://)[^/\s@]+@', r'\1[redacted]@', value)
+        value = re.sub(r'(?i)((?:token|password|secret|api_key|authorization)\s*[=:]\s*)[^\s&,;]+', r'\1[redacted]', value)
+        return value[:600]
+    pending, nodes = [exc], []
+    connection_closed = False
+    seen = set()
+    while pending and len(nodes) < 12:
+        item = pending.pop(0)
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, McpError) and item.error.code == CONNECTION_CLOSED:
+            connection_closed = True
+        frames = traceback.extract_tb(item.__traceback__, limit=-4)
+        nodes.append({'type': type(item).__name__, 'message': clean(item),
+                      'frames': [{'file': Path(f.filename).name, 'line': f.lineno, 'function': f.name} for f in frames]})
+        pending.extend(getattr(item, 'exceptions', ()))
+        if item.__cause__ is not None:
+            pending.append(item.__cause__)
+        elif item.__context__ is not None:
+            pending.append(item.__context__)
+    kinds = {n['type'] for n in nodes}
+    if 'UnicodeDecodeError' in kinds:
+        kind = 'stdio_decoding'
+    elif kinds & {'FileNotFoundError', 'PermissionError'}:
+        kind = 'process_start'
+    elif connection_closed or kinds & {'BrokenPipeError', 'EOFError', 'EndOfStream', 'ClosedResourceError', 'BrokenResourceError', 'ConnectionAbortedError', 'ConnectionResetError'}:
+        kind = 'transport_closed'
+    elif 'TimeoutError' in kinds:
+        kind = 'startup_timeout' if phase in {'starting', 'initializing'} else 'request_timeout'
+    else:
+        kind = 'initialization' if phase in {'starting', 'initializing'} else 'transport_failure'
+    return {'id': uuid.uuid4().hex, 'kind': kind, 'phase': phase, 'exceptions': nodes,
+            'truncated': bool(pending), 'automatic_retry': False}
+
+
 class Worker:
     """Own every stdio context in one task; never replay dispatched commands.
 
@@ -133,6 +183,9 @@ class Worker:
         self.task: asyncio.Task | None = None
         self.running = False
         self.failure: str | None = None
+        self.failure_diagnostic: dict | None = None
+        self.phase = 'not_started'
+        self.active_request = None
         self.capabilities: types.ServerCapabilities | None = None
 
     async def request(self, method: str, **params):
@@ -141,7 +194,9 @@ class Worker:
         if self.task is None:
             self.task = asyncio.create_task(self._run(), name=f"suite-{self.spec.name}")
         if self.task.done():
-            raise RuntimeError(f"Backend {self.spec.name} stopped ({self.failure or 'closed'}); reconnect the suite")
+            detail = self.failure_diagnostic
+            reason = (f"{detail['kind']}, diagnostic {detail['id']}: " + detail['exceptions'][-1]['message']) if detail else (self.failure or 'closed')
+            raise RuntimeError(f"Backend {self.spec.name} stopped ({reason}); no command was replayed")
         future = asyncio.get_running_loop().create_future()
         await self.queue.put((future, method, params))
         # Normal cancellation cancels only this future. The actor is independent.
@@ -150,6 +205,7 @@ class Worker:
     async def _run(self):
         current = None
         try:
+            self.phase = 'starting'
             environment = dict(os.environ)
             environment.update(self.spec.env)
             environment['PYTHONDONTWRITEBYTECODE'] = '1'
@@ -163,10 +219,12 @@ class Worker:
                                                env=environment, cwd=self.spec.cwd)
             async with stdio_client(parameters, errlog=sys.stderr) as streams:
                 async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=self.spec.timeout_seconds)) as session:
+                    self.phase = 'initializing'
                     async with asyncio.timeout(self.spec.startup_timeout_seconds):
                         initialized = await session.initialize()
                     self.capabilities = initialized.capabilities
                     self.running = True
+                    self.phase = 'ready'
                     while True:
                         job = await self.queue.get()
                         if job is None:
@@ -175,28 +233,48 @@ class Worker:
                         if current.cancelled():
                             current = None
                             continue
+                        self.phase = 'dispatching'
+                        self.active_request = {'gateway_operation_id': uuid.uuid4().hex,
+                                               'method': method, 'tool': params.get('name')}
                         try:
                             # Prompt discovery needs only initialization capabilities,
                             # not every tool schema from the backend.
                             value = self.capabilities if method == "_capabilities" else await getattr(session, method)(**params)
                         except Exception as exc:
+                            diagnostic = worker_diagnostic(exc, self.phase, environment)
+                            if diagnostic['kind'] in {'stdio_decoding', 'transport_closed', 'process_start'}:
+                                # A dead stdio channel cannot service the remaining
+                                # queue. Keep the active identity until outer cleanup
+                                # has failed all waiters; never retry a possible edit.
+                                raise
                             if not current.done():
                                 current.set_exception(exc)
                         else:
                             if not current.done():
                                 current.set_result(value)
                         current = None
+                        self.phase = 'ready'
+                        self.active_request = None
         except BaseException as exc:
             self.failure = type(exc).__name__
-            error = RuntimeError(f"Backend {self.spec.name} unavailable ({self.failure}); reconnect the suite")
+            self.failure_diagnostic = worker_diagnostic(exc, self.phase, dict(os.environ, **self.spec.env))
+            self.failure_diagnostic['last_request'] = self.active_request
+            self.failure_diagnostic['outcome'] = 'unknown_after_dispatch' if self.active_request else 'not_dispatched'
+            detail = self.failure_diagnostic
+            def failure(outcome):
+                error = RuntimeError(f"Backend {self.spec.name} unavailable ({detail['kind']}, diagnostic {detail['id']}, "
+                                     f"outcome {outcome}): {detail['exceptions'][-1]['message']}; no command was replayed")
+                error.diagnostic = {**detail, 'outcome': outcome}
+                return error
             if current is not None and not current.done():
-                current.set_exception(error)
+                current.set_exception(failure(detail['outcome']))
             while not self.queue.empty():
                 queued = self.queue.get_nowait()
                 if queued is not None and not queued[0].done():
-                    queued[0].set_exception(error)
+                    queued[0].set_exception(failure('not_dispatched'))
         finally:
             self.running = False
+            self.phase = 'stopped'
 
     async def close(self):
         if self.task is not None and not self.task.done():
@@ -410,18 +488,26 @@ class Suite:
 
     async def _invoke_worker(self, backend, original, arguments, meta, progress_callback, checkpoint_files=None):
         worker = self.workers[backend]
-        warnings, checkpoint, telemetry_result = [], None, None
+        warnings, checkpoint, telemetry_result, recovery = [], None, None, None
         from suite_checkpoints import is_mutation
         mutating = is_mutation(original, arguments)
         if backend in {'eda', 'legacy'}:
             from suite_units import normalize_arguments
             arguments, warnings = normalize_arguments(arguments)
             if self.safety is not None:
-                if mutating:
+                prepared = None
+                if backend == 'eda' and original == 'app_press_dialog_button':
+                    prepared = await self.safety.prepare_dialog_recovery(arguments)
+                if prepared is not None:
+                    arguments, recovery, checkpoint = prepared
+                elif mutating:
                     checkpoint = await self.safety.before(original, arguments, checkpoint_files)
         response = await worker.request("call_tool", name=original, arguments=arguments,
                                         meta=meta, progress_callback=progress_callback)
-        if self.telemetry is not None and self.telemetry.enabled():
+        if recovery is not None:
+            # Native telemetry reads would recreate the modal/bridge deadlock.
+            telemetry_result = {'collected': False, 'reason': 'recovery_ui_requires_no_bridge'}
+        elif self.telemetry is not None and self.telemetry.enabled():
             try:
                 telemetry_result = await self.telemetry.observe(backend + '__' + original, arguments, response,
                                                                self.native_read, mutating=mutating)
@@ -429,7 +515,7 @@ class Suite:
                 # Optional collection cannot turn a completed editor mutation
                 # into an apparent failure/retry. Never log raw design data.
                 telemetry_result = {'collected': False, 'reason': 'capture_failed', 'failure_type': type(exc).__name__}
-        if warnings or checkpoint or telemetry_result:
+        if warnings or checkpoint or telemetry_result or recovery:
             retained = dict(response.meta or {})
             info = dict(retained.get('altium_suite') or {})
             if warnings:
@@ -439,6 +525,8 @@ class Suite:
                                       'unsaved_memory_captured': False, 'warnings': checkpoint['warnings']}
             if telemetry_result:
                 info['telemetry'] = telemetry_result
+            if recovery:
+                info['dialog_recovery'] = recovery
             retained['altium_suite'] = info
             response = response.model_copy(update={'meta': retained})
         return response
@@ -574,6 +662,9 @@ class Suite:
     def status(self):
         backends = {name: {"enabled": worker.spec.enabled, "running": worker.running,
                            "failure_type": worker.failure,
+                           "failure_diagnostic": worker.failure_diagnostic,
+                           "startup_status": worker.phase,
+                           "active_request": worker.active_request,
                            "catalog_loaded": name in self._catalogs,
                            "tool_count": len(self._catalogs[name]) if name in self._catalogs else None,
                            "queued_requests": worker.queue.qsize(),
@@ -628,7 +719,7 @@ def create_server(suite: Suite) -> Server:
         finally:
             await suite.close()
 
-    server = Server(SERVER_NAME, version="0.5.0", instructions=INSTRUCTIONS, lifespan=lifespan)
+    server = Server(SERVER_NAME, version="0.5.1", instructions=INSTRUCTIONS, lifespan=lifespan)
 
     @server.list_tools()
     async def list_tools():

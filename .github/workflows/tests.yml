@@ -16,6 +16,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r requirements.txt
+      - name: Lint and build native script bundle used by regression tests
+        run: python eda-agent/scripts/altium/build.py
       - name: Offline stdio startup without an Altium installation
         run: python tests/smoke_stdio.py
       - name: Complete root regression suite, native codecs and package license closure

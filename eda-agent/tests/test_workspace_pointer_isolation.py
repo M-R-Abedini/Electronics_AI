@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """The test suite must never repoint a live Altium bridge.
@@ -17,6 +18,7 @@ overridable so tests can still exercise the writer against scratch.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from eda_agent.config import (
     WORKSPACE_POINTER_ENV,
@@ -64,7 +66,7 @@ def test_pointer_override_redirects_the_write(tmp_path, monkeypatch):
     write_workspace_pointer(workspace)
 
     assert scratch.exists()
-    written = scratch.read_text(encoding="mbcs").strip()
+    written = scratch.read_text(encoding="mbcs" if sys.platform == "win32" else "utf-8").strip()
     assert written == str(workspace) + "\\", (
         "pointer must hold the workspace path with a trailing separator"
     )
