@@ -338,7 +338,8 @@ def test_mechanical_counts_cover_v7_and_component_graphics_without_classic_sets(
     count_one = source.split('Procedure PCB_CountLayerPrimitive(', 1)[1].split('Function PCB_CountPrimitiveLayers(', 1)[0]
     assert 'Seen.IndexOf(Key)' in count_one and 'IntToStr(Prim.Layer)' in count_one
     listing = source.split('Function PCB_GetMechLayerNames(', 1)[1].split('Function RectsOverlap(', 1)[0]
-    assert 'Lyr := LayerObj.LayerID' in listing
+    assert 'Lyr := MechLayerFromNumber(Num)' in listing
+    assert 'Lyr := LayerObj.LayerID' not in listing
     assert 'primitive_counts_complete' in listing and 'Prims := -1' in listing
     assert 'If Not Enabled Then Continue' not in listing
     assert listing.count('PCB_CountPrimitiveLayers(Board, LayerIds, Counts)') == 1

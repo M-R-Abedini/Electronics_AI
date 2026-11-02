@@ -10976,9 +10976,9 @@ Begin
         Try LayerObj := LayerStack.LayerObject_V7[Lyr]; Except LayerObj := Nil; End;
         If LayerObj = Nil Then Continue;
 
-        { Compare the primitive's native ID, not the classic alias used to
-          look up this stack object. }
-        Lyr := LayerObj.LayerID;
+        { Keep the ID supplied by LayerUtils.MechanicalLayer for V7 layers.
+          LayerObj.LayerID aliases Mechanical17+ to classic Mechanical16
+          (72) on AD26, while primitives carry the encoded V7 ID. }
         Enabled := False;
         Try Enabled := LayerObj.MechanicalLayerEnabled; Except Enabled := False; End;
         Prims := -1;
