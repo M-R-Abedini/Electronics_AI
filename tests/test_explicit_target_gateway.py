@@ -30,3 +30,15 @@ def test_nested_eda_invoker_preserves_target_and_rejects_conflicts(nested_target
                 assert seen==[{'target_board_path':target}]
         finally: await suite.close()
     asyncio.run(run())
+
+
+def test_native_target_refusal_keeps_code_in_public_tool_error_and_resets_scope():
+    from eda_agent.bridge.targeting import targeted_tool, TARGET, ERROR
+    from eda_agent.bridge.exceptions import AltiumCommandError
+    async def tool():
+        raise AltiumCommandError('loaded target required',code=ERROR)
+    async def run():
+        with pytest.raises(ValueError,match=ERROR):
+            await targeted_tool(tool)(target_board_path=r'D:\test\board.PcbDoc')
+        assert TARGET.get() is None
+    asyncio.run(run())

@@ -38,6 +38,12 @@ def targeted_tool(fn):
         try:
             result = fn(*args, **kwargs)
             return await result if inspect.isawaitable(result) else result
+        except Exception as error:
+            # FastMCP exposes str(exception), which omits AltiumError.code.
+            # Keep the explicit-target refusal machine-identifiable publicly.
+            if getattr(error, 'code', None) == ERROR:
+                raise ValueError(f'{ERROR}: {error}') from error
+            raise
         finally:
             TARGET.reset(token)
     parameters = [p.replace(annotation=hints.get(p.name, p.annotation)) for p in signature.parameters.values()]
