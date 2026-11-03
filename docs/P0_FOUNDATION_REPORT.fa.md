@@ -6,7 +6,7 @@
 
 پایهٔ main پیش از این تغییرات `3f2effa` و commit پایهٔ قابلیت placement برابر `ae9ddef` بود. مخزن shallow نیست. تغییرات موجود با حفظ index و working tree روی شاخهٔ کاری ادامه یافتند؛ پیش از تخت‌کردن فضای کاری، bundle تاریخچه و patchها تهیه شد. محل نهایی سورس `D:\project\Electronics_AI` است و هش ۸۱۸ فایل منتقل‌شده تأیید شد. [جزئیات پوشه‌ها](WORKSPACE_CONSOLIDATION.fa.md) موجود است.
 
-نام محصول Electronics AI، مخزن `M-R-Abedini/Electronics_AI`، پلاگین/MCP برابر `mcp-electronics-ai` و marketplace برابر `electronics-ai` است. نسخهٔ انتشار این تغییرات `0.7.0` است. هدف حذف سازگاری‌های صرف با نسخه‌های قبلی و نصب یک مسیر اجرایی جدید و مستقل است. اتمام merge، push و نصب باید با شواهد نهایی بخش ۴ ثبت شود؛ صرف وجود این گزارش ادعای انجام آن‌ها نیست.
+نام محصول Electronics AI، مخزن `M-R-Abedini/Electronics_AI`، پلاگین/MCP برابر `mcp-electronics-ai` و marketplace برابر `electronics-ai` است. نسخهٔ انتشار این تغییرات `0.7.0` است. هدف حذف سازگاری‌های صرف با نسخه‌های قبلی و نصب یک مسیر اجرایی جدید و مستقل است. ادغام و push به main انجام شد و نصب جدید با آزمون واقعی تأیید شد؛ جزئیات و مرز اعتبار در بخش ۴ ثبت است.
 
 ## ۲. spike هندسه و پوشش داده
 
@@ -26,17 +26,30 @@ snapshot دیسک buffer ذخیره‌نشده را اثبات نمی‌کند. 
 
 | بررسی | شواهد و وضعیت |
 |---|---|
-| آزمون متمرکز protocol، ایرادهای review، placement و P0 | ۹۲ موفق؛ `analysis/placement-final-focused.log` |
-| benchmark سیاست v4 | ۱۵ حالت اصلی، ۵ خانواده، ۹ حالت تکمیلی، دو اجرا با نتیجه/digest یکسان؛ [JSON](PCB_LAYOUT_BENCHMARK_RESULTS.json) |
-| آزمون کامل root پس از hard cut و rename | در انتظار نتیجهٔ نهایی همین revision |
-| آزمون کامل eda-agent پس از hard cut و rename | در انتظار نتیجهٔ نهایی همین revision |
-| native build/lint نسخهٔ جاری | در انتظار نتیجهٔ نهایی `2026.11.03.electronics-ai-p0` |
-| catalog جاری | هدف ۵۱۹ قابلیت/۹ namespace + سه meta؛ در انتظار شمارش واقعی پس از حذف `legacy__` |
-| بستهٔ smoke و reproducible | در انتظار نتیجه و SHA256 بستهٔ نهایی 0.7.0 |
-| merge به main و push GitHub | در انتظار تأیید commit و CI نهایی |
-| نصب Codex و health نسخهٔ جدید | در انتظار آزمون نصب واقعی؛ نصب متن/فایل به‌تنهایی health نیست |
+| آزمون متمرکز protocol و هندسهٔ placement | ۱۰۴ موفق؛ شامل پد آزاد، coverage ناقص، تفاوت بریدگی مس/برد و مجوز overhang |
+| benchmark سیاست v4 | ۱۵ حالت اصلی، ۵ خانواده، ۹ حالت تکمیلی، دو اجرای یکسان؛ [JSON](PCB_LAYOUT_BENCHMARK_RESULTS.json) |
+| root کامل در CI | Windows: ۷۴۹ موفق؛ Ubuntu: ۷۲۷ موفق و ۲۲ skip پلتفرمی |
+| eda-agent کامل در CI | Windows: ۴۷۱۹ موفق و ۱۴۲ skip؛ Ubuntu: ۴۷۰۶ موفق و ۱۵۵ skip محیط/فیکسچر |
+| native build/lint | ۱۱ واحد، صفر خطا و هشدار؛ نسخهٔ `2026.11.03.electronics-ai-p0` |
+| wheel مستقل نصب‌شده | ۱۴ عضو پروژهٔ native و هش ۲۱۶ فایل Python با سورس تطبیق دارد؛ نسخهٔ 0.7.0 و policy v4 |
+| catalog نصب‌شده | ۵۱۹ قابلیت/۹ namespace + سه meta؛ schemaها و قرارداد ۳۴ ابزار کتابخانه بررسی شدند |
+| بسته‌بندی | smoke و دو ساخت با ورودی یکسان موفق؛ SHA256 خروجی نهایی در `dist/electronics-ai-0.7.0/artifacts.json` ثبت می‌شود |
+| main و GitHub | محصول در `b2c0e4a` و پل native در merge جداگانهٔ `31a4999` ادغام و push شدند؛ فقط main باقی است |
+| نصب Codex | `mcp-electronics-ai@electronics-ai` نسخهٔ 0.7.0 فعال است؛ ثبت و کش قبلی حذف و دادهٔ قدیمی خارج از مسیر فعال آرشیو شد |
+| پذیرش واقعی نسخهٔ نصب‌شده | PASS: پاسخ native، نسخه/هش پروژه، هندسهٔ پد، context تغییرناپذیر و رد هدف اشتباه؛ SHA256 فایل PCB تغییر نکرد |
+| native placement apply | DEFERRED: پلن ذخیره‌شدهٔ واجد شواهد برای ویرایش نداریم؛ هیچ move/save یا آزمون replay و mutation روی برد اجرا نشد |
 
-نتایج قدیمی root و eda-agent داخل تحلیل‌های خصوصی شواهد اجرای قبلی‌اند و به revision جدید تعمیم داده نمی‌شوند. آزمون‌های synthetic گواه native apply یا کیفیت چیدمان کارشناس نیستند. [روش benchmark و محدودیت‌ها](PCB_LAYOUT_BENCHMARKS.md) ثبت شده است.
+[CI کامل Windows و Ubuntu](https://github.com/M-R-Abedini/Electronics_AI/actions/runs/41650518818)
+برای کد `10bf7aa` سبز است. tree ادغام `31a4999` دقیقاً با همان tree آزموده‌شده
+برابر است. کامیت گزارش انتشار فقط شواهد و پاک‌کردن یک ignore منسوخ را اضافه می‌کند.
+ساخت تکرارپذیر با ورودی یکسان در هر سیستم تأیید شد؛ یکسان‌بودن SHA بسته میان
+Windows و Linux ادعا نمی‌شود. هیچ skip تازه‌ای برای عبور از شکست آزمون اضافه نشد.
+فیکسچرها و وابستگی‌های غایب در شمارش skip قابل مشاهده‌اند.
+
+گزارش خصوصی پذیرش نصب `analysis/final-installed-native-acceptance.json` و گزارش
+مقایسهٔ wheel `analysis/final-isolated-wheel-audit.json` است. هندسه و مسیرهای خصوصی
+برد در Git منتشر نشده‌اند. این آزمون‌های خواندنی، تأیید کیفیت placement یا routing
+و DRC کامل نیستند. [روش benchmark](PCB_LAYOUT_BENCHMARKS.md) محدودیت‌ها را توضیح می‌دهد.
 
 ## ۵. blockerهای عمومی ورودی
 
@@ -46,11 +59,16 @@ input gate فقط با درخواست صریح caller، پروژه و PCB واق
 
 آزمون native باید با یک نمونهٔ آلتیوم، نسخهٔ script جاری، مسیر صریح و فایل آزمایشی یا کپی طراحی انجام شود. سلامت اتصال، target mismatch، snapshot حافظه، stale-plan refusal، checkpoint، عملیات تکراری و readback باید جداگانه ثبت شوند. هیچ برد تولیدی برای راحتی benchmark تغییر نمی‌کند.
 
-اجرای دستی نسخهٔ قبلی اصلاح‌شده، رفع خطای compile را نشان داد، اما این شاهد جای health و apply نسخهٔ جدید را نمی‌گیرد. نتیجهٔ نهایی پذیرش زنده در جدول بالا باید به‌روز شود. DRC کامل، routing تکمیل‌شده، مقایسه با کارشناس، مدل سه‌بعدی و field simulation در benchmark فعلی اجرا نشده‌اند؛ هیچ ادعای پذیرش برای آن‌ها ارائه نمی‌شود.
+در این اجرا کامپایل و پاسخ واقعی نسخهٔ جدید از داخل آلتیوم تأیید شد. روی یک
+کپی PCB، هندسه و context از طریق MCP نصب‌شده خوانده شد و هدف بازنشده با
+`ERR_TARGET_DOCUMENT_MISMATCH` رد شد. نبود courtyard واجد منبع و کانتور مکانیکی
+پشتیبانی‌نشده به unknown باقی می‌مانند؛ برای گرفتن نتیجهٔ سبز داده ساخته نشد.
 
+`fixture_U12` برابر `not_present_in_repo` است. آزمون native apply شامل stale plan،
+checkpoint، حرکت قفل‌شده، رسید و replay زنده اجرا نشده و DEFERRED است.
+[اسکریپت و چک‌لیست ویندوز](WINDOWS_PCB_ACCEPTANCE.md) آماده‌اند؛ اجرای پیش‌فرض
+فقط خواندنی است و این مرز را صریح ثبت می‌کند. DRC کامل، routing تکمیل‌شده،
+مقایسه با کارشناس، مدل سه‌بعدی و field simulation اجرا نشده‌اند.
 
-## اصلاح معنای cutout در پذیرش زنده
-
-`polygon_cutout` حفرهٔ مسیِ pour روی لایهٔ مشخص است و سوراخ FR4 نیست. فقط `board_cutout` وارد مدل مکانیکی می‌شود؛ تمام دادهٔ خام برای تحلیل مس حفظ می‌ماند. kind نامعلوم، یا ترکیب هندسیِ پشتیبانی‌نشده مانند بریدگی لبه و cutoutهای فیزیکی متقاطع، به پوشش مکانیکی unknown تبدیل می‌شود و apply را تأیید نمی‌کند. این حالت capture خواندنی را متوقف نمی‌کند و به FR4 سالم تبدیل نمی‌شود. هم‌مرزی کامل courtyard با سوراخ فیزیکی نیز مجاز شمرده نمی‌شود.
-
-مدل استخراج‌شده از snapshot خصوصی واقعی پس از اصلاح بدون خطای schema خوانده شد؛ به‌دلیل کانتور فیزیکی پشتیبانی‌نشده، پوشش outline صادقانه unknown باقی ماند. این شاهد خواندن و رفتار محافظه‌کارانه است، نه تأیید placement یا native apply.
+کلاینت Codex برای بارگذاری نام MCP و اسکیل‌های جدید یک بار به Reconnect نیاز دارد.
+محیط Python نصب‌شده مستقل است و به checkout توسعه یا کش قدیمی وابسته نیست.

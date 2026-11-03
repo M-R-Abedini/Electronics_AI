@@ -15,7 +15,6 @@ repair-backups/
 *.bak
 .env
 .env.local
-coffeenmusic/server/config.json
 *.egg-info/
 build/
 dist/
