@@ -42,8 +42,8 @@ jobs:
           python installer/build_installer.py --python-embed runtime.zip --python-embed-sha256 $env:EMBED_SHA256 --iscc $innoCompiler --output dist/windows-installer
       - uses: actions/upload-artifact@v4
         with:
-          name: AltiumMCPSuite-Setup-x64
+          name: ElectronicsAI-Setup-x64
           path: |
-            dist/windows-installer/AltiumMCPSuite-Setup-x64.exe
+            dist/windows-installer/ElectronicsAI-Setup-x64.exe
             dist/windows-installer/SHA256SUMS.txt
             dist/windows-installer/installer-artifacts.json

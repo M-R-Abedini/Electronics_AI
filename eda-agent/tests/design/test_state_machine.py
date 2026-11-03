@@ -72,6 +72,9 @@ def test_all_stages_ok_is_complete(tmp_path):
     j = _journal(tmp_path)
     for st in STAGES:
         j.stage_result(st, STATUS_OK)
+    assert next_action(j.state()).stage == 'placement'
+    for st in ('placement', 'verification'):
+        j.verified_gate(st, 'server-evidence', 'snapshot', 'test-policy', passed=True, checks=['required'])
     act = next_action(j.state())
     assert act.status == COMPLETE
     assert act.stage is None

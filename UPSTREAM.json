@@ -6,10 +6,11 @@
     "license_file": "eda-agent/LICENSE",
     "notice_file": "eda-agent/NOTICE"
   },
-  "coffeenmusic": {
+  "native-json-validation": {
     "upstream": "https://github.com/coffeenmusic/altium-mcp.git",
     "snapshot_commit": "36a3e000a1dd404727a6f09519994ddc36fa7808",
     "license": "MIT",
-    "license_file": "coffeenmusic/LICENSE"
+    "license_file": "notices/batch-safety-MIT.txt",
+    "scope": "suite_json_guard.py ANSI text validation only; the retired server is absent"
   }
 }

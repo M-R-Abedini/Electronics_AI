@@ -23,8 +23,8 @@ data directory's `config.json`; other settings can remain in that same object:
 ```
 
 For a JAR use `jar` and optionally `java` instead of `executable`. Environment
-alternatives are `ALTIUM_SUITE_FREEROUTING_EXE`,
-`ALTIUM_SUITE_FREEROUTING_JAR`, and `ALTIUM_SUITE_JAVA`. The optional checksum
+alternatives are `ELECTRONICS_AI_FREEROUTING_EXE`,
+`ELECTRONICS_AI_FREEROUTING_JAR`, and `ELECTRONICS_AI_JAVA`. The optional checksum
 checks local executable/JAR identity; it does not certify the executable's
 publisher. Do not put command-line flags into these path fields.
 

@@ -135,3 +135,12 @@ def test_safe_identifier_not_caught(lint):
         assert not lint.RULE_RESERVED_IDENT.pattern.search(line), (
             f"False positive on safe line: {line!r}"
         )
+
+def test_altium_stored_directive_is_caught_inside_comma_declaration(lint):
+    for name in ('Stored', 'stored', 'STORED'):
+        findings = lint._scan_reserved_in_var_block('scratch.pas',
+            ['Function Test : String;', 'Var', f'    Manifest, {name}, Receipt : String;',
+             'Begin', 'End;'])
+        assert any(f.rule == 'altium-stored-directive-as-local' for f in findings)
+    assert not lint._scan_reserved_in_var_block('scratch.pas',
+        ['Var', '    StoredManifest, Receipt : String;', 'Begin'])

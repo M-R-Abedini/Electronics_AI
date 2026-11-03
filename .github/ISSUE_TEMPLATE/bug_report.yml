@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        For setup and usage questions, use [Q&A](https://github.com/M-R-Abedini/Altium-MCP-Suite/discussions/categories/q-a).
+        For setup and usage questions, use [Q&A](https://github.com/M-R-Abedini/Electronics_AI/discussions/categories/q-a).
         Remove credentials, private design data, and personal paths from anything you share.
   - type: input
     id: revision
@@ -33,9 +33,8 @@ body:
       label: Affected server
       options:
         - eda-agent
-        - coffeenmusic / altium
-        - altium-designer-mcp / altium_libraries
-        - Setup or multiple servers
+        - Native Python libraries
+        - Electronics AI setup or gateway
         - Unsure
     validations:
       required: true

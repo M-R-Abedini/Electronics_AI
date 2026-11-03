@@ -7,11 +7,11 @@ $suiteRoot = Split-Path -Parent $PSScriptRoot
 $suitePython = Join-Path $suiteRoot 'python\python.exe'
 $suiteHub = Join-Path $suiteRoot 'suite_hub.py'
 $suiteForm = New-Object System.Windows.Forms.Form
-$suiteForm.Text = 'Set up MCP Altium Suite'
+$suiteForm.Text = 'Set up Electronics AI'
 $suiteForm.Size = New-Object System.Drawing.Size(660, 480)
 $suiteForm.StartPosition = 'CenterScreen'
 $suiteIntro = New-Object System.Windows.Forms.Label
-$suiteIntro.Text = 'Free Core runs locally without registration. Altium Designer and an AI client must be installed. Setup preserves other MCP servers. Restart your AI client after setup.'
+$suiteIntro.Text = 'Electronics AI runs locally without registration. Select Altium Designer and your AI client. Setup keeps unrelated client settings; reconnect the client after setup.'
 $suiteIntro.SetBounds(18, 16, 600, 60)
 $suiteForm.Controls.Add($suiteIntro)
 $suitePath = New-Object System.Windows.Forms.TextBox
@@ -35,7 +35,7 @@ $suiteClients.SetBounds(18, 135, 250, 30)
 $suiteClients.SelectedIndex = 0
 $suiteForm.Controls.Add($suiteClients)
 $suiteButton = New-Object System.Windows.Forms.Button
-$suiteButton.Text = 'Configure selected client'
+$suiteButton.Text = 'Set up Electronics AI'
 $suiteButton.SetBounds(280, 133, 220, 32)
 $suiteForm.Controls.Add($suiteButton)
 $suiteOutput = New-Object System.Windows.Forms.TextBox
@@ -43,7 +43,7 @@ $suiteOutput.Multiline = $true
 $suiteOutput.ReadOnly = $true
 $suiteOutput.ScrollBars = 'Vertical'
 $suiteOutput.SetBounds(18, 185, 612, 240)
-$suiteOutput.Text = 'Select the intended Altium executable. No script is run and no design is changed during setup.'
+$suiteOutput.Text = 'Select the intended Altium X2.EXE. Setup configures the bundled Python runtime and private EDA/library settings. It does not run native scripts or edit designs.'
 $suiteForm.Controls.Add($suiteOutput)
 $suiteButton.Add_Click({
     $suiteButton.Enabled = $false

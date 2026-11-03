@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Constructive PCB placement + board sizing engine (pure Python).
@@ -1359,12 +1360,11 @@ def ratsnest_crossings(
 ) -> int:
     """Count interior crossings between DIFFERENT nets' ratsnest (MST) edges.
 
-    A placement diagnostic, not an objective: the straight-line MST of each
-    net is the router's first approximation, and two different-net edges
-    that cross must eventually be separated by a layer change (a via). The
-    count is therefore a routability / via-pressure indicator -- lower is
-    more routable. Same-net edges never count (they connect). O(E^2) over
-    the MST edges, fine for board-scale nets.
+    A placement diagnostic, not an objective or a minimum-via proof. Two
+    crossing straight-line edges can be routed around each other on one
+    layer; actual routing also depends on obstacles, escape, widths and
+    references. A lower crossing count alone does not prove routability.
+    Same-net edges never count (they connect). O(E^2) over the MST edges.
 
     ``max_fanout`` (when > 0) skips nets touching more than that many parts.
     High-fanout power/ground rails route as copper planes/pours, not
@@ -2475,6 +2475,9 @@ def construct_placement(
     nets: list[PlaceNet],
     rules: DesignRules,
     opts: ConstructOptions = ConstructOptions(),
+    *,
+    fixed_region: BoardRegion | None = None,
+    preserve_sides: bool = False,
 ) -> ConstructResult:
     """Build a legal first-pass placement and the board it sits on.
 
@@ -2510,14 +2513,15 @@ def construct_placement(
     comps = list(dedup.values())
 
     rng = np.random.default_rng(opts.seed)
-    region = size_board(comps, nets, rules)
+    region = fixed_region if fixed_region is not None else size_board(comps, nets, rules)
     place_opts = _place_options(rules, opts)
 
     # Fixed positions: connectors get pinned to an edge band centre; any
     # explicitly fixed part holds its input centroid.
     fixed_pos = _seed_constraints(comps, region, rules)
 
-    sides = _assign_sides(comps, rules)
+    sides = ({c.ref: -1 if "bottom" in c.layer.casefold() else 1 for c in comps}
+             if preserve_sides else _assign_sides(comps, rules))
     rotations = {c.ref: c.rotation for c in comps}
 
     seed_fn = spectral_seed if opts.seed_mode == "spectral" else constructive_seed
@@ -2537,7 +2541,7 @@ def construct_placement(
         # copper gap is still a legal placement and must not grow the
         # board forever).
         residual_area = _clear_term(comps, pos, rotations, sides, rules)
-        if residual_area <= 1e-3 or grow_steps >= opts.max_grow_steps:
+        if residual_area <= 1e-3 or grow_steps >= opts.max_grow_steps or fixed_region is not None:
             if residual_area > 1e-3:
                 notes.append(
                     f"courtyard overlap {residual_area:.0f} remains after "
@@ -2572,7 +2576,7 @@ def construct_placement(
     # Fit the outline to the final placement: size_board estimates before
     # placement and the legalizer only grows, so an over-estimated board is
     # left oversized. Tightening lifts utilization without moving any part.
-    tight = _tighten_region(comps, pos, rotations, region, rules)
+    tight = region if fixed_region is not None else _tighten_region(comps, pos, rotations, region, rules)
     if tight.width < region.width or tight.height < region.height:
         notes.append(
             f"board tightened {region.width:.0f}x{region.height:.0f} -> "

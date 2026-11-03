@@ -69,3 +69,17 @@ def test_foreground_preflight_reserves_time_for_real_command(monkeypatch):
     bridge=object()
     coord.ensure_eda(bridge,execute)
     execute.assert_called_once_with(bridge,'application.ping',{'command_pending':True},2)
+
+
+def test_native_startup_grace_ends_only_after_a_processed_request():
+    source=(ROOT/'eda-agent/scripts/altium/Dispatcher.pas').read_text()
+    startup=source.split('Procedure StartMCPServer;',1)[1]
+    assert 'StartupGraceMs := 45000;' in startup
+    assert startup.index('FirstRequestSeen := False;') < startup.index("WriteFileContent(WorkspaceDir + 'bridge-ready.json'")
+    loop=startup.split('While Running Do',1)[1]
+    assert 'If FirstRequestSeen Then IdleDisplayMs := EngineIdleReleaseMs' in loop
+    assert 'Else IdleDisplayMs := StartupGraceMs;' in loop
+    dispatch=loop.index('HadRequest := ProcessSingleRequest(0);')
+    acknowledged=loop.index('FirstRequestSeen := True;')
+    assert dispatch < acknowledged
+    assert 'If HadRequest Then' in loop[dispatch:acknowledged]

@@ -6,8 +6,8 @@ import bridge_coordination as coord
 
 
 def preflight(monkeypatch, tmp_path, projects):
-    expected = str(tmp_path / 'current' / 'AltiumMCP-EDA.PrjScr')
-    monkeypatch.setenv('ALTIUM_MCP_EDA_SCRIPT', expected)
+    expected = str(tmp_path / 'current' / 'ElectronicsAI-EDA.PrjScr')
+    monkeypatch.setenv('ELECTRONICS_AI_EDA_SCRIPT', expected)
     ensure = Mock(side_effect=[{'pong': 'old'}, {'pong': 'new'}])
     stop = Mock()
     monkeypatch.setattr(coord, '_ensure', ensure)

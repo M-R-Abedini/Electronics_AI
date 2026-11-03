@@ -16,15 +16,15 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-ROOT_MODULES = ('suite_stdio.py', 'suite_cloud_libraries.py', 'configure_suite.py', 'setup.py', 'deploy.py',
+ROOT_MODULES = ('suite_stdio.py', 'suite_cloud_libraries.py', 'configure_suite.py', 'deploy.py',
                 'suite_units.py', 'suite_checkpoints.py', 'suite_supply_chain.py',
                 'suite_autoroute.py', 'suite_telemetry.py',
                 'eda_stdio.py', 'bridge_coordination.py', 'suite_config.py', 'script_projects.py',
                 'engine_identity.py', 'engine_queue.py', 'suite_reads.py',
-                'suite_legacy_compat.py', 'suite_libraries_native.py', 'suite_schlib_codec.py',
-                'suite_script_overlay.py', 'suite_ole.py', 'suite_pcblib_codec.py', 'suite_pcb_primitives.py')
+                'suite_libraries_native.py', 'suite_schlib_codec.py',
+                'suite_ole.py', 'suite_pcblib_codec.py', 'suite_pcb_primitives.py')
 NOTICE_FILES = ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'UPSTREAM.json', 'MODIFICATIONS.md',
-                 'eda-agent/LICENSE', 'eda-agent/NOTICE', 'coffeenmusic/LICENSE')
+                 'eda-agent/LICENSE', 'eda-agent/NOTICE', 'notices/batch-safety-MIT.txt')
 
 
 def deployment_files(root=ROOT):
@@ -43,13 +43,13 @@ async def smoke(destination, python=sys.executable, servers=('suite',)):
     env.pop('PYTHONPATH', None)
     with tempfile.TemporaryDirectory(prefix='altium-installed-smoke-') as scratch:
         env['ALTIUM_EXE'] = str(Path(scratch) / 'not-installed' / 'X2.EXE')
-        env['ALTIUM_MCP_RUNTIME'] = str(Path(scratch) / 'runtime')
+        env['ELECTRONICS_AI_RUNTIME'] = str(Path(scratch) / 'runtime')
         env['EDA_AGENT_WORKSPACE'] = str(Path(scratch) / 'workspace')
         env['EDA_AGENT_POINTER_FILE'] = str(Path(scratch) / 'pointer.txt')
         env['EDA_AGENT_TOOLSET'] = 'full'
         env['EDA_AGENT_BACKEND'] = 'altium'
         # Historical selector aliases now verify the single intended gateway.
-        for name in dict.fromkeys('suite' if entry == 'legacy' else entry for entry in servers):
+        for name in dict.fromkeys(servers):
             entrypoints = {'suite': 'suite_stdio.py', 'eda': 'eda_stdio.py'}
             script = destination / entrypoints[name]
             args = [str(script)] + (['--no-dashboard'] if name == 'eda' else [])
@@ -63,7 +63,7 @@ async def smoke(destination, python=sys.executable, servers=('suite',)):
                             if not catalog.tools:
                                 raise RuntimeError('Installed server returned no tools')
                             if name == 'suite':
-                                if initialized.serverInfo.name != 'mcp altium suite':
+                                if initialized.serverInfo.name != 'Electronics AI':
                                     raise RuntimeError('Unexpected unified server identity')
                                 if {tool.name for tool in catalog.tools} != {'suite_catalog', 'suite_invoke', 'suite_status'}:
                                     raise RuntimeError('Unexpected minimal unified tool surface')
@@ -123,13 +123,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('destination', type=Path)
     parser.add_argument('--python', type=Path, default=Path(sys.executable))
-    parser.add_argument('--server', choices=('suite', 'eda', 'legacy', 'both', 'all'), default='suite')
+    parser.add_argument('--server', choices=('suite', 'eda', 'all'), default='suite')
     args = parser.parse_args()
     manifest, backup, changed = deploy(args.destination)
     try:
         asyncio.run(smoke(args.destination.resolve(), args.python,
-                         ('suite', 'eda', 'legacy') if args.server == 'all' else
-                         ('eda', 'legacy') if args.server == 'both' else (args.server,)))
+                         ('suite', 'eda') if args.server == 'all' else (args.server,)))
     except BaseException:
         rollback(args.destination.resolve(), backup, changed)
         raise

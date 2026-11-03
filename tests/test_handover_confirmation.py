@@ -29,7 +29,7 @@ def native(tmp_path, monkeypatch):
     return tmp_path, clock, released, sleep
 
 
-def test_unresponsive_loop_does_not_authorize_legacy_dispatch(native):
+def test_unresponsive_loop_does_not_authorize_another_native_operation(native):
     work, _, _, _ = native
     coord._file_ping.side_effect = TimeoutError('slow editor')
     with pytest.raises(TimeoutError, match='not confirmed'):

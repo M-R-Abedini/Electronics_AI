@@ -24,24 +24,25 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = (
     'plugin.json', 'mcp.json', 'requirements-runtime.txt', 'constraints-windows-py312.txt',
-    'suite_stdio.py', 'suite_cloud_libraries.py', 'configure_suite.py', 'setup.py', 'deploy.py',
+    'suite_stdio.py', 'suite_cloud_libraries.py', 'configure_suite.py', 'deploy.py',
     'suite_units.py', 'suite_checkpoints.py', 'suite_supply_chain.py', 'suite_autoroute.py',
     'suite_telemetry.py', 'suite_hub.py', 'altium_installation.py',
     'suite_si_pi.py', 'suite_routing_constraints.py',
+    'suite_layout.py', 'suite_layout_policy.py', 'suite_placement_adapter.py',
     'suite_libraries_native.py', 'suite_ole.py', 'suite_schlib_codec.py',
-    'suite_pcblib_codec.py', 'suite_pcb_primitives.py', 'suite_legacy_compat.py',
-    'suite_script_overlay.py', 'contracts/libraries-v0.3.0.json', 'contracts/legacy-tools.json',
+    'suite_pcblib_codec.py', 'suite_pcb_primitives.py',     'contracts/libraries-v0.3.0.json',
     'contracts/pcblib-default-board.json',
     'contracts/windows-1252-best-fit.json',
     'eda_stdio.py', 'bridge_coordination.py', 'suite_config.py', 'script_projects.py',
-    'engine_identity.py', 'engine_queue.py', 'suite_reads.py', 'README.md', 'COPPER_SI_PI_REPORT.fa.md',
-    'FIELD_FIXES_0.5.1.fa.md',
+    'engine_identity.py', 'engine_queue.py', 'suite_reads.py', 'README.md', 'README.fa.md', 'COPPER_SI_PI_REPORT.fa.md',
+    'FIELD_FIXES_0.5.1.fa.md', 'PCB_PLACEMENT_REPORT.fa.md',
     'LICENSE', 'THIRD_PARTY_NOTICES.md', 'UPSTREAM.json', 'MODIFICATIONS.md',
     '.gitignore', 'CONTRIBUTING.md', 'CONNECTIVITY_VERIFICATION.md',
     'scripts/plugin_runtime.py', 'scripts/launch_plugin.ps1', 'scripts/build_plugin.py',
+    'scripts/benchmark_pcb_layout.py', 'scripts/windows_pcb_acceptance.py',
+    'docs/PCB_LAYOUT_BENCHMARK_RESULTS.json',
     'eda-agent/pyproject.toml', 'eda-agent/README.md', 'eda-agent/LICENSE', 'eda-agent/NOTICE',
-    'coffeenmusic/LICENSE', 'coffeenmusic/server/batch_safety.py',
-    'coffeenmusic/server/symbol_placement_rules.txt',
+    'suite_json_guard.py', 'notices/batch-safety-MIT.txt',
 )
 TREE_RULES = {
     'installer': {'.py', '.iss', '.ps1', '.md'},
@@ -96,9 +97,8 @@ def package_inputs(root=ROOT):
                                for line in project.read_text(encoding='utf-8-sig').splitlines()):
                         continue  # Unreferenced generated build output is not source.
                 paths[path.relative_to(root).as_posix()] = path
-    for needed in ('skills/altium-circuit-design/SKILL.md', 'skills/altium-suite-setup/SKILL.md',
-                   'docs/PLUGIN_PACKAGE.md', 'suite_libraries_native.py', 'suite_legacy_compat.py',
-                   'contracts/libraries-v0.3.0.json', 'coffeenmusic/server/symbol_placement_rules.txt'):
+    for needed in ('skills/electronics-ai-circuit-design/SKILL.md', 'skills/electronics-ai-setup/SKILL.md',
+                   'docs/PLUGIN_PACKAGE.md', 'suite_libraries_native.py',                    'contracts/libraries-v0.3.0.json', 'suite_json_guard.py'):
         if needed not in paths:
             raise ValueError(f'Package is incomplete: {needed}')
     return dict(sorted(paths.items()))
@@ -120,7 +120,7 @@ def audit_payload(payload):
     if manifest.get('license') != 'MIT AND Apache-2.0':
         raise ValueError('Unexpected plugin license closure')
     upstream = json.loads(payload['UPSTREAM.json'])
-    if set(upstream) != {'eda-agent', 'coffeenmusic'}:
+    if set(upstream) != {'eda-agent', 'native-json-validation'}:
         raise ValueError('Unexpected bundled upstream implementation')
 
 
@@ -161,13 +161,13 @@ def package_payload(root=ROOT):
     root = Path(root).resolve()
     payload = {name: path.read_bytes() for name, path in package_inputs(root).items()}
     manifest = json.loads(payload['plugin.json'])
-    if manifest.get('name') != 'mcp-altium-suite' or not isinstance(manifest.get('version'), str):
+    if manifest.get('name') != 'mcp-electronics-ai' or not isinstance(manifest.get('version'), str):
         raise ValueError('Unexpected plugin identity/version')
     mcp = json.loads(payload['mcp.json'])
     servers = mcp.get('mcpServers', {})
-    if set(servers) != {'mcp-altium-suite'}:
+    if set(servers) != {'mcp-electronics-ai'}:
         raise ValueError('The plugin must bundle exactly one suite connection')
-    server = servers['mcp-altium-suite']
+    server = servers['mcp-electronics-ai']
     if server.get('cwd') != '${PLUGIN_ROOT}' or not any('${PLUGIN_ROOT}/scripts/launch_plugin.ps1' == arg for arg in server.get('args', [])):
         raise ValueError('Portable MCP launch must use the documented PLUGIN_ROOT placeholder')
     onboarding = manifest.get('extensions', {}).get('com.openai', {}).get('onboardingSkill', '')
@@ -224,7 +224,7 @@ def build(root=ROOT, output=None, check_reproducible=False):
             target = package / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-        marketplace = {'name': 'altium-mcp-suite', 'interface': {'displayName': 'Altium MCP Suite'},
+        marketplace = {'name': 'electronics-ai', 'interface': {'displayName': 'Electronics AI'},
                        'plugins': [{'name': identity['name'],
                                     'source': {'source': 'local', 'path': './plugins/' + identity['name']},
                                     'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_USE'},
@@ -266,10 +266,10 @@ async def smoke(plugin_root, python=sys.executable):
         scratch = Path(temporary)
         config = scratch / 'backends.json'
         config.write_text('{"backends":{}}', encoding='utf-8')
-        env = dict(os.environ, ALTIUM_SUITE_CLOUD_CACHE=str(scratch / 'cloud'),
-                   ALTIUM_SUITE_PLUGIN_DATA=str(scratch / 'private'),
+        env = dict(os.environ, ELECTRONICS_AI_CLOUD_CACHE=str(scratch / 'cloud'),
+                   ELECTRONICS_AI_PLUGIN_DATA=str(scratch / 'private'),
                    ALTIUM_EXE=str(scratch / 'absent/X2.EXE'),
-                   ALTIUM_MCP_RUNTIME=str(scratch / 'runtime'),
+                   ELECTRONICS_AI_RUNTIME=str(scratch / 'runtime'),
                    EDA_AGENT_WORKSPACE=str(scratch / 'workspace'))
         env.pop('PYTHONPATH', None)
         parameters = StdioServerParameters(command=str(python), args=[str(root / 'suite_stdio.py'),
@@ -279,7 +279,7 @@ async def smoke(plugin_root, python=sys.executable):
                 async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=30)) as client:
                     info = await client.initialize()
                     tools = await client.list_tools()
-                    assert info.serverInfo.name == 'mcp altium suite'
+                    assert info.serverInfo.name == 'Electronics AI'
                     assert {tool.name for tool in tools.tools} == {'suite_catalog', 'suite_invoke', 'suite_status'}
                     response = await client.call_tool('suite_invoke', {'name': 'cloud__cloud_library_providers'})
                     assert not response.isError

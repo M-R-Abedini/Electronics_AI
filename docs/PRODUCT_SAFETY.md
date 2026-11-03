@@ -20,7 +20,7 @@ Before native EDA/legacy dispatch, value/comment and component parameter value
 fields normalize engineering unit characters. Examples: `10kΩ` → `10k`,
 `100Ω` → `100R`, `4Ω7` → `4R7`, `10µF`/`10μF` → `10uF`, `±` → `+/-`,
 `°C` → `degC`, and typographic dashes → `-`. Warnings appear in MCP response
-`_meta.altium_suite.normalization_warnings`; input objects are not mutated.
+`_meta.electronics_ai.normalization_warnings`; input objects are not mutated.
 Net names, pin identifiers, file paths, arbitrary scripts and opaque payloads
 are never transliterated. Unknown characters above U+00FF in these value
 fields fail before dispatch, with field location and Unicode codepoints.

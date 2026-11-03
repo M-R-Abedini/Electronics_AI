@@ -40,8 +40,8 @@
 Windows: ۷۳۷ root و ۴۶۶۳ EDA؛ Linux: ۷۱۳ root و ۴۶۵۰ EDA.
 تفاوت شمارش ناشی از skipهای موجود وابسته به محیط است. ساخت wheel با ۱۶
 عضو native، بسته‌بندی بازتولیدپذیر و smoke نیز در هر دو CI موفق بود.
-[شواهد این اجرا](https://github.com/M-R-Abedini/Altium-MCP-Suite/actions/runs/41429156853)
-و [اجراهای جدید CI](https://github.com/M-R-Abedini/Altium-MCP-Suite/actions)
+[شواهد این اجرا](https://github.com/M-R-Abedini/Electronics_AI/actions/runs/41429156853)
+و [اجراهای جدید CI](https://github.com/M-R-Abedini/Electronics_AI/actions)
 قابل بررسی‌اند. اصلاح نهایی alias مکانیکی، پس از این commit با ۴۲ تست مرتبط
 و خود آلتیوم تأیید شد و اجرای CI مجدد آن نیز به همین تاریخچه اضافه می‌شود.
 

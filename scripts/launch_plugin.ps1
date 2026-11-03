@@ -10,11 +10,11 @@ $OutputEncoding = $utf8
 $pluginRoot = Split-Path -Parent $PSScriptRoot
 
 if (-not $DataDir) {
-    if ($env:ALTIUM_SUITE_PLUGIN_DATA) {
-        $DataDir = $env:ALTIUM_SUITE_PLUGIN_DATA
+    if ($env:ELECTRONICS_AI_PLUGIN_DATA) {
+        $DataDir = $env:ELECTRONICS_AI_PLUGIN_DATA
     } else {
         $codexRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE '.codex' }
-        $DataDir = Join-Path $codexRoot 'plugins\data\mcp-altium-suite'
+        $DataDir = Join-Path $codexRoot 'plugins\data\mcp-electronics-ai'
     }
 }
 
@@ -44,7 +44,7 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 
 $statusTool = @{
     name = 'suite_status'
-    description = 'Report missing plugin setup. Run the bundled altium-suite-setup skill to configure the local runtime.'
+    description = 'Report missing plugin setup. Run the bundled electronics-ai-setup skill to configure the local runtime.'
     inputSchema = @{ type = 'object'; properties = @{}; additionalProperties = $false }
     annotations = @{ readOnlyHint = $true; destructiveHint = $false; openWorldHint = $false }
 }
@@ -67,8 +67,8 @@ while ($null -ne ($line = [Console]::ReadLine())) {
                 $response.result = @{
                     protocolVersion = $protocol
                     capabilities = @{ tools = @{} }
-                    serverInfo = @{ name = 'mcp altium suite'; version = '0.5.1' }
-                    instructions = 'Runtime setup is incomplete. Use the bundled altium-suite-setup skill; this status server does not inspect Altium or designs.'
+                    serverInfo = @{ name = 'mcp-electronics-ai'; version = '0.7.0' }
+                    instructions = 'Runtime setup is incomplete. Use the bundled electronics-ai-setup skill; this status server does not inspect Altium or designs.'
                 }
             }
             'ping' { $response.result = @{} }
@@ -78,9 +78,9 @@ while ($null -ne ($line = [Console]::ReadLine())) {
                     $response.result = @{ isError = $true; content = @(@{ type = 'text'; text = ('Unknown setup tool: ' + $request.params.name) }) }
                 } else {
                     $value = @{
-                        server = 'mcp altium suite'; configured = $false; ready = $false
+                        server = 'mcp-electronics-ai'; configured = $false; ready = $false
                         setup_required = $true; issue = $setupIssue
-                        setup_skill = 'altium-suite-setup'
+                        setup_skill = 'electronics-ai-setup'
                         setup_script = (Join-Path $PSScriptRoot 'plugin_runtime.py')
                         data_directory = $DataDir; native_editor_probed = $false
                     }

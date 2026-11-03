@@ -18,7 +18,7 @@ def snapshot(root):
 
 
 def clean_environment(data):
-    env = dict(os.environ, ALTIUM_SUITE_PLUGIN_DATA=str(data), CODEX_HOME=str(data / 'codex'))
+    env = dict(os.environ, ELECTRONICS_AI_PLUGIN_DATA=str(data), CODEX_HOME=str(data / 'codex'))
     # Do not let the test runner's imports or invocation flags make the test pass.
     for name in ('PYTHONDONTWRITEBYTECODE', 'PYTHONPYCACHEPREFIX', 'PYTHONPATH'):
         env.pop(name, None)
@@ -149,28 +149,25 @@ def test_configured_powershell_launch_propagates_readonly_and_private_data(tmp_p
         shutil.copyfile(ROOT / 'scripts' / name, package / 'scripts' / name)
     shutil.copyfile(ROOT / 'configure_suite.py', package / 'configure_suite.py')
     (package / 'eda_stdio.py').touch()
-    (package / 'coffeenmusic/server').mkdir(parents=True)
-    (package / 'coffeenmusic/server/codex_stdio.py').touch()  # persisted old manifest
-    (package / 'suite_legacy_compat.py').touch()
     (package / 'suite_libraries_native.py').touch()
     (package / 'readonly_dependency.py').write_text('VALUE=11\n')
     (package / 'suite_stdio.py').write_text('''import json,os,sys
 import readonly_dependency
 print(json.dumps({"environment_flag":os.environ.get("PYTHONDONTWRITEBYTECODE"),
                   "bytecode_disabled":sys.dont_write_bytecode,
-                  "data":os.environ.get("ALTIUM_SUITE_PLUGIN_DATA")}))
+                  "data":os.environ.get("ELECTRONICS_AI_PLUGIN_DATA")}))
 ''')
     altium = tmp_path / 'X2.EXE'; altium.touch()
     library = tmp_path / 'libraries.json'; library.write_text(json.dumps({'allowed_paths': [str(tmp_path)]}))
-    common = {'ALTIUM_EXE': str(altium), 'ALTIUM_MCP_RUNTIME': str(tmp_path / 'native'),
+    common = {'ALTIUM_EXE': str(altium), 'ELECTRONICS_AI_RUNTIME': str(tmp_path / 'native'),
               'EDA_AGENT_WORKSPACE': str(tmp_path / 'workspace')}
     template = {'backends': {
         'eda': {'command': sys.executable, 'args': [str(package / 'eda_stdio.py')], 'env': common},
-        'legacy': {'command': sys.executable, 'args': [str(package / 'coffeenmusic/server/codex_stdio.py')], 'env': common},
-        'libraries': {'command': sys.executable, 'args': [str(library)]}}}
-    manifest = tmp_path / 'backends.json'; manifest.write_text(json.dumps(template))
+        'libraries': {'command': sys.executable, 'args': [str(package / 'suite_libraries_native.py'), str(library)]}}}
     data = tmp_path / 'selected private data'
-    plugin_runtime.adopt(manifest, sys.executable, data, probe=False)
+    plugin_runtime.validate_template(template)
+    plugin_runtime.persist(data, {'schema': 1, 'python': sys.executable, 'cloud_cache': str(tmp_path / 'cloud'),
+                                'altium_exe': str(altium)}, template)
     before = snapshot(package)
     configured = subprocess.run([sys.executable, str(package / 'scripts/plugin_runtime.py'),
         '--data-dir', str(data), '--client', 'cursor', 'configure-clients', '--config', str(tmp_path / 'cursor.json')],

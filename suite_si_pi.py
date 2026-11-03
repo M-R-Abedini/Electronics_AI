@@ -52,7 +52,7 @@ def _editor_absent():
 
 def prepare_native_rule_batch(board_path, net_classes, rules, differential_pairs=None):
     """Validate the entire batch before publishing any native mutation."""
-    from coffeenmusic.server.batch_safety import validate_legacy_json_text
+    from suite_json_guard import validate_native_json_text
     target = _path(board_path)
     if len(net_classes) > 500 or len(rules) > 2000 or len(differential_pairs or []) > 500:
         raise ValueError('Copper rule batch exceeds its bounded native size')
@@ -100,7 +100,7 @@ def prepare_native_rule_batch(board_path, net_classes, rules, differential_pairs
         for key in ('scope', 'scope2'):
             if key in rule and (not isinstance(rule[key], str) or not rule[key].strip()):
                 raise ValueError('Rule scopes must be nonempty query strings')
-        rule['managed_by'] = 'mcp-altium-suite:copper-si-pi:v1'
+        rule['managed_by'] = 'mcp-electronics-ai:copper-si-pi:v1'
         packed['rule_' + str(i)] = rule
     for i, pair in enumerate(differential_pairs or []):
         members = pair.get('nets', [])
@@ -110,7 +110,7 @@ def prepare_native_rule_batch(board_path, net_classes, rules, differential_pairs
             raise ValueError('Differential pair names must be unique and members distinct')
         pair_names.add(pair['name'])
         packed['pair_' + str(i)] = {'name': pair['name'], 'positive_net': members[0], 'negative_net': members[1]}
-    validate_legacy_json_text(packed)
+    validate_native_json_text(packed)
     return packed
 
 
@@ -122,7 +122,7 @@ async def _unlocked():
 class SiPiService:
     def __init__(self, data_dir=None, *, native_dispatch=None, native_sequence=None,
                  snapshot_reader=None):
-        self.data_dir = Path(data_dir or Path.home() / '.altium-suite').resolve() / 'si-pi'
+        self.data_dir = Path(data_dir or Path.home() / '.electronics-ai').resolve() / 'si-pi'
         self.native_dispatch = native_dispatch
         self.native_sequence = native_sequence or _unlocked
         self.snapshot_reader = snapshot_reader

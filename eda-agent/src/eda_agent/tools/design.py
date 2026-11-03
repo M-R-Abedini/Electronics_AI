@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Design-agent MCP tools, surfaces the design discipline + primitives.
@@ -200,7 +201,7 @@ def register_design_tools(mcp) -> None:
         return store.active()
 
     @mcp.tool()
-    async def design_session_start(requirement: str, session_id: str = "") -> dict[str, Any]:
+    async def design_session_start(requirement: str, session_id: str = "", workflow: str = 'full_design') -> dict[str, Any]:
         """Open a durable design-session journal for an autonomous run.
 
         The journal is append-only state that survives context compaction,
@@ -217,7 +218,7 @@ def register_design_tools(mcp) -> None:
             ``{"session_id": ..., "state": {...}}``.
         """
         store = _session_store()
-        journal = store.start(requirement, session_id=session_id or None)
+        journal = store.start(requirement, session_id=session_id or None, workflow=workflow)
         return {"session_id": journal.session_id, "state": asdict(journal.state())}
 
     @mcp.tool()

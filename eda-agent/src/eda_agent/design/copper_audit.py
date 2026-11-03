@@ -630,9 +630,13 @@ def _decoupling_check(snapshot, intent, report, policy, graphs):
         if path["length_mm"] > limit + EPS:
             _violation(report, "decoupling_path_length", source, path["length_mm"], limit,
                        "Place the capacitor beside the actual supply pad and shorten its routed connection.", evidence)
-        if path["via_ids"]:
+        if path["via_ids"] and motif.get('supply_via_policy') == 'forbidden':
             _violation(report, "decoupling_via_between", source, len(path["via_ids"]), 0,
                        "Connect the local decoupling capacitor before the supply changes layers.", evidence)
+        elif path["via_ids"] and motif.get('supply_via_policy') != 'allowed':
+            _unknown(report, 'decoupling_via_policy',
+                'Supply via topology needs a sourced device/package policy; opposite-side decoupling is not universally invalid',
+                source_pad=_pad_key(source), cap_pad=_pad_key(cap), via_ids=path['via_ids'])
         gnet = ground.get("net_name")
         ggraph = graphs.get(gnet)
         if ggraph is None:

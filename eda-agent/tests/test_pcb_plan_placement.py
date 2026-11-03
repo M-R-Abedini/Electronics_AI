@@ -124,18 +124,14 @@ async def test_optimize_rotation_false_skips_pad_query(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_apply_emits_rotation_in_batch_op(monkeypatch):
+async def test_apply_requires_reviewed_plan_before_any_native_reads(monkeypatch):
     bridge = _scenario()
     tool = _capture_tool(monkeypatch, bridge)
-    out = await tool(designators=["R1"], apply=True)
-
-    assert out["dry_run"] is False
-    move_calls = [p for c, p in bridge.calls if c == "pcb.batch_move_components"]
-    assert len(move_calls) == 1
-    ops = move_calls[0]["moves"]
-    assert "R1," in ops
-    # Rotation field present (90.0 or 270.0) in the packed op.
-    assert "90.0" in ops or "270.0" in ops
+    import inspect
+    assert 'apply' not in inspect.signature(tool).parameters
+    with pytest.raises(TypeError):
+        await tool(designators=["R1"], apply=True)
+    assert bridge.calls == []
 
 
 @pytest.mark.asyncio

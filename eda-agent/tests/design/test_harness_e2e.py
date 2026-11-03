@@ -40,7 +40,7 @@ def _call(mcp, name, args):
     return json.loads(content[0].text)
 
 
-def test_full_autonomous_walk_completes(mcp):
+def test_full_autonomous_walk_cannot_claim_placement_complete(mcp):
     started = _call(mcp, "design_session_start", {"requirement": "2-layer blinker"})
     sid = started["session_id"]
     assert started["state"]["next_stage"] == "requirement"
@@ -59,14 +59,18 @@ def test_full_autonomous_walk_completes(mcp):
             "event": "stage_result", "session_id": sid,
             "stage": stage, "status": "ok",
         })
+        if stage == 'placement':
+            break
     else:
         pytest.fail("pipeline did not complete within the bound")
 
-    # Walked all 13 stages in order and finished.
+    # Existing advisory stages work; a caller's ok cannot pass placement.
     from eda_agent.design.session import STAGES
-    assert seen_stages == list(STAGES)
+    assert seen_stages == list(STAGES[:STAGES.index('placement')+1])
     final = _call(mcp, "design_next_action", {"session_id": sid})
-    assert final["status"] == "complete"
+    assert final['stage'] == 'placement' and final['status'] != 'complete'
+    state = _call(mcp, 'design_session_status', {'session_id':sid})
+    assert not state.get('state',state)['complete']
 
 
 def test_blocked_then_resume_through_tools(mcp):

@@ -51,7 +51,7 @@ class CoordinationTests(unittest.TestCase):
         with self.assertRaisesRegex(TimeoutError,'shutdown is not confirmed'):
             coord._ensure(MagicMock(side_effect=TimeoutError()))
         self.launch.assert_not_called()
-    def test_legacy_handover_refuses_running_handler(self):
+    def test_stop_refuses_running_handler(self):
         (coord.WORKSPACE/'progress_live.json').write_text('{}')
         with self.assertRaisesRegex(RuntimeError,'handler'):coord.stop_eda()
         self.assertFalse((coord.WORKSPACE/'stop').exists())
@@ -151,36 +151,6 @@ class WrapperTests(unittest.TestCase):
         n=self.namespace();fn=load_function(ROOT/'eda_stdio.py','coordinated',n)
         fn(object(),'application.ping',{'command_pending':False},10)
         n['original'].assert_called_once()
-    def test_legacy_handover_restores_engine_even_when_tool_fails(self):
-        events=[]
-        @contextlib.asynccontextmanager
-        async def lock():yield
-        async def original(*a,**kw):events.append('tool');raise ValueError('tool failure')
-        n={'OFFLINE':{'get_server_status'},'original':original,'async_engine_lock':lock,'asyncio':asyncio,'run_engine_worker':coord.run_engine_worker,
-           'stop_eda':lambda:events.append('stop'),'start_eda':lambda:events.append('restore'),'log_event':MagicMock(),'sys':sys}
-        fn=load_function(ROOT/'coffeenmusic/server/codex_stdio.py','coordinated',n)
-        with self.assertRaises(ValueError):asyncio.run(fn('get_schematic_data',{}))
-        self.assertEqual(events,['stop','tool','restore'])
-    def test_unconfirmed_shutdown_never_dispatches_the_legacy_tool(self):
-        @contextlib.asynccontextmanager
-        async def lock():yield
-        from unittest.mock import AsyncMock
-        original=AsyncMock()
-        n={'OFFLINE':set(),'original':original,'async_engine_lock':lock,'asyncio':asyncio,'run_engine_worker':coord.run_engine_worker,
-           'stop_eda':MagicMock(side_effect=TimeoutError('shutdown is not confirmed')),
-           'start_eda':MagicMock(),'log_event':MagicMock(),'sys':sys}
-        fn=load_function(ROOT/'coffeenmusic/server/codex_stdio.py','coordinated',n)
-        with self.assertRaisesRegex(TimeoutError,'not confirmed'):
-            asyncio.run(fn('get_schematic_data',{}))
-        original.assert_not_called();n['start_eda'].assert_not_called()
-    def test_offline_legacy_status_does_not_stop_engine(self):
-        @contextlib.asynccontextmanager
-        async def lock():yield
-        async def original(*a,**kw):return {'ok':True}
-        n={'OFFLINE':{'get_server_status'},'original':original,'async_engine_lock':lock,'asyncio':asyncio,'run_engine_worker':coord.run_engine_worker,
-           'stop_eda':MagicMock(),'start_eda':MagicMock(),'log_event':MagicMock(),'sys':sys}
-        fn=load_function(ROOT/'coffeenmusic/server/codex_stdio.py','coordinated',n)
-        asyncio.run(fn('get_server_status',{}));n['stop_eda'].assert_not_called()
 
 @unittest.skipUnless(sys.platform == 'win32', 'Requires Windows window metadata APIs')
 class ProcessTests(unittest.TestCase):

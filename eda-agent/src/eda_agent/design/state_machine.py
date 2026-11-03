@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Autonomy state machine: ``design_next_action`` core (roadmap 1.4).
@@ -12,8 +13,9 @@ the question to ask.
 This is what lets ANY MCP client drive the full spec-to-board pipeline
 without memorizing the workflow: the client loops "call design_next_action →
 do what it says → log the result" until the run is complete or blocked. A
-weaker client produces a plainer board, never a broken pipeline, because the
-sequencing and gates live here, server-side.
+client receives consistent sequencing. Legacy stage-result claims are advisory;
+managed placement requires server-verifier evidence and native dispatch guards.
+Journal state alone is not an electrical safety certificate.
 
 Pure Python, no Altium, fully unit-testable. The per-stage playbooks are
 data (``STAGE_PLAYBOOKS``) so they stay easy to audit and extend.
@@ -164,12 +166,18 @@ def next_action(state: SessionState) -> NextAction:
             session_id=sid,
             status=COMPLETE,
             stage=None,
-            goal="Design pipeline complete.",
-            guidance="All 13 pipeline stages are ok. Nothing left to do.",
+            goal="Placement review complete." if state.workflow == 'placement_review' else "Design pipeline complete.",
+            guidance=("Placement evidence and readback gates passed; routing and full DRC are separate."
+                      if state.workflow == 'placement_review' else
+                      "All 13 pipeline stages are recorded ok; journal claims alone are not verification evidence."),
         )
 
     stage = state.next_stage
     play = STAGE_PLAYBOOKS.get(stage, {})
+    if state.workflow == 'placement_review':
+        play = {'goal': 'Qualify placement on the existing board without repeating schematic creation.',
+                'tools': ['layout__capture_context', 'layout__plan_placement', 'layout__validate_plan', 'layout__apply_plan'],
+                'exit_gate': 'Fresh server-created geometry evidence and native readback for this placement scope.'}
     attempts = state.attempts.get(stage, 0)
     last_status = state.stage_status.get(stage)
 
@@ -200,10 +208,12 @@ def next_action(state: SessionState) -> NextAction:
         suggested_tools=list(play.get("tools", [])),
         exit_gate=play.get("exit_gate", ""),
         guidance=(
-            f"{prefix}{play.get('goal', stage)} "
-            f"When done, log design_session_log(event='stage_result', "
-            f"stage='{stage}', status='ok'): or status='blocked' with a "
-            f"question if you need the user."
+            f"{prefix}{play.get('goal', stage)} " +
+            ("Use the server's placement evidence protocol; a journal stage_result is advisory."
+             if state.workflow == 'placement_review' else
+             f"When done, log design_session_log(event='stage_result', "
+             f"stage='{stage}', status='ok'): or status='blocked' with a "
+             f"question if you need the user.")
         ),
         attempt=attempts,
     )

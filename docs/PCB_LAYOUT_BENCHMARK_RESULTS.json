@@ -1,0 +1,5425 @@
+{
+  "asserted_counterexamples_passed": true,
+  "benchmark_kind": "synthetic_decision_regression_and_existing_solver_smoke",
+  "case_count": 15,
+  "cases": [
+    {
+      "additional_cases": {},
+      "components": 3,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "shorter_bus_worse_input": [
+            {
+              "after": 9.799999999999999,
+              "before": 5.805191678021769,
+              "metric": "critical_path:input_path",
+              "tolerance_mm": 0
+            },
+            {
+              "after": 9.799999999999999,
+              "before": 5.805191678021769,
+              "metric": "critical_pair:input_path:0",
+              "tolerance_mm": 0
+            }
+          ]
+        },
+        "elapsed_ms": 927.115,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 14,
+            "check_statuses": {
+              "pass": 14
+            },
+            "evidence_id": "990c7fb391041636487e23436745183b9f5c8c71cdb845dc1f075a0d046a4791",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.805191678021769
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.805191678021769
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 53.974041609891145
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "shorter_bus_worse_input",
+            "check_count": 15,
+            "check_statuses": {
+              "pass": 15
+            },
+            "evidence_id": "b900da0e7d54c77c23b98db738c840bb26e4cb3d2d7d241576247085ed7982cc",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.799999999999999
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.799999999999999
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 3.9948083219782298
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 34.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 21099,
+        "plan_digest": "b8adf971910d8b93ce85e472d9cb5c91d355ba55ec2416eb0d32e7216cd8c6c0",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:211": []
+        },
+        "elapsed_ms": 7.133,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 14,
+            "check_statuses": {
+              "pass": 14
+            },
+            "evidence_id": "990c7fb391041636487e23436745183b9f5c8c71cdb845dc1f075a0d046a4791",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.805191678021769
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.805191678021769
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 53.974041609891145
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:211",
+            "check_count": 17,
+            "check_statuses": {
+              "pass": 17
+            },
+            "evidence_id": "dec80d689ec5a671e85576c7df315c8db5d0a97b4b3bc15dda10709454a93e8a",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.2289999999999957
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.2289999999999957
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 12.069552568253217
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 39.24299999999998
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 22683,
+        "generation_elapsed_ms": 1.739,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 211
+        },
+        "plan_digest": "b5420a437f0ffdebea892b7794c521f566a93a2e8a2de1d159015639e0a0dd7a",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:211",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "critical_tradeoff",
+      "family": "precision_analog",
+      "fixture_sha256": "17b260059b3c3ce0132692b243517fac043fa810d7039a8c558075fd41058b8c",
+      "pads": 14,
+      "seed": 211
+    },
+    {
+      "additional_cases": {},
+      "components": 3,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "shorter_bus_worse_input": [
+            {
+              "after": 9.799999999999999,
+              "before": 5.811018566197584,
+              "metric": "critical_path:input_path",
+              "tolerance_mm": 0
+            },
+            {
+              "after": 9.799999999999999,
+              "before": 5.811018566197584,
+              "metric": "critical_pair:input_path:0",
+              "tolerance_mm": 0
+            }
+          ]
+        },
+        "elapsed_ms": 7.239,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 14,
+            "check_statuses": {
+              "pass": 14
+            },
+            "evidence_id": "66e33e1942f8956f4bc74b9bd373c182d4889c57a620728146fd2ea7145242a6",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.811018566197584
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.811018566197584
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 53.944907169012076
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "shorter_bus_worse_input",
+            "check_count": 15,
+            "check_statuses": {
+              "pass": 15
+            },
+            "evidence_id": "7cadde21cf1567918e57e9fac8cbc2325f54d00df56df97605e10abdadc5cc16",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.799999999999999
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.799999999999999
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 3.988981433802415
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 34.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 21114,
+        "plan_digest": "75306c878d6c1a60182b82858df47acea5a99e37b89d65a2337056763ac4c42d",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:307": []
+        },
+        "elapsed_ms": 6.206,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 14,
+            "check_statuses": {
+              "pass": 14
+            },
+            "evidence_id": "66e33e1942f8956f4bc74b9bd373c182d4889c57a620728146fd2ea7145242a6",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.811018566197584
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.811018566197584
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 53.944907169012076
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:307",
+            "check_count": 17,
+            "check_statuses": {
+              "pass": 17
+            },
+            "evidence_id": "dbe60f1d3e633eb5975d77c3c22484527aacb918f61c40465fa6d9ecf5a47bd6",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.2289999999999957
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.2289999999999957
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 12.075362242694512
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 39.24299999999998
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 22700,
+        "generation_elapsed_ms": 1.561,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 307
+        },
+        "plan_digest": "64c900419609baab11ff48622481e29df3d8d460dbd933c23b6bd0e54d3dc278",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:307",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "critical_tradeoff",
+      "family": "precision_analog",
+      "fixture_sha256": "cb70c8c622b1414453d91942120c4c97506e79cb7746b5317774f89f8dad478f",
+      "pads": 14,
+      "seed": 307
+    },
+    {
+      "additional_cases": {},
+      "components": 3,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "shorter_bus_worse_input": [
+            {
+              "after": 9.799999999999999,
+              "before": 5.799814912737206,
+              "metric": "critical_path:input_path",
+              "tolerance_mm": 0
+            },
+            {
+              "after": 9.799999999999999,
+              "before": 5.799814912737206,
+              "metric": "critical_pair:input_path:0",
+              "tolerance_mm": 0
+            }
+          ]
+        },
+        "elapsed_ms": 8.388,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 14,
+            "check_statuses": {
+              "pass": 14
+            },
+            "evidence_id": "71d4c74b934393854b097e9be2892e97cbc91ca3b07d3ad9c5c4068f773f9be0",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.799814912737206
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.799814912737206
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 54.00092543631396
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "shorter_bus_worse_input",
+            "check_count": 15,
+            "check_statuses": {
+              "pass": 15
+            },
+            "evidence_id": "ba254927ae97962a843fc64a2628c763f2373505a86ac7a390c8d5c16fc75b93",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.799999999999999
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.799999999999999
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 4.000185087262793
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 34.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 21112,
+        "plan_digest": "207296998a3daddd52e41eae943db90f53df4e955b54bd6921aa08f23fe5a6a1",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:401": []
+        },
+        "elapsed_ms": 11.195,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 14,
+            "check_statuses": {
+              "pass": 14
+            },
+            "evidence_id": "71d4c74b934393854b097e9be2892e97cbc91ca3b07d3ad9c5c4068f773f9be0",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.799814912737206
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 5.799814912737206
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 54.00092543631396
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:401",
+            "check_count": 17,
+            "check_statuses": {
+              "pass": 17
+            },
+            "evidence_id": "2ef77dbaa9544fc7bea70a296fcbe3aa8c248be93f2016fb1265f0f53fb329b6",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:input_path:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.2289999999999957
+              },
+              "critical_path:input_path": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "Acritical",
+                  "Bcritical"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.2289999999999957
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 12.06419198132493
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 39.24299999999998
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 22696,
+        "generation_elapsed_ms": 1.512,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 401
+        },
+        "plan_digest": "7535c3121c9613d75d73026873fb33927ea5d9b5bdebf5f6f7c8e4bb393fbe6e",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:401",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "critical_tradeoff",
+      "family": "precision_analog",
+      "fixture_sha256": "2a90bb466b27a209f18351fed5f1b3a0e8f6002334e57b75669cbf715b625956",
+      "pads": 14,
+      "seed": 401
+    },
+    {
+      "additional_cases": {},
+      "components": 2,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "compact_but_collision": []
+        },
+        "elapsed_ms": 5.676,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "272c258576b578321ee4d061ea54ac3abbb2c5a661f22abfa14513fb3f3aa0c3",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.50519167802177
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.50519167802177
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 19.01038335604354
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.005191678021774
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "compact_but_collision",
+            "check_count": 12,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 11
+            },
+            "evidence_id": "f058cdef68e0a7bd89c6f03c0f021c1f45a2556a897a683c78255aadae5e7374",
+            "feasible": false,
+            "hard_fail_ids": [
+              "collision:a:b"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 9.50519167802177
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 0.5
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 19304,
+        "plan_digest": "5724be440082a8a2c844c3508e5d6cec31392617ffb1cc75e0f10ac7790d393e",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:211": []
+        },
+        "elapsed_ms": 5.253,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "272c258576b578321ee4d061ea54ac3abbb2c5a661f22abfa14513fb3f3aa0c3",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.50519167802177
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.50519167802177
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 19.01038335604354
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.005191678021774
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:211",
+            "check_count": 13,
+            "check_statuses": {
+              "pass": 13
+            },
+            "evidence_id": "a46883043a0c70bd435bc7c122d9ba13ac5ccf3552ed170dbbec1b434fba274c",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.9450000000000003
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.9450000000000003
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 7.890000000000001
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 14.45049742879355
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 4.445
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 20254,
+        "generation_elapsed_ms": 1.362,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 211
+        },
+        "plan_digest": "db229b1c122795fb16c177e35912d8669adf4279631bca68d2ae9f489945ba37",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:211",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "hard_fail",
+      "family": "switching_power",
+      "fixture_sha256": "8c98a25e691b0c84b3c4ed9b0597724b97580be529d4a1975f2f21cc13bfb4c0",
+      "pads": 2,
+      "seed": 211
+    },
+    {
+      "additional_cases": {},
+      "components": 2,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "compact_but_collision": []
+        },
+        "elapsed_ms": 3.794,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "1d53a327903701c767b5763db6b2121d00ca0c3b67f95d0d9a7f0bbc0ba88f66",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.511018566197585
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.511018566197585
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 19.02203713239517
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.011018566197585
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "compact_but_collision",
+            "check_count": 12,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 11
+            },
+            "evidence_id": "bff8840aa6adf61188ce6403cb5b39de33724d23c308d4952a7447ae665ede03",
+            "feasible": false,
+            "hard_fail_ids": [
+              "collision:a:b"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 9.511018566197585
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 0.5
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 19323,
+        "plan_digest": "76382f2306e7b5d8953f88feb267f69366b3fed20c8ba6558cf66f21411c64b9",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:307": []
+        },
+        "elapsed_ms": 3.185,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "1d53a327903701c767b5763db6b2121d00ca0c3b67f95d0d9a7f0bbc0ba88f66",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.511018566197585
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.511018566197585
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 19.02203713239517
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.011018566197585
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:307",
+            "check_count": 13,
+            "check_statuses": {
+              "pass": 13
+            },
+            "evidence_id": "38982d261f8a193255b71379380a90402ba52e5fecd5cbe8d21ae088d286baf6",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.9450000000000003
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.9450000000000003
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 7.890000000000001
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 14.456324195442697
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 4.445
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 20273,
+        "generation_elapsed_ms": 0.787,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 307
+        },
+        "plan_digest": "37c1ba0adae4b27502755c237bd968e060d0d32fcfbc728611902560fc543cd2",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:307",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "hard_fail",
+      "family": "switching_power",
+      "fixture_sha256": "efedc98d4731b8d1690236212ee838c8e2af42699479922c269f2415f728aff9",
+      "pads": 2,
+      "seed": 307
+    },
+    {
+      "additional_cases": {},
+      "components": 2,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "compact_but_collision": []
+        },
+        "elapsed_ms": 3.284,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "ed4c8b233c9b2f883ffc98a51a15248d0ee0dac3f403147a2626502727fff023",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.499814912737207
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.499814912737207
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 18.999629825474415
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 9.999814912737207
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "compact_but_collision",
+            "check_count": 12,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 11
+            },
+            "evidence_id": "33c4451459e45dcdd93b22fcae1d2cf1c5020474637cfbfdd608792023facb73",
+            "feasible": false,
+            "hard_fail_ids": [
+              "collision:a:b"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 0
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 9.499814912737207
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 0.5
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 19320,
+        "plan_digest": "4dac1e8902a7f618a98e3209564f549e0bb3a653f5d45325f90df60c59623912",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:401": []
+        },
+        "elapsed_ms": 3.298,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "ed4c8b233c9b2f883ffc98a51a15248d0ee0dac3f403147a2626502727fff023",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.499814912737207
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 9.499814912737207
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 18.999629825474415
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 9.999814912737207
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:401",
+            "check_count": 13,
+            "check_statuses": {
+              "pass": 13
+            },
+            "evidence_id": "7850656d3bc0687ad6df5b41e16da585b2d2155f1a36d53232b9dd6a3bed038e",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:commutation_chords:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.9450000000000003
+              },
+              "critical_pair:commutation_chords:1": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 3.9450000000000003
+              },
+              "critical_path:commutation_chords": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1",
+                  "a.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": 7.890000000000001
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 14.445120775820646
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 4.445
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 20270,
+        "generation_elapsed_ms": 0.932,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 401
+        },
+        "plan_digest": "cbf467abcdf85604ed3a1bed88235dd15d0c5cf72f44a6c0ec27f7b259952557",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:401",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "hard_fail",
+      "family": "switching_power",
+      "fixture_sha256": "c1cddb26101e229087234edf369bb8157c8a45609a3cf38acc8faf200badce05",
+      "pads": 2,
+      "seed": 401
+    },
+    {
+      "additional_cases": {},
+      "components": 2,
+      "decision": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ],
+          "unnecessary_reapply": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ]
+        },
+        "elapsed_ms": 2.938,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 10,
+            "check_statuses": {
+              "pass": 10
+            },
+            "evidence_id": "5eadb722d5d138daf41dbeaebd5b4668fbba22cac233f8523a6a94414e186b94",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "unnecessary_reapply",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "cd9315c1f0fa87246ebb3e336d40ac50c68a2c3a0ff402ac84c21ebb1c379d87",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 17692,
+        "plan_digest": "48fa4d47ce9f7dce4a506767f8b4a280a732b052d7dace6caaf50411b3b4ddb2",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "existing_solver": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ],
+          "refine:211": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ]
+        },
+        "elapsed_ms": 3.08,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 10,
+            "check_statuses": {
+              "pass": 10
+            },
+            "evidence_id": "5eadb722d5d138daf41dbeaebd5b4668fbba22cac233f8523a6a94414e186b94",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:211",
+            "check_count": 12,
+            "check_statuses": {
+              "pass": 12
+            },
+            "evidence_id": "64231206a923429017d6e8b6b313a323133f1242698b5caf1aab06609afc2c19",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 15.207180048443785
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 5.207000000000001
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 18306,
+        "generation_elapsed_ms": 0.766,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 211
+        },
+        "plan_digest": "6e64e82ec2270e9b82886bd3291110019616cd21fed757ef83c13ba1103dba31",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "expected_counterexample": "baseline_win",
+      "family": "digital_interface",
+      "fixture_sha256": "c21f634f799384b27c0cb9802ae71880c53b1fb898a1d54e1d62a922b1ed83e1",
+      "pads": 2,
+      "seed": 211
+    },
+    {
+      "additional_cases": {},
+      "components": 2,
+      "decision": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ],
+          "unnecessary_reapply": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ]
+        },
+        "elapsed_ms": 6.377,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 10,
+            "check_statuses": {
+              "pass": 10
+            },
+            "evidence_id": "6c3a63744a3ee834e2fd3372904dda39547d7991b44ad43c9c452531b9a9158c",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "unnecessary_reapply",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "c759f9d0566ea4adeb14ad167d54495022a99899674bdd714a2f6ae301a33d01",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 17692,
+        "plan_digest": "efc4187cc0a0fcb0b81dc6cec3359591c6f01a85244ffa55b6f42e049e33d99f",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "existing_solver": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ],
+          "refine:307": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ]
+        },
+        "elapsed_ms": 4.09,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 10,
+            "check_statuses": {
+              "pass": 10
+            },
+            "evidence_id": "6c3a63744a3ee834e2fd3372904dda39547d7991b44ad43c9c452531b9a9158c",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:307",
+            "check_count": 12,
+            "check_statuses": {
+              "pass": 12
+            },
+            "evidence_id": "66187dc96b583831b10150cd431d8b7db71f82810d0e9ad45ae2698fbc921d67",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 15.207180048443785
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 5.207000000000001
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 18306,
+        "generation_elapsed_ms": 1.272,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 307
+        },
+        "plan_digest": "5ff59987eca2309501970ba1f2674e277e101af55c997f0b093d7d20d54e4a14",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "expected_counterexample": "baseline_win",
+      "family": "digital_interface",
+      "fixture_sha256": "1e043d3d2f3bd65e86be3dadc6612cef5ba114da42452b4b1180377d9f69b731",
+      "pads": 2,
+      "seed": 307
+    },
+    {
+      "additional_cases": {},
+      "components": 2,
+      "decision": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ],
+          "unnecessary_reapply": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ]
+        },
+        "elapsed_ms": 3.404,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 10,
+            "check_statuses": {
+              "pass": 10
+            },
+            "evidence_id": "7e4a78d7e93ebee6ada7317d5959e30820e481b10a2167bbd2eb718f02a46051",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "unnecessary_reapply",
+            "check_count": 11,
+            "check_statuses": {
+              "pass": 11
+            },
+            "evidence_id": "72ca413e656e00aaa46461c930525e76539594054ebb2ec56ab7642c9736f5e9",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 17692,
+        "plan_digest": "6abcc7193f4416f3563d7bd91e7ca6caf2fdf05dda637540398d8c1322811129",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "existing_solver": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ],
+          "refine:401": [
+            {
+              "metric": "critical_path:interface_chord",
+              "reason": "critical metric unknown"
+            },
+            {
+              "metric": "critical_pair:interface_chord:0",
+              "reason": "critical metric unknown"
+            }
+          ]
+        },
+        "elapsed_ms": 5.518,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 10,
+            "check_statuses": {
+              "pass": 10
+            },
+            "evidence_id": "7e4a78d7e93ebee6ada7317d5959e30820e481b10a2167bbd2eb718f02a46051",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.0
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:401",
+            "check_count": 12,
+            "check_statuses": {
+              "pass": 12
+            },
+            "evidence_id": "2b6325714585bb35ffc1c3a51775ff61ce65ea344f46b3d3594499fc94f83892",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "critical_pair:interface_chord:0": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "critical_path:interface_chord": {
+                "coverage": "complete",
+                "critical": true,
+                "method": "transformed_pad_aabb_manhattan_mm",
+                "pad_ids": [
+                  "a.1",
+                  "b.1"
+                ],
+                "route_verified": false,
+                "unit": "mm",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 15.207180048443785
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 5.207000000000001
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 18306,
+        "generation_elapsed_ms": 1.757,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 401
+        },
+        "plan_digest": "79512d631466a0645c4b1cbfb3daa66688ecead923747004838440d3ed1d1bde",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "expected_counterexample": "baseline_win",
+      "family": "digital_interface",
+      "fixture_sha256": "770c5749dc74485b7f944131eb8eb46c9ee48d386e3ddb5a87782b1b0c072e92",
+      "pads": 2,
+      "seed": 401
+    },
+    {
+      "additional_cases": {
+        "scoped_eco": {
+          "apply_eligible": true,
+          "critical_regressions": {
+            "baseline": [],
+            "scoped_improvement": []
+          },
+          "elapsed_ms": 66.874,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 13,
+              "check_statuses": {
+                "pass": 13
+              },
+              "evidence_id": "327508329dcd6b02ef8b4644bdd0c298e58834b4eb95d17202e160ebf6fb126c",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 25.00418392907875
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            },
+            {
+              "candidate_id": "scoped_improvement",
+              "check_count": 14,
+              "check_statuses": {
+                "pass": 14
+              },
+              "evidence_id": "e30812e49b50e621740fcccf7f33fe8ea8bc8822f3e72b576cdbb357c2dfa3a2",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 2.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 23.00418392907875
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            }
+          ],
+          "full_artifact_bytes": 22422,
+          "plan_digest": "4bd3acdbdb61d5a8ed512a48f37c752a79d4ae4625aba530a8221310cb8afd35",
+          "selected_candidate_id": "scoped_improvement",
+          "selection_status": "selected"
+        },
+        "unknown_package_geometry": {
+          "apply_eligible": false,
+          "critical_regressions": {
+            "baseline": []
+          },
+          "elapsed_ms": 38.234,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 67,
+              "check_statuses": {
+                "pass": 55,
+                "unknown": 12
+              },
+              "evidence_id": "84e2a3df82dc6d457b0afdcdb985ca77123cdcddf374b3eec7e9f7327f8c2b6b",
+              "feasible": false,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 25.00418392907875
+                }
+              },
+              "status": "unknown",
+              "unknown_ids": [
+                "courtyard:c0",
+                "outline:c0",
+                "collision:c0:c1",
+                "collision:c0:c2",
+                "collision:c0:c3",
+                "collision:c0:c4",
+                "collision:c0:c5",
+                "collision:c0:c6",
+                "collision:c0:c7",
+                "collision:c0:c8",
+                "collision:c0:c9",
+                "channel:escape_bus"
+              ]
+            }
+          ],
+          "full_artifact_bytes": 38039,
+          "plan_digest": "ff48ab80945216fb9621b0adbf708de6eea2e85d39b6fd066ae48922048c365a",
+          "selected_candidate_id": "baseline",
+          "selection_status": "blocked"
+        }
+      },
+      "components": 10,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "inside_bbox_but_crosses_cutout": [],
+          "shorter_link_blocks_channel": []
+        },
+        "elapsed_ms": 128.758,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 67,
+            "check_statuses": {
+              "pass": 67
+            },
+            "evidence_id": "da784f9f5823a6d352bdc4bbcfb8121b9added452f0910e4b295e6594f945daa",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 25.00418392907875
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "shorter_link_blocks_channel",
+            "check_count": 68,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 67
+            },
+            "evidence_id": "078ea80cab22e95d703b969122a8eced2f92d7ea6933ee613a191da074f9e2b6",
+            "feasible": false,
+            "hard_fail_ids": [
+              "channel:escape_bus"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 13.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 12.00418392907875
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "inside_bbox_but_crosses_cutout",
+            "check_count": 68,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 67
+            },
+            "evidence_id": "cc8be4fff835437555601790aaa5e9112b60c7edecbafcc7cfa308a19df644b2",
+            "feasible": false,
+            "hard_fail_ids": [
+              "outline:c1"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 38.00352774951858
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 63.98618486892621
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 114511,
+        "plan_digest": "609753acd4e03e0ea0666eed35bc92b16a475eeca022edab1bf13f4085cf5349",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:211": []
+        },
+        "elapsed_ms": 75.263,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 67,
+            "check_statuses": {
+              "pass": 67
+            },
+            "evidence_id": "da784f9f5823a6d352bdc4bbcfb8121b9added452f0910e4b295e6594f945daa",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 25.00418392907875
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:211",
+            "check_count": 77,
+            "check_statuses": {
+              "pass": 77
+            },
+            "evidence_id": "e2d41aad746471f7bb048dbdc55b2c74a3f13b5cbd84bb83d769a6e2e7999be4",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 35.900518618832606
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.414000000000001
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 82207,
+        "generation_elapsed_ms": 13.155,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 211
+        },
+        "plan_digest": "426b302d1a0184284a6bda7eacd55de8c814e6794372e5656f34a89fd2f1a4f6",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:211",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "escape_fail",
+      "family": "dense_escape",
+      "fixture_sha256": "ccc70ee3f012d0679b8fcb1cd8ed7d1b4045ae5dd7faec5c30a4beb37bff9035",
+      "pads": 200,
+      "seed": 211
+    },
+    {
+      "additional_cases": {
+        "scoped_eco": {
+          "apply_eligible": true,
+          "critical_regressions": {
+            "baseline": [],
+            "scoped_improvement": []
+          },
+          "elapsed_ms": 57.563,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 13,
+              "check_statuses": {
+                "pass": 13
+              },
+              "evidence_id": "8039bfb51145ee443ff4ee6beaf2b6e71795cc49a1bc0a7420d7b6de09543f68",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 25.00348605280218
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            },
+            {
+              "candidate_id": "scoped_improvement",
+              "check_count": 14,
+              "check_statuses": {
+                "pass": 14
+              },
+              "evidence_id": "a4e479a90c05a0dbbdbeb83d8e7866017746d72b2e6d7e7e29fc76a913cbdef4",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 2.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 23.00348605280218
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            }
+          ],
+          "full_artifact_bytes": 22526,
+          "plan_digest": "f4ceae9ed74ae66611650b6f4f665aadfc56f5eb9fa19995decc7f96165f88b3",
+          "selected_candidate_id": "scoped_improvement",
+          "selection_status": "selected"
+        },
+        "unknown_package_geometry": {
+          "apply_eligible": false,
+          "critical_regressions": {
+            "baseline": []
+          },
+          "elapsed_ms": 32.24,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 67,
+              "check_statuses": {
+                "pass": 55,
+                "unknown": 12
+              },
+              "evidence_id": "b2b0c8bca3bec5a459f97ce63f53d8dc4f77e5c24d395349f300d52682981cc9",
+              "feasible": false,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 25.00348605280218
+                }
+              },
+              "status": "unknown",
+              "unknown_ids": [
+                "courtyard:c0",
+                "outline:c0",
+                "collision:c0:c1",
+                "collision:c0:c2",
+                "collision:c0:c3",
+                "collision:c0:c4",
+                "collision:c0:c5",
+                "collision:c0:c6",
+                "collision:c0:c7",
+                "collision:c0:c8",
+                "collision:c0:c9",
+                "channel:escape_bus"
+              ]
+            }
+          ],
+          "full_artifact_bytes": 38280,
+          "plan_digest": "fac85d5616fd7994f2cf832e0aef2db72ee37e7256a1e4165e77f08149113aa2",
+          "selected_candidate_id": "baseline",
+          "selection_status": "blocked"
+        }
+      },
+      "components": 10,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "inside_bbox_but_crosses_cutout": [],
+          "shorter_link_blocks_channel": []
+        },
+        "elapsed_ms": 106.212,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 67,
+            "check_statuses": {
+              "pass": 67
+            },
+            "evidence_id": "0d9baa205bce73c83b59702963c17306d3475a7c9a1765ebae225e0d683bfd96",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 25.00348605280218
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "shorter_link_blocks_channel",
+            "check_count": 68,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 67
+            },
+            "evidence_id": "128e0cfbf2aed6ba0495d288d94b8cadcd217b6f53dd74c5a104485eff6e64c9",
+            "feasible": false,
+            "hard_fail_ids": [
+              "channel:escape_bus"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 13.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 12.003486052802181
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "inside_bbox_but_crosses_cutout",
+            "check_count": 68,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 67
+            },
+            "evidence_id": "a77bf79e0e519675d4e82a27617506f4b4219e4152a5ef7629dc26fac09c130e",
+            "feasible": false,
+            "hard_fail_ids": [
+              "outline:c1"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 38.0211282035845
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 64.00448929281981
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 115292,
+        "plan_digest": "5802e8143e0b566efa70c438630764e0f0cc2aed8827146788c5f3a73e2a1fcc",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:307": []
+        },
+        "elapsed_ms": 72.682,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 67,
+            "check_statuses": {
+              "pass": 67
+            },
+            "evidence_id": "0d9baa205bce73c83b59702963c17306d3475a7c9a1765ebae225e0d683bfd96",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 25.00348605280218
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:307",
+            "check_count": 77,
+            "check_statuses": {
+              "pass": 77
+            },
+            "evidence_id": "2de0b9b00c040636f56e42967928619963ffe06b15c9f566007d87de632c96d7",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 35.90591491206383
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.414000000000001
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 81440,
+        "generation_elapsed_ms": 12.698,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 307
+        },
+        "plan_digest": "ddad3e2dde11e61e51fd2f2581865e17fb9e5b3aa18f0c174bdef57f2c818811",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:307",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "escape_fail",
+      "family": "dense_escape",
+      "fixture_sha256": "6f53f1388c04a69a1906e429c7043470f710a4a6107b3339a283d961d71858e9",
+      "pads": 200,
+      "seed": 307
+    },
+    {
+      "additional_cases": {
+        "scoped_eco": {
+          "apply_eligible": true,
+          "critical_regressions": {
+            "baseline": [],
+            "scoped_improvement": []
+          },
+          "elapsed_ms": 55.53,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 13,
+              "check_statuses": {
+                "pass": 13
+              },
+              "evidence_id": "b8ae6879a77c3e55699124558ccb6633ff826965e51657af1622a1cf4d640d4e",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 25.021041766851248
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            },
+            {
+              "candidate_id": "scoped_improvement",
+              "check_count": 14,
+              "check_statuses": {
+                "pass": 14
+              },
+              "evidence_id": "ddf6e4f9c8d0f74078ee9161e9e3fd858995826b74a7ea414e78c3a75f5581b4",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 2.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 23.021041766851248
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            }
+          ],
+          "full_artifact_bytes": 22566,
+          "plan_digest": "0b31775069e3605b78973f9b094b4107cf3130d9d89a5487e6370d137c5b3238",
+          "selected_candidate_id": "scoped_improvement",
+          "selection_status": "selected"
+        },
+        "unknown_package_geometry": {
+          "apply_eligible": false,
+          "critical_regressions": {
+            "baseline": []
+          },
+          "elapsed_ms": 44.699,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 67,
+              "check_statuses": {
+                "pass": 55,
+                "unknown": 12
+              },
+              "evidence_id": "39661c3bec01c44358c569bc3628b991c7cd7eb0d909d8b1919e41b43531a597",
+              "feasible": false,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 25.021041766851248
+                }
+              },
+              "status": "unknown",
+              "unknown_ids": [
+                "courtyard:c0",
+                "outline:c0",
+                "collision:c0:c1",
+                "collision:c0:c2",
+                "collision:c0:c3",
+                "collision:c0:c4",
+                "collision:c0:c5",
+                "collision:c0:c6",
+                "collision:c0:c7",
+                "collision:c0:c8",
+                "collision:c0:c9",
+                "channel:escape_bus"
+              ]
+            }
+          ],
+          "full_artifact_bytes": 38412,
+          "plan_digest": "410fcc033041c4795d43c7287831f71d61a5263c6da4219c3ba9ef16b55a1b62",
+          "selected_candidate_id": "baseline",
+          "selection_status": "blocked"
+        }
+      },
+      "components": 10,
+      "decision": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "inside_bbox_but_crosses_cutout": [],
+          "shorter_link_blocks_channel": []
+        },
+        "elapsed_ms": 93.565,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 67,
+            "check_statuses": {
+              "pass": 67
+            },
+            "evidence_id": "47720a3415e18812e6787a825f0626864d1ea1dc833ef8ab324995688c1abea7",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 25.021041766851248
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "shorter_link_blocks_channel",
+            "check_count": 68,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 67
+            },
+            "evidence_id": "489eb39a3f381257062d81762b7f348f5332a9d338666a069f5859cb1d41f16d",
+            "feasible": false,
+            "hard_fail_ids": [
+              "channel:escape_bus"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 13.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 12.021041766851248
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "inside_bbox_but_crosses_cutout",
+            "check_count": 68,
+            "check_statuses": {
+              "fail": 1,
+              "pass": 67
+            },
+            "evidence_id": "2e6af4376207903ca8bfdcc1a2657f357ee451a43f8bc5664ad5ddaba773c001",
+            "feasible": false,
+            "hard_fail_ids": [
+              "outline:c1"
+            ],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 38.01604718854801
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 63.9818508051874
+              }
+            },
+            "status": "infeasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 115726,
+        "plan_digest": "f880308d1d8df1766095dbb2e091435d857216749f8ba3a584d9f2ea02a23920",
+        "selected_candidate_id": "baseline",
+        "selection_status": "baseline_retained"
+      },
+      "existing_solver": {
+        "apply_eligible": true,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:401": []
+        },
+        "elapsed_ms": 68.543,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 67,
+            "check_statuses": {
+              "pass": 67
+            },
+            "evidence_id": "47720a3415e18812e6787a825f0626864d1ea1dc833ef8ab324995688c1abea7",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 25.021041766851248
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          },
+          {
+            "candidate_id": "refine:401",
+            "check_count": 77,
+            "check_statuses": {
+              "pass": 77
+            },
+            "evidence_id": "7b54696fcbee81db095e8bb3335234c2036db068909c7e5d17ab03d408905bc3",
+            "feasible": true,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 35.90192196903944
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 10.414000000000001
+              }
+            },
+            "status": "feasible",
+            "unknown_ids": []
+          }
+        ],
+        "full_artifact_bytes": 82102,
+        "generation_elapsed_ms": 14.594,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 401
+        },
+        "plan_digest": "79d0d2f110b6b5d60246eb8fa3e0869a0df5a2fc1c4cff1888383101c9ad85bc",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "refine:401",
+        "selection_status": "selected"
+      },
+      "expected_counterexample": "escape_fail",
+      "family": "dense_escape",
+      "fixture_sha256": "d8386b546df59570637ded3b962359c23553628838a61ab2c920651a83e71788",
+      "pads": 200,
+      "seed": 401
+    },
+    {
+      "additional_cases": {
+        "independent_eco": {
+          "apply_eligible": true,
+          "critical_regressions": {
+            "baseline": [],
+            "independent_eco": []
+          },
+          "elapsed_ms": 4.346,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 8,
+              "check_statuses": {
+                "not_applicable": 2,
+                "pass": 6
+              },
+              "evidence_id": "1f9762169d787b601c2ce44b5e0740eb99a7c2ab17cb273658b2e5449791280b",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 20.0107754493347
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            },
+            {
+              "candidate_id": "independent_eco",
+              "check_count": 9,
+              "check_statuses": {
+                "not_applicable": 2,
+                "pass": 7
+              },
+              "evidence_id": "665ecdd662a14daaf57c05c2a319a9dde79c61976f00080971ebc70661264097",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 3.9979577675260813
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 16.012817681808627
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            }
+          ],
+          "full_artifact_bytes": 13927,
+          "plan_digest": "091426047d24eb3915b7a5a8820789b1e24ef90f84410104e96223d5fa54b0f9",
+          "selected_candidate_id": "independent_eco",
+          "selection_status": "selected"
+        }
+      },
+      "components": 4,
+      "decision": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [],
+          "move_sensitive": []
+        },
+        "elapsed_ms": 5.272,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 23,
+            "check_statuses": {
+              "pass": 21,
+              "unknown": 2
+            },
+            "evidence_id": "4ac8f293b796ae036a70f607becc139b2bb136fbd29f6ea829da4141bcc33f99",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 20.0107754493347
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          },
+          {
+            "candidate_id": "move_sensitive",
+            "check_count": 24,
+            "check_statuses": {
+              "pass": 22,
+              "unknown": 2
+            },
+            "evidence_id": "8ede105315f14521761c2d18e841f7d63f11a22576e9a5ff9b922992eb04888e",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 1.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 19.0107754493347
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          }
+        ],
+        "full_artifact_bytes": 29179,
+        "plan_digest": "1bae1620f95a5a4fb7a79831b0d44d6cfe0ec896348a5e6cbf71eb2879c0be73",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "existing_solver": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:211": []
+        },
+        "elapsed_ms": 5.272,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 23,
+            "check_statuses": {
+              "pass": 21,
+              "unknown": 2
+            },
+            "evidence_id": "4ac8f293b796ae036a70f607becc139b2bb136fbd29f6ea829da4141bcc33f99",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 20.0107754493347
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          },
+          {
+            "candidate_id": "refine:211",
+            "check_count": 27,
+            "check_statuses": {
+              "pass": 25,
+              "unknown": 2
+            },
+            "evidence_id": "96deeaf1575e35686d06d6fd4aac09355fc01b33e46b3fbe451069e3783904b4",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 29.028108189599077
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 9.016999999999996
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          }
+        ],
+        "full_artifact_bytes": 31042,
+        "generation_elapsed_ms": 1.321,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 211
+        },
+        "plan_digest": "d1c12db471c648861983cdf2133354c42b80fa3e640e8ac851e468083040c416",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "expected_counterexample": "unknown_safety",
+      "family": "mixed_isolated",
+      "fixture_sha256": "6f919f83724f306291bf653a757a46d146a2558f2fa801a7e6c21ad8b1c9c836",
+      "pads": 4,
+      "seed": 211
+    },
+    {
+      "additional_cases": {
+        "independent_eco": {
+          "apply_eligible": true,
+          "critical_regressions": {
+            "baseline": [],
+            "independent_eco": []
+          },
+          "elapsed_ms": 4.062,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 8,
+              "check_statuses": {
+                "not_applicable": 2,
+                "pass": 6
+              },
+              "evidence_id": "4d02dd04aefd5e6c975e1d40ff981e47d3598b152c08f7ab3837a1b66b13d596",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 20.0094898390458
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            },
+            {
+              "candidate_id": "independent_eco",
+              "check_count": 9,
+              "check_statuses": {
+                "not_applicable": 2,
+                "pass": 7
+              },
+              "evidence_id": "fde61265edd4745ff0cc0bd43ca59bba63f1d8796afb40894ded0ec68e3ae801",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 4.0031593385551965
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 16.0063305004906
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            }
+          ],
+          "full_artifact_bytes": 13903,
+          "plan_digest": "09a5a560752036383c21f7aafeb6fb3db5dbd8c227f2d556b026bf5bad46ae2c",
+          "selected_candidate_id": "independent_eco",
+          "selection_status": "selected"
+        }
+      },
+      "components": 4,
+      "decision": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [],
+          "move_sensitive": []
+        },
+        "elapsed_ms": 5.596,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 23,
+            "check_statuses": {
+              "pass": 21,
+              "unknown": 2
+            },
+            "evidence_id": "4d3413c65b5bba5030317621cc9b5c6db84b3c26ccceb649018f4271975f2da9",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 20.0094898390458
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          },
+          {
+            "candidate_id": "move_sensitive",
+            "check_count": 24,
+            "check_statuses": {
+              "pass": 22,
+              "unknown": 2
+            },
+            "evidence_id": "d84f79809a5550cf915ca8b54749f576f66337563863482a3b961eb5ec6bf5e3",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 1.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 19.0094898390458
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          }
+        ],
+        "full_artifact_bytes": 29111,
+        "plan_digest": "ff340fdf72b6b6ee3ae3beac0997a0cb6c8722997eeb4237f4c90270cad145a2",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "existing_solver": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:307": []
+        },
+        "elapsed_ms": 5.308,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 23,
+            "check_statuses": {
+              "pass": 21,
+              "unknown": 2
+            },
+            "evidence_id": "4d3413c65b5bba5030317621cc9b5c6db84b3c26ccceb649018f4271975f2da9",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 20.0094898390458
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          },
+          {
+            "candidate_id": "refine:307",
+            "check_count": 27,
+            "check_statuses": {
+              "pass": 25,
+              "unknown": 2
+            },
+            "evidence_id": "39be170fc8f2a2bbae3ea1707f210455801c6b3ba6cd555817a668ab570d1237",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 28.89982281903663
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 8.89
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          }
+        ],
+        "full_artifact_bytes": 30980,
+        "generation_elapsed_ms": 1.311,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 307
+        },
+        "plan_digest": "cee6be9ea950c92370f23d74cf50a24d049018f2bf52df8a9f467eaa3e2b339c",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "expected_counterexample": "unknown_safety",
+      "family": "mixed_isolated",
+      "fixture_sha256": "a8bf714e1a10af1332017eb2f787127bb9d1aa793909a207bda58b39ea89ed69",
+      "pads": 4,
+      "seed": 307
+    },
+    {
+      "additional_cases": {
+        "independent_eco": {
+          "apply_eligible": true,
+          "critical_regressions": {
+            "baseline": [],
+            "independent_eco": []
+          },
+          "elapsed_ms": 4.102,
+          "evaluations": [
+            {
+              "candidate_id": "baseline",
+              "check_count": 8,
+              "check_statuses": {
+                "not_applicable": 2,
+                "pass": 6
+              },
+              "evidence_id": "bafc6a1e18b12120cbca3bf0fdace3e6b779f75f3474eb95d203268237002363",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 0.0
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 19.993683322912815
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            },
+            {
+              "candidate_id": "independent_eco",
+              "check_count": 9,
+              "check_statuses": {
+                "not_applicable": 2,
+                "pass": 7
+              },
+              "evidence_id": "39d9a4dc4f9f1777cbc2ac2da96e408eadd4e9f7a68a3772636a6a6a73301dbb",
+              "feasible": true,
+              "hard_fail_ids": [],
+              "metrics": {
+                "alignment_penalty": {
+                  "aligned_ratio": null,
+                  "method": "declared_passive_family_grid_and_collinearity",
+                  "unit": "ratio",
+                  "value": null
+                },
+                "movement": {
+                  "coverage": "complete",
+                  "method": "origin_displacement",
+                  "unit": "mm",
+                  "value": 3.988106496494531
+                },
+                "ratsnest_crossings": {
+                  "method": "existing_mst_crossing_diagnostic",
+                  "pad_budget": 512,
+                  "routing_verified": false,
+                  "unit": "count",
+                  "value": 0
+                },
+                "signal_hpwl": {
+                  "coverage": "complete",
+                  "excluded_nets": [
+                    "GND"
+                  ],
+                  "method": "pad_hpwl_proxy",
+                  "unit": "mm",
+                  "value": 16.005576826418277
+                }
+              },
+              "status": "feasible",
+              "unknown_ids": []
+            }
+          ],
+          "full_artifact_bytes": 13919,
+          "plan_digest": "990083577a502e458c1fe68fe40b8b196d785bbe418903c2505f9c74e572e650",
+          "selected_candidate_id": "independent_eco",
+          "selection_status": "selected"
+        }
+      },
+      "components": 4,
+      "decision": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [],
+          "move_sensitive": []
+        },
+        "elapsed_ms": 6.079,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 23,
+            "check_statuses": {
+              "pass": 21,
+              "unknown": 2
+            },
+            "evidence_id": "69ae5aa8b98004df6dbf2ac7c8150ee72a5b86befd1bef52db94ab78297b18e1",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 19.993683322912815
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          },
+          {
+            "candidate_id": "move_sensitive",
+            "check_count": 24,
+            "check_statuses": {
+              "pass": 22,
+              "unknown": 2
+            },
+            "evidence_id": "a3e4fe1e57e6973b31350b7c8d29310cc190fa1c48ecb45b498b188233914440",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 1.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 18.993683322912815
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          }
+        ],
+        "full_artifact_bytes": 29153,
+        "plan_digest": "79e2fdf3b0c87c00cf9cf754746532c8e9349591d30b36803d1d7aa5927bf847",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "existing_solver": {
+        "apply_eligible": false,
+        "critical_regressions": {
+          "baseline": [],
+          "refine:401": []
+        },
+        "elapsed_ms": 5.246,
+        "evaluations": [
+          {
+            "candidate_id": "baseline",
+            "check_count": 23,
+            "check_statuses": {
+              "pass": 21,
+              "unknown": 2
+            },
+            "evidence_id": "69ae5aa8b98004df6dbf2ac7c8150ee72a5b86befd1bef52db94ab78297b18e1",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 0.0
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 19.993683322912815
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          },
+          {
+            "candidate_id": "refine:401",
+            "check_count": 27,
+            "check_statuses": {
+              "pass": 25,
+              "unknown": 2
+            },
+            "evidence_id": "da182089853e07507a5f096c9f3f39b6989535274d0548e13d96e7e7d23c2f11",
+            "feasible": false,
+            "hard_fail_ids": [],
+            "metrics": {
+              "alignment_penalty": {
+                "aligned_ratio": null,
+                "method": "declared_passive_family_grid_and_collinearity",
+                "unit": "ratio",
+                "value": null
+              },
+              "movement": {
+                "coverage": "complete",
+                "method": "origin_displacement",
+                "unit": "mm",
+                "value": 28.88401633298109
+              },
+              "ratsnest_crossings": {
+                "method": "existing_mst_crossing_diagnostic",
+                "pad_budget": 512,
+                "routing_verified": false,
+                "unit": "count",
+                "value": 0
+              },
+              "signal_hpwl": {
+                "coverage": "complete",
+                "excluded_nets": [
+                  "GND"
+                ],
+                "method": "pad_hpwl_proxy",
+                "unit": "mm",
+                "value": 8.89
+              }
+            },
+            "status": "unknown",
+            "unknown_ids": [
+              "profile:isolated_front_end:isolation:isolation_requirements",
+              "surface_creepage"
+            ]
+          }
+        ],
+        "full_artifact_bytes": 31001,
+        "generation_elapsed_ms": 1.363,
+        "generator_budget": {
+          "candidate_count": 1,
+          "iterations": 8,
+          "seed": 401
+        },
+        "plan_digest": "1a7b8c0dac0c680009f4cc962e3a2b5c7ccb9028e161fe4aa3c1de6f8d0b0560",
+        "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
+        "selected_candidate_id": "baseline",
+        "selection_status": "blocked"
+      },
+      "expected_counterexample": "unknown_safety",
+      "family": "mixed_isolated",
+      "fixture_sha256": "04c599a136aa28018c82901d8bb4796154da57dd23224daf0bf7df54e4cc4422",
+      "pads": 4,
+      "seed": 401
+    }
+  ],
+  "development_seeds": [
+    0,
+    1,
+    7,
+    8
+  ],
+  "environment": {
+    "cpu_count": 8,
+    "platform": "Windows-11-10.0.28000-SP0",
+    "python": "3.12.14"
+  },
+  "families": [
+    "precision_analog",
+    "switching_power",
+    "digital_interface",
+    "dense_escape",
+    "mixed_isolated"
+  ],
+  "first_pass_elapsed_ms": 2022.015,
+  "held_out_scope": "Independent computational seeds of synthetic fixtures; not a held-out expert-layout dataset",
+  "held_out_seeds": [
+    211,
+    307,
+    401
+  ],
+  "limits": [
+    "No production PCB, actual part or copied package coordinates are used.",
+    "Numeric fixture budgets are sourced synthetic engineering policies, not hardware recommendations.",
+    "Channel width, HPWL and pin chords are estimates/proxies; generated proposals must pass hard evidence gates.",
+    "Wall time depends on the machine; fixture/outcome digests and measured artifact bytes are recorded separately.",
+    "These counterexamples do not establish optimizer superiority or manufacturing/SI/PI sign-off."
+  ],
+  "measurement_elapsed_ms": 3510.0,
+  "policy_version": "placement-evidence-p0-v4",
+  "reproducibility": {
+    "compared": "fixture hashes, decisions, evidence/plan digests, metrics and artifact sizes; timings excluded",
+    "runs": 2,
+    "verified": true
+  },
+  "schema": 1,
+  "source": {
+    "git_head": "a80ed17705fc9c8a46afebdea040ace5fd6ebba3",
+    "module_sha256": {
+      "eda-agent/src/eda_agent/design/copper_geometry.py": "db3bfcde2b09b3cf11b413e52fafe41fd715d1a08a91805eeef8a37a388e1f8e",
+      "eda-agent/src/eda_agent/design/pcb_placement.py": "64bff9211c2d99e99859114f92ff68bdfe969d9df1cf5ab66ab88a7feaa0ac3f",
+      "eda-agent/src/eda_agent/design/placement_evidence.py": "3a2e109b296791040d9bf0a4ba49a4b61d30bfd043a98af0ff371922d8cae8bf",
+      "eda-agent/src/eda_agent/design/placement_p0.py": "8502375371cbe7266dce6597457a533dba3e3aaa28bc06eda85f4637828dee2a",
+      "eda-agent/src/eda_agent/placement/autoplace.py": "d8ce98443398fb635bf15abdf5d5e108a04c8508f7e3ab0c828a529f9f4abeee",
+      "scripts/benchmark_pcb_layout.py": "3998d36ddee1aea7f15f2e46cb9098a2ab0bb6aafddb891104b71df0e0c022ee"
+    },
+    "working_tree_dirty": true
+  },
+  "unexecuted": {
+    "expert_layout_comparison": true,
+    "field_simulation": true,
+    "native_cad": true,
+    "native_drc": true,
+    "route_completion": true,
+    "via_optimization": true
+  }
+}

@@ -40,7 +40,7 @@ def protect_token(token: str) -> str:
     crypt.CryptProtectData.restype = wintypes.BOOL
     kernel.LocalFree.argtypes = [ctypes.c_void_p]
     kernel.LocalFree.restype = ctypes.c_void_p
-    if not crypt.CryptProtectData(ctypes.byref(source), 'MCP Altium Suite optional registration',
+    if not crypt.CryptProtectData(ctypes.byref(source), 'Electronics AI optional registration',
                                  None, None, None, 1, ctypes.byref(target)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
@@ -59,7 +59,7 @@ def save_registration(data: Path, token: str) -> dict:
 
 
 def bundled_setup(data: Path, root: Path, altium_exe: Path, *, runtime=None, workspace=None) -> dict:
-    """Adopt the installer-owned interpreter and in-process library service."""
+    """Configure the installer-owned interpreter and in-process library service."""
     python = root / 'python/python.exe'
     for path, name in ((python, 'Bundled Python'), (altium_exe, 'Altium')):
         plugin_runtime.existing_file(path, name)
@@ -68,12 +68,12 @@ def bundled_setup(data: Path, root: Path, altium_exe: Path, *, runtime=None, wor
         _, previous = plugin_runtime.checked_state(Path(data))
         plugin_runtime.validate_template(previous)
     prior_env = previous['backends']['eda']['env'] if previous else {}
-    native = Path(runtime or prior_env.get('ALTIUM_MCP_RUNTIME') or Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'AltiumMCPSuite')
+    native = Path(runtime or prior_env.get('ELECTRONICS_AI_RUNTIME') or Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'ElectronicsAI')
     identity = native / 'workspace-identity.json'
     existing = plugin_runtime.read_object(identity) if identity.is_file() else {}
     work = Path(workspace or prior_env.get('EDA_AGENT_WORKSPACE') or existing.get('workspace', native / 'workspace'))
     if previous:
-        for key, selected in (('ALTIUM_MCP_RUNTIME', native), ('EDA_AGENT_WORKSPACE', work)):
+        for key, selected in (('ELECTRONICS_AI_RUNTIME', native), ('EDA_AGENT_WORKSPACE', work)):
             if os.path.normcase(str(selected.resolve())) != os.path.normcase(str(Path(prior_env[key]).resolve())):
                 raise ValueError('Installer setup cannot replace the existing native workspace identity')
     plugin_runtime.validate_workspace(native, work)
@@ -97,11 +97,10 @@ def bundled_setup(data: Path, root: Path, altium_exe: Path, *, runtime=None, wor
         backup.mkdir(parents=True)
         (backup / config.name).write_bytes(config.read_bytes())
     plugin_runtime.atomic_json(config, settings)
-    common = {'ALTIUM_EXE': str(altium_exe.resolve()), 'ALTIUM_MCP_RUNTIME': str(native.resolve()),
+    common = {'ALTIUM_EXE': str(altium_exe.resolve()), 'ELECTRONICS_AI_RUNTIME': str(native.resolve()),
               'EDA_AGENT_WORKSPACE': str(work.resolve()), 'EDA_AGENT_NO_DASHBOARD': '1', 'EDA_AGENT_BACKEND': 'altium'}
     template = {'backends': {
         'eda': {'command': str(python), 'args': [str(root / 'eda_stdio.py'), '--toolset', 'full', '--no-dashboard'], 'env': common},
-        'legacy': {'command': str(python), 'args': [str(root / 'suite_legacy_compat.py')], 'env': common},
         'libraries': {'command': str(python), 'args': [str(root / 'suite_libraries_native.py'), str(config)]}}}
     if previous:
         for name, spec in template['backends'].items():
@@ -109,7 +108,7 @@ def bundled_setup(data: Path, root: Path, altium_exe: Path, *, runtime=None, wor
             for key in ('enabled', 'enabled_tools', 'disabled_tools', 'timeout_seconds', 'startup_timeout_seconds'):
                 if key in old:
                     spec[key] = old[key]
-            if name in {'eda', 'legacy'}:
+            if name == 'eda':
                 # Retain actual coordinator identity even if a new installer used a default.
                 spec['env'] = dict(old['env'], ALTIUM_EXE=str(altium_exe.resolve()))
     plugin_runtime.validate_template(template)

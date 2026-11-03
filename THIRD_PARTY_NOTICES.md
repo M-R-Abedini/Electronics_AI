@@ -7,13 +7,13 @@ relicense bundled sources or code adapted from them.
 | Source | License | Included terms and attribution |
 | --- | --- | --- |
 | `eda-agent/` | Apache-2.0 | [LICENSE](eda-agent/LICENSE), [NOTICE](eda-agent/NOTICE) |
-| `coffeenmusic/` | MIT, except the adaptation below | [LICENSE](coffeenmusic/LICENSE) |
+| Native ANSI validation (`suite_json_guard.py`) | MIT | [attribution and terms](notices/batch-safety-MIT.txt) |
 | Native library codecs and service (`suite_*lib*.py`, `suite_ole.py`, `suite_pcb_primitives.py`) | MIT | [LICENSE](LICENSE); independently written from observed interfaces and synthetic file probes |
 
-`coffeenmusic/server/AltiumScript/json_utils.pas` contains JSON helpers adapted
-from `eda-agent/scripts/altium/Main.pas`. Its Apache-2.0 header and attribution
-apply to those helpers; keep the linked EDA license and notice with distributions.
-File-specific notices take precedence over a directory-level summary.
+The ANSI validation function in `suite_json_guard.py` is adapted from
+`coffeenmusic/altium-mcp` batch_safety.py with its MIT attribution retained.
+The historical server, namespace adapters, native units and execution paths
+have been removed. EDA sources retain their Apache-2.0 headers and notice.
 
 [UPSTREAM.json](UPSTREAM.json) records the imported upstream commits and license
 locations. Those commits identify the original snapshots, not the current suite
@@ -24,8 +24,7 @@ document alongside the installed sources.
 
 The retired external library implementation is absent from the current source
 and distribution. Historical tags and prior releases retain their original
-licenses; this change does not relicense or rewrite them. Public MCP names and
-schemas in `contracts/` describe compatibility interfaces. The sanitized PCB
+licenses; this change does not relicense or rewrite them. Library schemas in `contracts/` describe the current native Python interfaces. The sanitized PCB
 default-board parameter resource was generated from our synthetic empty library
 saved by Altium; its provenance is recorded with the data. It was not obtained
 from the retired implementation or its assets. The Windows ANSI best-fit

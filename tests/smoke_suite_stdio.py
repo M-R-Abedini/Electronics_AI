@@ -15,8 +15,8 @@ import jsonschema
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-COUNTS = {'eda': 457, 'legacy': 37, 'libraries': 34, 'cloud': 4,
-          'suite': 3, 'supply': 4, 'route': 4, 'telemetry': 1, 'si_pi': 4}
+COUNTS = {'eda': 457, 'libraries': 34, 'cloud': 4,
+          'suite': 3, 'supply': 4, 'route': 4, 'telemetry': 1, 'si_pi': 4, 'layout': 8}
 
 
 async def run(root: Path, *, toolset='minimal'):
@@ -24,10 +24,10 @@ async def run(root: Path, *, toolset='minimal'):
         scratch = Path(folder)
         env = dict(os.environ)
         env.update(ALTIUM_EXE=str(scratch / 'absent/X2.EXE'),
-                   ALTIUM_MCP_RUNTIME=str(scratch / 'runtime'),
+                   ELECTRONICS_AI_RUNTIME=str(scratch / 'runtime'),
                    EDA_AGENT_WORKSPACE=str(scratch / 'workspace'),
                    EDA_AGENT_POINTER_FILE=str(scratch / 'pointer.txt'),
-                   ALTIUM_SUITE_PLUGIN_DATA=str(scratch / 'private'),
+                   ELECTRONICS_AI_PLUGIN_DATA=str(scratch / 'private'),
                    CODEX_HOME=str(scratch / 'codex'),
                    EDA_AGENT_NO_DASHBOARD='1', EDA_AGENT_TOOLSET='full', EDA_AGENT_BACKEND='altium')
         env.pop('PYTHONPATH', None)
@@ -36,7 +36,6 @@ async def run(root: Path, *, toolset='minimal'):
         # Absent retired executables prove both adapters run in-process.
         backends = {
             'eda': {'command': sys.executable, 'args': [str(root / 'eda_stdio.py'), '--toolset', 'full', '--no-dashboard']},
-            'legacy': {'command': str(scratch / 'retired-legacy.exe'), 'args': []},
             'libraries': {'command': str(scratch / 'retired-library.exe'), 'args': [str(libconfig)]},
         }
         config = scratch / 'backends.json'
@@ -47,13 +46,13 @@ async def run(root: Path, *, toolset='minimal'):
         async with stdio_client(params) as streams:
             async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=120)) as client:
                 init = await client.initialize()
-                assert init.serverInfo.name == 'mcp altium suite'
+                assert init.serverInfo.name == 'Electronics AI'
                 listed = (await client.list_tools()).tools
-                assert len(listed) == (3 if toolset == 'minimal' else 551)
+                assert len(listed) == (3 if toolset == 'minimal' else sum(COUNTS.values()) + 3)
                 status = (await client.call_tool('suite_status')).structuredContent
                 if toolset == 'minimal':
                     assert not any(item.get('running') for item in status['backends'].values())
-                for name in ('legacy', 'libraries'):
+                for name in ('libraries',):
                     assert status['backends'][name]['in_process'] is True
                 initialization_ms = round((time.perf_counter() - started) * 1000, 2)
                 catalogs, schemas, all_names = {}, {}, set()
@@ -78,10 +77,10 @@ async def run(root: Path, *, toolset='minimal'):
                         assert not item['original_name'].startswith('_suite_')
                     catalogs[backend] = len(gateway_tools)
                     schemas[backend] = {item['original_name']: item['inputSchema'] for item in gateway_tools}
-                assert len(all_names) == 548 and catalogs == COUNTS
+                assert len(all_names) == sum(COUNTS.values()) and catalogs == COUNTS
                 if toolset == 'full':
                     assert {tool.name for tool in listed} == all_names | {'suite_catalog', 'suite_invoke', 'suite_status'}
-                for backend, contract in (('legacy', 'legacy-tools.json'), ('libraries', 'libraries-v0.3.0.json')):
+                for backend, contract in (('libraries', 'libraries-v0.3.0.json'),):
                     expected = json.loads((root / 'contracts' / contract).read_text(encoding='utf-8'))['tools']
                     assert schemas[backend] == {tool['name']: tool['inputSchema'] for tool in expected}
                 direct_parameters = StdioServerParameters(command=sys.executable,
@@ -98,7 +97,6 @@ async def run(root: Path, *, toolset='minimal'):
                     assert not response.isError, (name, response)
                     return response.structuredContent
 
-                await invoke('legacy__get_server_status')
                 snapshot = await invoke('eda__design_connectivity_snapshot', {
                     'data': {'pins': [{'component': 'R1', 'pin': '1', 'net': 'VCC'}], 'count': 1}, 'complete': True})
                 assert snapshot['count'] == 1
@@ -151,7 +149,7 @@ async def run(root: Path, *, toolset='minimal'):
                 assert not (scratch / 'runtime' / 'editor-binding.json').exists()
                 output = {'server': init.serverInfo.name, 'advertised_tools': len(listed),
                     'initialize_list_status_ms': initialization_ms, 'backend_tool_counts': catalogs,
-                    'all_548_input_schemas_valid': True, 'legacy_and_library_contracts_preserved': True,
+                    'all_input_schemas_valid': True, 'library_contracts_preserved': True,
                     'eda_direct_schemas_preserved': True, 'retired_processes_required': False,
                     'si_pi_real_geometry_dispatch': True,
                     'si_pi_routing_handle_hash_guard': True,

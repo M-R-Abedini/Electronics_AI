@@ -28,7 +28,7 @@ def test_deployment_discovers_each_bundled_skill_and_excludes_caches():
                 (deploy.ROOT / 'skills').glob('*/SKILL.md')}
     assert expected and expected <= files
     assert not any('__pycache__' in path for path in files)
-    if 'skills/altium-suite-setup/SKILL.md' in expected:
+    if 'skills/electronics-ai-setup/SKILL.md' in expected:
         assert {'scripts/plugin_runtime.py', 'scripts/launch_plugin.ps1',
                 'docs/PLUGIN_PACKAGE.md', 'requirements-runtime.txt', 'mcp.json',
                 'plugin.json'} <= files
@@ -37,9 +37,9 @@ def test_deployment_discovers_each_bundled_skill_and_excludes_caches():
 def test_deployment_contains_native_contracts_and_no_duplicate_legacy_runner():
     files = {path.relative_to(deploy.ROOT).as_posix() for path in deploy.deployment_files()}
     assert {'suite_pcb_primitives.py', 'contracts/libraries-v0.3.0.json',
-            'contracts/legacy-tools.json', 'contracts/pcblib-default-board.json',
+            'contracts/pcblib-default-board.json',
             'eda-agent/pyproject.toml', 'eda-agent/README.md',
-            'coffeenmusic/server/batch_safety.py'} <= files
+            'suite_json_guard.py'} <= files
     assert 'coffeenmusic/server/main.py' not in files
     assert 'coffeenmusic/server/codex_stdio.py' not in files
 

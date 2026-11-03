@@ -39,7 +39,7 @@ PY_DIR = ROOT / "src" / "eda_agent"
 def _python_files():
     """The suite adapters are live callers outside the embedded EDA package."""
     yield from PY_DIR.rglob('*.py')
-    for name in ('eda_stdio.py', 'suite_legacy_compat.py', 'suite_script_overlay.py'):
+    for name in ('eda_stdio.py',):
         path = ROOT.parent / name
         if path.exists():
             yield path
@@ -268,10 +268,6 @@ def _category_to_module() -> dict[str, str]:
         encoding="utf-8", errors="replace")
     routes = dict(re.findall(
         r"'(\w+)':\s*Result\s*:=\s*(Handle\w+Command)", text))
-    # The legacy category first selects the sandbox, then dispatches its
-    # ordinary actions through the same EDA project.
-    routes.update(re.findall(
-        r"'(\w+)':\s*Begin\s+If Action = '[^']+' Then Result := \w+\([^;]+?\)\s+Else Result := (Handle\w+Command)", text))
     assert routes, "could not parse the dispatcher's category routing"
 
     defined_in: dict[str, str] = {}
@@ -426,7 +422,8 @@ def _intercepted_commands():
 
 
 def test_suite_interceptors_are_discovered_from_executable_coordinator_branches():
-    assert {'suite.capture_snapshot', 'suite.execute_script'} <= _intercepted_commands()
+    assert _intercepted_commands() == {
+        'application.stop_server', 'suite.capture_snapshot', 'project.close'}
 
 
 def test_every_command_python_sends_has_a_handler(unhandled):

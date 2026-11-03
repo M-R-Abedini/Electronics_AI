@@ -36,8 +36,8 @@ quantity price breaks; supplier inconsistencies remain visible in that range.
 ## Private configuration
 
 Keep configuration in `<PLUGIN_DATA>/config.json`, outside `${PLUGIN_ROOT}`.
-The root is `ALTIUM_SUITE_PLUGIN_DATA` when configured, otherwise
-`CODEX_HOME/plugins/data/mcp-altium-suite` (default `~/.codex/...`). The module
+The root is `ELECTRONICS_AI_PLUGIN_DATA` when configured, otherwise
+`CODEX_HOME/plugins/data/mcp-electronics-ai` (default `~/.codex/...`). The module
 does not edit this file or print keys. An example configuration shape is:
 
 ```json

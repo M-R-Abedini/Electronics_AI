@@ -27,11 +27,11 @@ _KINDS = {"ic", "resistor", "capacitor", "inductor", "diode", "transistor", "con
 
 def data_directory() -> Path:
     """Resolve writable user data without writing into the plugin package."""
-    explicit = os.environ.get("ALTIUM_SUITE_PLUGIN_DATA")
+    explicit = os.environ.get("ELECTRONICS_AI_PLUGIN_DATA")
     if explicit:
         path = Path(explicit)
     else:
-        path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "plugins/data/mcp-altium-suite"
+        path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "plugins/data/mcp-electronics-ai"
     if not path.is_absolute():
         raise ValueError("The suite data directory must be absolute")
     return path.resolve()

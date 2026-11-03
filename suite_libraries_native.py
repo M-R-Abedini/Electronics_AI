@@ -231,7 +231,7 @@ class NativeLibraries:
     """Path-confined library service. Empty allowed_paths denies filesystem access."""
 
     def __init__(self, data_dir=None, allowed_paths=None, native_dispatch=None, logging_config=None):
-        self.data_dir = Path(data_dir or Path.home() / ".altium-suite").resolve()
+        self.data_dir = Path(data_dir or Path.home() / ".electronics-ai").resolve()
         self.allowed_paths = [Path(path).resolve() for path in (allowed_paths or [])]
         self.native_dispatch = native_dispatch
         self.logging_config = copy.deepcopy(logging_config or {})
@@ -1410,7 +1410,7 @@ _default_service = None
 def call_tool(name, arguments=None):
     global _default_service
     if _default_service is None:
-        roots = os.environ.get("ALTIUM_SUITE_ALLOWED_PATHS", "")
+        roots = os.environ.get("ELECTRONICS_AI_ALLOWED_PATHS", "")
         _default_service = NativeLibraries(allowed_paths=[p for p in roots.split(os.pathsep) if p])
     return _default_service.call_tool(name, arguments)
 

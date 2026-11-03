@@ -361,7 +361,7 @@ class SafetyService:
                 path = Path(value)
                 if (path.suffix.casefold() in DESIGN_SUFFIXES and not path.is_absolute()
                         and (document_scope or key.casefold() in {'path', 'file_path', 'document_path',
-                             'board_path', 'project_path', 'library_path', 'output_path', 'checkpoint_files'})):
+                             'board_path', 'target_board_path', 'project_path', 'library_path', 'output_path', 'checkpoint_files'})):
                     raise ValueError('Native checkpoint targets must be absolute; resolve the intended design path before editing')
                 if path.is_absolute() and path.suffix.casefold() in DESIGN_SUFFIXES:
                     files.add(str(path))
@@ -401,7 +401,7 @@ class SafetyService:
         connectivity, status, connectivity_target = None, 'unavailable', None
         active = context.get('active_document') or {}
         board = str(active.get('file_path', ''))
-        explicit_board = arguments.get('board_path')
+        explicit_board = arguments.get('target_board_path') or arguments.get('board_path')
         if board.lower().endswith('.pcbdoc') and (not explicit_board or Path(explicit_board).resolve() == Path(board).resolve()):
             try:
                 connectivity = await self.native_read('pcb_get_pad_connectivity',

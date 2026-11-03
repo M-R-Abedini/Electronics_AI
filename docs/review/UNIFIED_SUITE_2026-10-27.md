@@ -1,7 +1,7 @@
 # Unified Altium Suite
 
-The client connects to one stdio server named **mcp altium suite**, configured
-under `mcp-altium-suite`. The existing three backends run as lazy internal
+The client connects to one stdio server named **Electronics AI**, configured
+under `mcp-electronics-ai`. The existing three backends run as lazy internal
 workers. Their native shared mutex, ownership checks, idle release and error
 handling remain authoritative. Combining connections does not eliminate
 Altium's cold script-start delay or permit simultaneous native writes.
@@ -66,7 +66,7 @@ an undocumented API. EPW conversion requires the official supported loader.
 ZIP staging retains original bytes, extracts supported CAD/license data only,
 and rejects traversal, unsafe paths, links and excessive expansion.
 
-Set `ALTIUM_SUITE_CLOUD_CACHE` to an absolute staging root, or supply an
+Set `ELECTRONICS_AI_CLOUD_CACHE` to an absolute staging root, or supply an
 explicit cache directory per cloud call. The Rust library worker must allow
 that root before it can inspect downloads. `setup.py` adds the generated
 suite cache root alongside explicitly requested local library directories.
@@ -104,8 +104,8 @@ For rollback, close the suite connection, restore the exact backed-up
 `config.toml` and previous manifest (or remove a newly created manifest), then
 reconnect. Deployed-file backups are separate from configuration backups.
 
-Copy `skills/altium-circuit-design` into the client's discoverable skill
-directory to install `$altium-circuit-design`. The skill links compact
+Copy `skills/electronics-ai-circuit-design` into the client's discoverable skill
+directory to install `$electronics-ai-circuit-design`. The skill links compact
 engineering, cloud and actual tool-workflow references. Validation and
 acceptance results for this local installation are recorded in the workspace
 report, not inferred from the presence of tools.

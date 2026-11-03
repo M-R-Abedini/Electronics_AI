@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """MCP Tools for Altium Designer.
@@ -260,7 +261,8 @@ def _register_full(mcp, backend: str = DEFAULT_BACKEND) -> str:
     from ..core.backends import set_active_backend
     set_active_backend(backend)
     if backend in ("altium", "both"):
-        register_all_tools(mcp)
+        from ..bridge.targeting import TargetedRegistration
+        register_all_tools(TargetedRegistration(mcp))
     if backend in ("kicad", "both"):
         register_kicad_tools(mcp)
     # The engineering calculators (pcb_calc_*) are pure physics and

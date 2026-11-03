@@ -19,7 +19,7 @@ def test_foreign_runtime_cannot_bypass_unresolved_native_owner(tmp_path, monkeyp
     work_a, work_b = tmp_path/'wa', tmp_path/'wb'
     claim = identity.claim_editor(77, 100, runtime_a, work_a, tmp_path/'shared')
     original = claim.read_bytes()
-    runtime_a.mkdir(); (runtime_a/'legacy-operation.json').write_text('unresolved mutation')
+    runtime_a.mkdir(); (runtime_a/'native-operation.json').write_text('unresolved mutation')
     monkeypatch.setattr(coord, 'RUNTIME', runtime_b)
     monkeypatch.setattr(coord, 'WORKSPACE', work_b)
     monkeypatch.setattr(coord, '_editor_state', lambda: dict(pid=77, blocked=False))
@@ -32,7 +32,7 @@ def test_foreign_runtime_cannot_bypass_unresolved_native_owner(tmp_path, monkeyp
         coord._ensure(probe)
     probe.assert_not_called(); launch.assert_not_called()
     assert claim.read_bytes() == original
-    assert (runtime_a/'legacy-operation.json').read_text() == 'unresolved mutation'
+    assert (runtime_a/'native-operation.json').read_text() == 'unresolved mutation'
 
 
 def test_two_editors_are_rejected_even_when_one_is_foreground(monkeypatch):

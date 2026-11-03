@@ -1,106 +1,57 @@
-<div dir="ltr">
-
-# Altium MCP Suite
+# Electronics AI — الإصدار 0.7.0
 
 [English](../README.md) · [فارسی](README.fa.md) · [简体中文](README.zh-CN.md) · [العربية](README.ar.md)
 
-</div>
+إضافة محلية لأتمتة تصميم المخططات ولوحات PCB في Altium Designer. تجمع اتصال
+`mcp-electronics-ai` وثلاث مهارات للإعداد وتصميم الدوائر وتوضيع المكونات. المصدر
+الأساسي هو مستودع [Electronics_AI](https://github.com/M-R-Abedini/Electronics_AI)؛
+الحزمة المثبتة وملف ZIP ناتجان عن هذا المصدر.
 
-<div dir="rtl">
+**المتطلبات:** ويندوز، Python 3.12 ونسخة مرخصة من Altium Designer. الاختبارات
+المباشرة المتاحة أجريت على Altium Designer 26؛ لا تثبت دعم الإصدارات الأخرى.
 
-اتصال <span dir="ltr"><code>MCP</code></span> واحد باسم <span dir="ltr"><code>mcp altium suite</code></span> يتيح للذكاء الاصطناعي قراءة وتحرير مخططاتك ولوحاتك ومكتباتك في <span dir="ltr"><code>Altium</code></span>. يبقى البرنامج مفتوحًا وتستهدف العمليات المشروع المحدد. تعمل محركات التصميم والعمليات القديمة والمكتبات داخل الاتصال نفسه مع التنسيق المشترك.
+## الوظائف
 
-**المتطلبات:** <span dir="ltr"><code>Windows</code></span> و <span dir="ltr"><code>Python 3.12</code></span>. تم الاختبار المباشر على <span dir="ltr"><code>Altium Designer 26</code></span>.
+- قراءة وتحرير المخططات وPCB ومكتبات `.SchLib` و`.PcbLib`.
+- مقارنة خيارات التوضيع باستخدام وظيفة الدائرة وهندسة الوسادات الفعلية والقيود
+  الخاصة بالمشروع. يتم تطبيق خطة محفوظة مع التحقق من حداثة البيانات وقراءة النتيجة.
+- فحص هندسة النحاس ثنائية الأبعاد عبر `si_pi__`، وتصنيف الشبكات ومعاينة القواعد
+  وتحديد موضع المخالفات. البيانات الناقصة لا تعني اجتياز الفحص.
+- البحث في المكتبات السحابية مع تسجيل المصدر والبصمة؛ يلزم التحقق من الحزمة
+  وترقيم الأرجل والوسادات بصورة مستقلة.
+- نسخ احتياطية للملفات المحفوظة وطابور مشترك للأوامر الأصلية.
 
-## ماذا يستطيع أن يفعل
-
-- قراءة وتحرير المخطط المفتوح: إضافة المكونات، رسم الأسلاك، وضع لافتات الشبكات ومنافذ الطاقة، تحرير المعاملات، استخراج <span dir="ltr"><code>BOM</code></span> وقائمة الشبكات.
-- العمل على اللوحة: تحريك المكونات، رسم المسارات والوصلات، فحص مسافات التوضيع، التجميع في لوحة واحدة.
-- فحص التصميم: لافتات شبكات يتيمة، منافذ عائمة، أرجل غير موصولة في الدوائر المتكاملة، مكثفات فصل مفقودة، تعارض التسميات، مكونات خارج الشبكة — أو 33 فحصًا في استدعاء واحد، مع <span dir="ltr"><code>DRC</code></span> اختياري.
-- أربعة أدوات للقراءة فقط لفحص التوصيل: لقطة لربط الأرجل بالشبكات (ببصمة <span dir="ltr"><code>SHA-256</code></span>)، وتعريف عقد لكل رجل (الشبكة المتوقعة، أو عدم توصيل مقصود مع ذكر السبب)، ومقارنة قبل/بعد، والتحقق باتجاهين من تطابق وسادات المخطط واللوحة.
-- حساب عرض المسار والمعاوقة وميزانية الأطوال. هذه حاسبات، ليست إثبات سلامة إشارة.
-- قراءة وكتابة ملفات المكتبات <span dir="ltr"><code>.SchLib</code></span> و <span dir="ltr"><code>.PcbLib</code></span>.
-- البحث في فهرس <span dir="ltr"><code>ChilaBoard</code></span> العام وتنزيل المكتبات مع الإصدار والمصدر والبصمات والترخيص؛ وتجهيز ملفات التنزيل الرسمية من <span dir="ltr"><code>SnapMagic</code></span> و <span dir="ltr"><code>SamacSys</code></span> للفحص المحلي. الربط المباشر بواجهتيهما وتحويل <span dir="ltr"><code>EPW</code></span> غير منفذين. [دليل المكتبات السحابية](review/CLOUD_LIBRARIES_2026-10-27.md).
-- مهارة <span dir="ltr"><code>$altium-circuit-design</code></span> لمتطلبات الدائرة ومراجعة البيانات والرموز والبصمات والتخطيط المنظم والتحقق من التوصيل. نجاح التنزيل لا يثبت صحة ترقيم الأرجل أو الحزمة.
-- إدارة بدائل التجميع بمعرّف فريد، وتحديث حالة تركيب المكونات دفعيًا، وتصدير مصفوفة المكونات؛ مع نسخ احتياطي للمشروع والتحقق عبر واجهة <span dir="ltr"><code>Altium</code></span>. [سير عمل البدائل](review/STORAGE_VARIANTS_2026-10-08.md).
-- جسر أصلي موحد: تمر أدوات التوافق القديمة عبر محرك EDA نفسه، مع طابور مشترك ومعرّف لكل طلب لمنع التداخل والردود القديمة.
-- عملاء متزامنون: يرتّب طابور مشترك أوامر Altium، وتُقرأ المكونات والشبكات والوسادات في مرور واحد. يمكن للعملاء تحليل اللقطة بالتوازي؛ اللقطة سجل سابق وليست شرطًا صالحًا للتعديل الحي. [الاستخدام والتحقق](review/CONCURRENT_CLIENTS_2026-10-14.md).
-- ينفذ مشروع سكربت EDA الموحد مسار التوافق أيضًا؛ يفحص بدء التشغيل المشاريع القديمة المولّدة ويحفظ المصادر المعدّلة. [التحقق من دورة حياة السكربتات](review/SCRIPT_PROJECT_LIFECYCLE_2026-10-10.md).
-
-الإصدار `0.5.0` يضيف أربعة أدوات `si_pi__` لتصنيف الشبكات وفحص النحاس الفعلي
-ومعاينة القواعد وتحديد موضع المخالفة. نقص بيانات الطبقات أو الفيزياء يبقى غير محسوم.
-راجع [نطاق المساعد والفحوص](COPPER_SI_PI.md).
-
-## ما زال قيد التطوير
-
-- المساعدة في التوضيع: التوضيع الدفعي وفحص المسافات يعملان؛ أدوات التوضيع الأدق ما زالت قيد الإنجاز.
-- استقرار الجسر: كل تعطل معروف في <span dir="ltr"><code>DelphiScript</code></span> يُصلَح أو يُحتوى، لكن أعطالًا جديدة ما زالت تظهر — والعمل مستمر.
-- الاختبار تم حتى الآن على <span dir="ltr"><code>Altium Designer 26</code></span> فقط؛ النسخ الأخرى لم تُختبَر بعد.
-
-## القيود الحالية
-
-- قد يترك فشل التعديل الجماعي تغييرات جزئية؛ تجميع العمليات في خطوة تراجع واحدة لا يضمن استعادتها بالكامل. احفظ نسخة احتياطية قبل التعديلات الكبيرة.
-
-- تجريبي. بعض العمليات قد تُعطّل محرك <span dir="ltr"><code>DelphiScript</code></span> في <span dir="ltr"><code>Altium</code></span> وتوقف حلقة العمل — خذ نسخة احتياطية من تصميمك قبل أن تدع الذكاء الاصطناعي يحرّره.
-- قد ينتظر الحفظ وأوامر الواجهة أثناء تنفيذ أمر. تتحرر ملكية المحرك بعد نحو ثانيتين من الخمول؛ رسائل ping الخلفية لا تمدد المهلة، ويعيد استدعاء الأداة التالي تشغيل الحلقة تلقائيًا.
-- تُرفض الأحرف فوق <span dir="ltr"><code>U+00FF</code></span> في معاملات JSON لجسر EDA قبل الإرسال لمنع استبدالها بعلامة استفهام؛ نقل Unicode الكامل لم يُنفّذ بعد.
-- يحافظ جسر <span dir="ltr"><code>EDA</code></span> على مسارات <span dir="ltr"><code>UNC</code></span>؛ الوصول إلى المجلد المشترك يعتمد على صلاحيات ويندوز.
-- يتطلب <span dir="ltr"><code>proj_sync_pcb</code></span> الخيار <span dir="ltr"><code>allow_modal=True</code></span>؛ تحديث اللوحة من المخطط ما زال يفتح حوارًا تفاعليًا.
-- أدوات فحص التوصيل تتحقق من تخصيص الأرجل فقط، لا من النحاس. ولا ترى بيانات لم تُدخَل إليها.
-- الحوار المفتوح يحجب أوامر السكربت؛ تشخيص الحوارات عبر <span dir="ltr"><code>Win32</code></span> يبقى متاحًا. تُرفض الأوامر الجديدة أثناء معالجة أمر سابق. عند انتهاء المهلة يُسحب الطلب غير المقروء؛ التحرير الجاري لا يمكن إلغاؤه، لذا افحص التصميم قبل إعادة المحاولة.
+القواعد المتخصصة تُختار حسب وظيفة كل جزء وبيانات المشروع؛ تخطيط مثال سابق ليس
+نموذجًا ثابتًا لكل اللوحات.
 
 ## التثبيت
 
-### إضافة Codex
-
-تجمع الإضافة اتصال <span dir="ltr"><code>MCP</code></span> الموحد ومهارة تصميم الدوائر وسير إعداد البيئة. يوضح [دليل الإضافة](PLUGIN_PACKAGE.md) أوامر البناء الفعلية والتثبيت من marketplace محلي وتشخيص البيئة. بعد التثبيت افتح محادثة جديدة وأكمل الإعداد. لا تشمل الإضافة برنامج <span dir="ltr"><code>Altium</code></span> أو ترخيصه. لا تُبقِ الاتصال اليدوي واتصال الإضافة نفسها مفعّلين معًا.
-
-### الاتصال اليدوي والعملاء الآخرون
-
-راجع [فحوص الاتصال والاستعادة اليدوية](review/TRANSPORT_FINDINGS_2026-10-08.md) لمعالجة ملكية السكربت غير المؤكدة بعد انتهاء المهلة أو تعطل المحرك.
-
-ثبّت <span dir="ltr"><code>Git</code></span> و <span dir="ltr"><code>Python 3.12</code></span> و <span dir="ltr"><code>Altium</code></span> على ويندوز. ضع مسار ملف التنفيذ الخاص بك:
-
-</div>
-
-<div dir="ltr">
+من بيئة تطوير معدة، ابنِ الحزمة وثبت الإضافة:
 
 ```powershell
-git clone https://github.com/M-R-Abedini/Altium-MCP-Suite.git
-Set-Location Altium-MCP-Suite
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe setup.py --altium-exe "C:\Program Files\Altium\AD26\X2.EXE"
+.\.venv\Scripts\python.exe scripts/build_plugin.py --smoke --check-reproducible
+codex plugin marketplace add .\dist\marketplace --json
+$installedPlugin = codex plugin add mcp-electronics-ai@electronics-ai --json | ConvertFrom-Json
+$pluginRoot = $installedPlugin.installedPath
+py -3.12 "$pluginRoot\scripts\plugin_runtime.py" bootstrap --altium-exe "C:\Program Files\Altium\AD26\X2.EXE" --library-dir "D:\MyProject\Libraries"
+py -3.12 "$pluginRoot\scripts\plugin_runtime.py" doctor --probe-backends
 ```
 
-</div>
+استبدل مساري Altium والمكتبات بالمسارات المقصودة. ينشئ `bootstrap` بيئة Python
+خاصة مستقلة ويثبت EDA كحزمة wheel عادية. الإعدادات خارج ذاكرة الإضافة المؤقتة،
+في `~/.codex/plugins/data/mcp-electronics-ai`. اسم marketplace هو `electronics-ai`.
+أعد توصيل Codex بعد التثبيت أو التحديث. التشغيل المعتاد لا يثبت التبعيات.
 
-<div dir="rtl">
+أوامر الإعداد الحالية هي `bootstrap` و`doctor` و`configure-clients` و`serve`.
+راجع [دليل الحزمة والتحقق](PLUGIN_PACKAGE.md) و[مثبت ويندوز والعملاء](INSTALLER.md).
 
-ينشئ الإعداد مدخلاً واحدًا <span dir="ltr"><code>mcp-altium-suite</code></span> في <span dir="ltr"><code>mcp.local.json</code></span> أو <span dir="ltr"><code>codex.local.toml</code></span>. ادمجه في إعدادات العميل وأعد الاتصال. تبقى إعدادات المحركات الخاصة في <span dir="ltr"><code>suite-backends.local.json</code></span>. افتح مشروعك، واكتشف <span dir="ltr"><code>app_context</code></span> بواسطة <span dir="ltr"><code>suite_catalog</code></span> ثم استدعِ الاسم <span dir="ltr"><code>eda__app_context</code></span> عبر <span dir="ltr"><code>suite_invoke</code></span>.
+## حدود التحقق
 
-الوضع الافتراضي <span dir="ltr"><code>--toolset minimal</code></span> يعرض فقط <span dir="ltr"><code>suite_catalog</code></span> و <span dir="ltr"><code>suite_invoke</code></span> و <span dir="ltr"><code>suite_status</code></span>. اكتشف المخطط باستخدام <span dir="ltr"><code>with_schema=true</code></span>؛ تبدأ الأسماء بـ <span dir="ltr"><code>eda__</code></span> أو <span dir="ltr"><code>legacy__</code></span> أو <span dir="ltr"><code>libraries__</code></span> أو <span dir="ltr"><code>cloud__</code></span>. تبقى العمليات متاحة وتُتحقق المدخلات قبل الإرسال. يعرض <span dir="ltr"><code>--toolset full</code></span> جميع الأدوات، ويقبل <span dir="ltr"><code>--separate-servers</code></span> للترحيل مع اتصال موحد. [الاتصال الموحد والترحيل](review/UNIFIED_SUITE_2026-10-27.md).
+نجاح التثبيت أو استعراض الأدوات لا يثبت اتصال Altium الأصلي. اجتياز التوضيع لا
+يثبت اكتمال التوجيه أو سلامة DRC أو الجاهزية للتصنيع. قد يترك فشل التعديل الدفعي
+تغييرات جزئية؛ نسخ الملفات المحفوظة لا تستعيد كل التعديلات غير المحفوظة. افحص
+النتيجة الملتبسة قبل إعادة التنفيذ.
 
-</div>
-
-<div dir="ltr">
-
-```powershell
-.\.venv\Scripts\python.exe setup.py --altium-exe "C:\Program Files\Altium\AD26\X2.EXE" --library-dir "D:\MyProject\Libraries"
-```
-
-</div>
-
-<div dir="rtl">
-
-تعمل أدوات المكتبات عبر شيفرة Python مستقلة دون مترجم أو ملف تنفيذي خارجي. كرر `--library-dir` للمجلدات المطلوبة. تراخيص Altium وحسابات مزودي المكتبات غير مشمولة.
-
-## الأسئلة والمساهمة
-
-اطرح أسئلة التثبيت والاستخدام في [قسم الأسئلة والأجوبة](https://github.com/M-R-Abedini/Altium-MCP-Suite/discussions/categories/q-a). استخدم [نماذج Issues](https://github.com/M-R-Abedini/Altium-MCP-Suite/issues/new/choose) للإبلاغ عن الأخطاء واقتراح الميزات. يوضح [دليل المساهمة بالإنجليزية](../CONTRIBUTING.md) إعداد بيئة التطوير والاختبارات والترجمة وتسجيل المؤلفين المشاركين.
-
-## الترخيص
-
-شيفرة التنسيق والمكتبات والتوافق القديم بترخيص MIT؛ خلفية EDA بترخيص Apache-2.0. راجع [نطاق التراخيص](../THIRD_PARTY_NOTICES.md) و[المصادر الأصلية](../UPSTREAM.json).
-
-</div>
+راجع [مهارة PCB](../skills/electronics-ai-pcb-layout/SKILL.md)،
+[تحليل النحاس](COPPER_SI_PI.md)، [حماية التعديلات](PRODUCT_SAFETY.md)
+و[التراخيص](../THIRD_PARTY_NOTICES.md).

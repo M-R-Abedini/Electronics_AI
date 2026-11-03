@@ -139,16 +139,16 @@ def test_idle_release_during_failed_probes_is_rechecked_before_launch(session):
     launch.assert_called_once()
 
 
-@pytest.mark.parametrize('guard', ['modal', 'handler', 'legacy', 'cooldown'])
+@pytest.mark.parametrize('guard', ['modal', 'handler', 'operation', 'cooldown'])
 def test_release_proof_does_not_bypass_guards(session, monkeypatch, guard):
     work, launch = session
     if guard == 'modal':
         monkeypatch.setattr(coord, '_editor_state', lambda: {'pid': 77, 'blocked': True})
     elif guard == 'handler':
         (work / 'progress_live.json').write_text('{}')
-    elif guard == 'legacy':
-        (coord.RUNTIME / 'legacy-operation.json').write_text(json.dumps({
-            'pid': 77, 'session_started_at': 100, 'request_path': str(work / 'request.json'),
+    elif guard == 'operation':
+        coord._operation_marker().write_text(json.dumps({
+            'pid': 77, 'session_started_at': 100, 'request_path': str(work / 'project-close-request.json'),
             'completion_path': str(work / 'missing.json'), 'request_id': 'old'}))
     else:
         coord.LAUNCH_STATE.write_text(json.dumps({'attempted_at': time.time()}))
