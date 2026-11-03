@@ -17,7 +17,7 @@ import time
 from suite_si_pi import SiPiService, _json, _path
 from suite_checkpoints import _atomic, digest
 
-POLICY_VERSION = 'placement-evidence-p0-v3'
+POLICY_VERSION = 'placement-evidence-p0-v4'
 
 
 def bounded_checks(value):
@@ -160,24 +160,53 @@ def context_from_snapshot(snapshot, snapshot_id, models, fabrication, assembly):
                     and value.get('status') not in {'partial', 'unknown', 'unsupported', 'unavailable'}
                     and (value.get('complete') is True or value.get('status') == 'complete'))
         return value is True or value == 'complete'
-    # The outer ring does not prove cutout extraction. Native cutouts are
-    # regions; an explicit cutouts section may qualify them independently.
+    # Native shares one section for physical board cutouts and per-layer
+    # polygon pour voids. Only the former removes FR4 on every board layer.
+    # Copper voids can overlap each other across layers and must not become
+    # holes of the mechanical outline. Preserve all records in copper_snapshot.
+    from eda_agent.design.copper_geometry import region_geometry_valid
+    def mechanical_region_valid(outline, holes=()):
+        try:
+            return region_geometry_valid({'outline': outline, 'holes': list(holes)})
+        except (TypeError, ValueError, KeyError, IndexError):
+            return False
     cutouts_complete = complete('cutouts') if 'cutouts' in source_coverage else complete('regions')
-    cutouts_complete &= all(isinstance(row, dict) and bool(row.get('outline'))
-                            and row.get('geometry_complete') is not False
-                            for row in snapshot.get('cutouts', []))
-    outline_complete = bool(snapshot.get('board_outline')) and complete('board_outline') and cutouts_complete
+    cutouts = []
+    for row in snapshot.get('cutouts', []):
+        if isinstance(row, dict) and row.get('kind') == 'polygon_cutout':
+            continue
+        if (not isinstance(row, dict) or row.get('kind') != 'board_cutout'
+                or row.get('geometry_complete') is False or row.get('holes')
+                or not mechanical_region_valid(row.get('outline', []))):
+            # An unclassified or unsupported physical contour is not a guessed
+            # hole. Keep the data, but disallow a qualified outline result.
+            cutouts_complete = False
+            continue
+        cutouts.append(copy.deepcopy(row['outline']))
+    outline = copy.deepcopy(snapshot.get('board_outline') or None)
+    geometry_diagnostics = []
+    if outline is not None and not mechanical_region_valid(outline, cutouts):
+        # A board cutout may form an edge notch, overlap another physical
+        # cutout or lie outside the outline. This contract supports validated
+        # polygon-with-holes only; it must not silently model that difference
+        # as intact FR4 or reject the whole read-only capture as malformed.
+        geometry_diagnostics.append(dict(section='physical_board_shape', status='unknown',
+            reason='Combined board outline/cutouts require unsupported contour subtraction; raw evidence retained'))
+        cutouts_complete = False
+        cutouts = []
+        if not mechanical_region_valid(outline):
+            outline = None
+    outline_complete = outline is not None and complete('board_outline') and cutouts_complete
     pads_complete = complete('pads') and not unknown_ownership
-    cutouts = [copy.deepcopy(row.get('outline', [])) for row in snapshot.get('cutouts', [])
-               if isinstance(row, dict) and row.get('outline')]
     result = dict(schema=1, units='mm', board_path=snapshot['board_path'],
         board_identity=snapshot.get('board_identity'), snapshot_id=snapshot_id,
         source=snapshot['source'], document_modified=snapshot.get('document_modified'),
         unsaved_detection_complete=snapshot.get('unsaved_detection_complete') is True,
-        outline=copy.deepcopy(snapshot.get('board_outline') or None), cutouts=cutouts,
+        outline=outline, cutouts=cutouts, geometry_diagnostics=geometry_diagnostics,
         layers=copy.deepcopy(snapshot['layers']), components=components, pads=pads, stationary_pads=stationary_pads,
         fabrication_profile=copy.deepcopy(fabrication), assembly_profile=copy.deepcopy(assembly),
         coverage={'outline': 'complete' if outline_complete else 'unknown',
+                  'physical_cutouts': 'complete' if cutouts_complete else 'unknown',
                   'pads': 'complete' if pads_complete else 'unknown',
                   'routing_obstacles': 'complete' if snapshot.get('complete') else 'partial'},
         native_rules=copy.deepcopy(snapshot.get('native_rules')),

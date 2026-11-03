@@ -25,7 +25,7 @@
             }
           ]
         },
-        "elapsed_ms": 561.82,
+        "elapsed_ms": 884.113,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -33,7 +33,7 @@
             "check_statuses": {
               "pass": 14
             },
-            "evidence_id": "149987ccd3cca269b109084b140d1799d7789f20b0d37bc8758afb2564bca8cb",
+            "evidence_id": "990c7fb391041636487e23436745183b9f5c8c71cdb845dc1f075a0d046a4791",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -99,7 +99,7 @@
             "check_statuses": {
               "pass": 15
             },
-            "evidence_id": "8322ac694885b9b734ac62b55597f7dfafb6571fc8e6fd8b90ef8cf17539cb32",
+            "evidence_id": "b900da0e7d54c77c23b98db738c840bb26e4cb3d2d7d241576247085ed7982cc",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -161,7 +161,7 @@
           }
         ],
         "full_artifact_bytes": 21099,
-        "plan_digest": "a0c4726889d1e81004160cdcc2dcc5b94e670a171405dcbaf4998114b45ba9f4",
+        "plan_digest": "b8adf971910d8b93ce85e472d9cb5c91d355ba55ec2416eb0d32e7216cd8c6c0",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -171,7 +171,7 @@
           "baseline": [],
           "refine:211": []
         },
-        "elapsed_ms": 11.003,
+        "elapsed_ms": 7.056,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -179,7 +179,7 @@
             "check_statuses": {
               "pass": 14
             },
-            "evidence_id": "149987ccd3cca269b109084b140d1799d7789f20b0d37bc8758afb2564bca8cb",
+            "evidence_id": "990c7fb391041636487e23436745183b9f5c8c71cdb845dc1f075a0d046a4791",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -245,7 +245,7 @@
             "check_statuses": {
               "pass": 17
             },
-            "evidence_id": "1a10300770358145abe175aa2ef5075f41a96710f1989606901f1fbe7d9543e0",
+            "evidence_id": "dec80d689ec5a671e85576c7df315c8db5d0a97b4b3bc15dda10709454a93e8a",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -307,13 +307,13 @@
           }
         ],
         "full_artifact_bytes": 22683,
-        "generation_elapsed_ms": 2.388,
+        "generation_elapsed_ms": 1.737,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 211
         },
-        "plan_digest": "6b8f2cce263787f8322300647cab457c98a8ac2e63a2d674b335638443fa000d",
+        "plan_digest": "b5420a437f0ffdebea892b7794c521f566a93a2e8a2de1d159015639e0a0dd7a",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:211",
         "selection_status": "selected"
@@ -346,7 +346,7 @@
             }
           ]
         },
-        "elapsed_ms": 8.798,
+        "elapsed_ms": 6.217,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -354,7 +354,7 @@
             "check_statuses": {
               "pass": 14
             },
-            "evidence_id": "6bc357fe22dc936c377118dc9abcb5ae6c3df8f92464fc6a72435487dfdf1d56",
+            "evidence_id": "66e33e1942f8956f4bc74b9bd373c182d4889c57a620728146fd2ea7145242a6",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -420,7 +420,7 @@
             "check_statuses": {
               "pass": 15
             },
-            "evidence_id": "6daa8cd6a4ae7e8194e6755101ac242ee5e9bed1c198887f6bf6966b7004b60f",
+            "evidence_id": "7cadde21cf1567918e57e9fac8cbc2325f54d00df56df97605e10abdadc5cc16",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -482,7 +482,7 @@
           }
         ],
         "full_artifact_bytes": 21114,
-        "plan_digest": "312b484d9565ebcf911f4285e325fe4d8a84f824442876eb067fd97ed4fef5d8",
+        "plan_digest": "75306c878d6c1a60182b82858df47acea5a99e37b89d65a2337056763ac4c42d",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -492,7 +492,7 @@
           "baseline": [],
           "refine:307": []
         },
-        "elapsed_ms": 16.964,
+        "elapsed_ms": 7.272,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -500,7 +500,7 @@
             "check_statuses": {
               "pass": 14
             },
-            "evidence_id": "6bc357fe22dc936c377118dc9abcb5ae6c3df8f92464fc6a72435487dfdf1d56",
+            "evidence_id": "66e33e1942f8956f4bc74b9bd373c182d4889c57a620728146fd2ea7145242a6",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -566,7 +566,7 @@
             "check_statuses": {
               "pass": 17
             },
-            "evidence_id": "8d54d7535c67b53ced4b15ab48004b85e14777d771c7ade61c7cdb73304d2418",
+            "evidence_id": "dbe60f1d3e633eb5975d77c3c22484527aacb918f61c40465fa6d9ecf5a47bd6",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -628,13 +628,13 @@
           }
         ],
         "full_artifact_bytes": 22700,
-        "generation_elapsed_ms": 2.873,
+        "generation_elapsed_ms": 1.545,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 307
         },
-        "plan_digest": "2ee77832a504e3a39e7afc6f114a9ad24265a142f05d1461258d70b7a1cc8343",
+        "plan_digest": "64c900419609baab11ff48622481e29df3d8d460dbd933c23b6bd0e54d3dc278",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:307",
         "selection_status": "selected"
@@ -667,7 +667,7 @@
             }
           ]
         },
-        "elapsed_ms": 17.111,
+        "elapsed_ms": 6.234,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -675,7 +675,7 @@
             "check_statuses": {
               "pass": 14
             },
-            "evidence_id": "52ed3972d1879da98d0a8c1c35318b5127abb8f97f1c741574ee62c47e4787b8",
+            "evidence_id": "71d4c74b934393854b097e9be2892e97cbc91ca3b07d3ad9c5c4068f773f9be0",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -741,7 +741,7 @@
             "check_statuses": {
               "pass": 15
             },
-            "evidence_id": "342fa4dc125b8f5fd64c071ffbcb2089c49a375658c6526ddd49504515b3153e",
+            "evidence_id": "ba254927ae97962a843fc64a2628c763f2373505a86ac7a390c8d5c16fc75b93",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -803,7 +803,7 @@
           }
         ],
         "full_artifact_bytes": 21112,
-        "plan_digest": "5df3270c12f21e0179b506a57a68eccf6148f833a82a065bfdd7d58f85c9ee27",
+        "plan_digest": "207296998a3daddd52e41eae943db90f53df4e955b54bd6921aa08f23fe5a6a1",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -813,7 +813,7 @@
           "baseline": [],
           "refine:401": []
         },
-        "elapsed_ms": 11.226,
+        "elapsed_ms": 6.846,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -821,7 +821,7 @@
             "check_statuses": {
               "pass": 14
             },
-            "evidence_id": "52ed3972d1879da98d0a8c1c35318b5127abb8f97f1c741574ee62c47e4787b8",
+            "evidence_id": "71d4c74b934393854b097e9be2892e97cbc91ca3b07d3ad9c5c4068f773f9be0",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -887,7 +887,7 @@
             "check_statuses": {
               "pass": 17
             },
-            "evidence_id": "a54945f5343e89c0c47f55604f2ddcdf45bf0a75b2f2b621f9ccbc6ddbb4a776",
+            "evidence_id": "2ef77dbaa9544fc7bea70a296fcbe3aa8c248be93f2016fb1265f0f53fb329b6",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -949,13 +949,13 @@
           }
         ],
         "full_artifact_bytes": 22696,
-        "generation_elapsed_ms": 3.918,
+        "generation_elapsed_ms": 1.392,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 401
         },
-        "plan_digest": "832216ea968003a80fdff49684ffc3b6a795c33dcf056fab02eaf13cf9cab2a2",
+        "plan_digest": "7535c3121c9613d75d73026873fb33927ea5d9b5bdebf5f6f7c8e4bb393fbe6e",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:401",
         "selection_status": "selected"
@@ -975,7 +975,7 @@
           "baseline": [],
           "compact_but_collision": []
         },
-        "elapsed_ms": 3.886,
+        "elapsed_ms": 3.622,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -983,7 +983,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "735e7b269fd3bdb397dafba034e9f12cbe1c603d23478029d205acc4e190720a",
+            "evidence_id": "272c258576b578321ee4d061ea54ac3abbb2c5a661f22abfa14513fb3f3aa0c3",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -1063,7 +1063,7 @@
               "fail": 1,
               "pass": 11
             },
-            "evidence_id": "0d1ac2887308933a7d3cd43e543b0a6171e89a6a5d62eb1a35136ab456105255",
+            "evidence_id": "f058cdef68e0a7bd89c6f03c0f021c1f45a2556a897a683c78255aadae5e7374",
             "feasible": false,
             "hard_fail_ids": [
               "collision:a:b"
@@ -1140,7 +1140,7 @@
           }
         ],
         "full_artifact_bytes": 19304,
-        "plan_digest": "ac996dd82e4564ab8db80bb816768486297c7bca281b1edac20f1e589ae3e5c3",
+        "plan_digest": "5724be440082a8a2c844c3508e5d6cec31392617ffb1cc75e0f10ac7790d393e",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -1150,7 +1150,7 @@
           "baseline": [],
           "refine:211": []
         },
-        "elapsed_ms": 3.499,
+        "elapsed_ms": 3.129,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1158,7 +1158,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "735e7b269fd3bdb397dafba034e9f12cbe1c603d23478029d205acc4e190720a",
+            "evidence_id": "272c258576b578321ee4d061ea54ac3abbb2c5a661f22abfa14513fb3f3aa0c3",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -1237,7 +1237,7 @@
             "check_statuses": {
               "pass": 13
             },
-            "evidence_id": "4ea5898cb298762d33cab56523e2f7ad08591daf8fa50a66e03f37ea1030137c",
+            "evidence_id": "a46883043a0c70bd435bc7c122d9ba13ac5ccf3552ed170dbbec1b434fba274c",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -1312,13 +1312,13 @@
           }
         ],
         "full_artifact_bytes": 20254,
-        "generation_elapsed_ms": 0.887,
+        "generation_elapsed_ms": 0.827,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 211
         },
-        "plan_digest": "f70c0d810ad7a0b2589d569813013f43fe9997d8c0fea41c62413d049bec492a",
+        "plan_digest": "db229b1c122795fb16c177e35912d8669adf4279631bca68d2ae9f489945ba37",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:211",
         "selection_status": "selected"
@@ -1338,7 +1338,7 @@
           "baseline": [],
           "compact_but_collision": []
         },
-        "elapsed_ms": 3.871,
+        "elapsed_ms": 3.024,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1346,7 +1346,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "cec3176cb3ec86a5a6e659ea93bc251c292264b667da3b7e9d842453f955de51",
+            "evidence_id": "1d53a327903701c767b5763db6b2121d00ca0c3b67f95d0d9a7f0bbc0ba88f66",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -1426,7 +1426,7 @@
               "fail": 1,
               "pass": 11
             },
-            "evidence_id": "50f4bfd330156569e6d8559fbd73877c0309c75249b7c034b6583c199c9e60b9",
+            "evidence_id": "bff8840aa6adf61188ce6403cb5b39de33724d23c308d4952a7447ae665ede03",
             "feasible": false,
             "hard_fail_ids": [
               "collision:a:b"
@@ -1503,7 +1503,7 @@
           }
         ],
         "full_artifact_bytes": 19323,
-        "plan_digest": "769f04f0c676dc202c5fd4c4e4b8712ee895ba98faaf73614426075c1e43a7d6",
+        "plan_digest": "76382f2306e7b5d8953f88feb267f69366b3fed20c8ba6558cf66f21411c64b9",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -1513,7 +1513,7 @@
           "baseline": [],
           "refine:307": []
         },
-        "elapsed_ms": 4.79,
+        "elapsed_ms": 3.224,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1521,7 +1521,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "cec3176cb3ec86a5a6e659ea93bc251c292264b667da3b7e9d842453f955de51",
+            "evidence_id": "1d53a327903701c767b5763db6b2121d00ca0c3b67f95d0d9a7f0bbc0ba88f66",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -1600,7 +1600,7 @@
             "check_statuses": {
               "pass": 13
             },
-            "evidence_id": "d49f61438263cf564fe8521e2254a6b52aeea3c143687727c9ffc74f48d82a1d",
+            "evidence_id": "38982d261f8a193255b71379380a90402ba52e5fecd5cbe8d21ae088d286baf6",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -1675,13 +1675,13 @@
           }
         ],
         "full_artifact_bytes": 20273,
-        "generation_elapsed_ms": 1.171,
+        "generation_elapsed_ms": 0.755,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 307
         },
-        "plan_digest": "b71fd211895d9ba11e0905c67f0e8994399ab8345553557beee1711baa0e4618",
+        "plan_digest": "37c1ba0adae4b27502755c237bd968e060d0d32fcfbc728611902560fc543cd2",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:307",
         "selection_status": "selected"
@@ -1701,7 +1701,7 @@
           "baseline": [],
           "compact_but_collision": []
         },
-        "elapsed_ms": 4.416,
+        "elapsed_ms": 3.373,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1709,7 +1709,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "e6ae590620fa1f5737acd5e5d475f01c3539249d2e2fb633b75bd482d70198c0",
+            "evidence_id": "ed4c8b233c9b2f883ffc98a51a15248d0ee0dac3f403147a2626502727fff023",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -1789,7 +1789,7 @@
               "fail": 1,
               "pass": 11
             },
-            "evidence_id": "66f53f9d46bfe477e48c213a33ebab14383214d89e180f732abb2d7ff0b3fb3b",
+            "evidence_id": "33c4451459e45dcdd93b22fcae1d2cf1c5020474637cfbfdd608792023facb73",
             "feasible": false,
             "hard_fail_ids": [
               "collision:a:b"
@@ -1866,7 +1866,7 @@
           }
         ],
         "full_artifact_bytes": 19320,
-        "plan_digest": "214919d1160d1d530c96fbd3520b0f545b46ccaa62888740c04cbdd040719177",
+        "plan_digest": "4dac1e8902a7f618a98e3209564f549e0bb3a653f5d45325f90df60c59623912",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -1876,7 +1876,7 @@
           "baseline": [],
           "refine:401": []
         },
-        "elapsed_ms": 4.144,
+        "elapsed_ms": 2.963,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1884,7 +1884,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "e6ae590620fa1f5737acd5e5d475f01c3539249d2e2fb633b75bd482d70198c0",
+            "evidence_id": "ed4c8b233c9b2f883ffc98a51a15248d0ee0dac3f403147a2626502727fff023",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -1963,7 +1963,7 @@
             "check_statuses": {
               "pass": 13
             },
-            "evidence_id": "01cee88b04d72d9bf2a1f7c6ddcdb24c49e61484cdf524f00c9b7e79df436711",
+            "evidence_id": "7850656d3bc0687ad6df5b41e16da585b2d2155f1a36d53232b9dd6a3bed038e",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2038,13 +2038,13 @@
           }
         ],
         "full_artifact_bytes": 20270,
-        "generation_elapsed_ms": 1.004,
+        "generation_elapsed_ms": 0.76,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 401
         },
-        "plan_digest": "a3fb0581d96f061e11866ad9c1bacd8f4af8ea465e4969ff7b303a4d46f68c28",
+        "plan_digest": "cbf467abcdf85604ed3a1bed88235dd15d0c5cf72f44a6c0ec27f7b259952557",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:401",
         "selection_status": "selected"
@@ -2082,7 +2082,7 @@
             }
           ]
         },
-        "elapsed_ms": 4.011,
+        "elapsed_ms": 2.847,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2090,7 +2090,7 @@
             "check_statuses": {
               "pass": 10
             },
-            "evidence_id": "445fc147e08dc33f2b9209e430b7b8871bfefc2e7e2b307e6dc4ea06cc6b35cf",
+            "evidence_id": "5eadb722d5d138daf41dbeaebd5b4668fbba22cac233f8523a6a94414e186b94",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2156,7 +2156,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "30e0389c8ee56bef74dfba005162ef191e7244fbc1b35b2c5b83422638928cb6",
+            "evidence_id": "cd9315c1f0fa87246ebb3e336d40ac50c68a2c3a0ff402ac84c21ebb1c379d87",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2218,7 +2218,7 @@
           }
         ],
         "full_artifact_bytes": 17692,
-        "plan_digest": "fa79c03825020e13ce7e0ed07276011ca5de2f4791d8f8a7e8ac3dc63a05685c",
+        "plan_digest": "48fa4d47ce9f7dce4a506767f8b4a280a732b052d7dace6caaf50411b3b4ddb2",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
       },
@@ -2246,7 +2246,7 @@
             }
           ]
         },
-        "elapsed_ms": 4.053,
+        "elapsed_ms": 3.641,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2254,7 +2254,7 @@
             "check_statuses": {
               "pass": 10
             },
-            "evidence_id": "445fc147e08dc33f2b9209e430b7b8871bfefc2e7e2b307e6dc4ea06cc6b35cf",
+            "evidence_id": "5eadb722d5d138daf41dbeaebd5b4668fbba22cac233f8523a6a94414e186b94",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2320,7 +2320,7 @@
             "check_statuses": {
               "pass": 12
             },
-            "evidence_id": "a528c60272d17b6043093184a96d7c9a703a7c6d334f639036c67b8bbd2d96a4",
+            "evidence_id": "64231206a923429017d6e8b6b313a323133f1242698b5caf1aab06609afc2c19",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2382,13 +2382,13 @@
           }
         ],
         "full_artifact_bytes": 18306,
-        "generation_elapsed_ms": 1.029,
+        "generation_elapsed_ms": 0.73,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 211
         },
-        "plan_digest": "d9df8d9be0b01acb9ac1ebf2a65880b5f24ddb687ea2f24de8d6dad1160e39da",
+        "plan_digest": "6e64e82ec2270e9b82886bd3291110019616cd21fed757ef83c13ba1103dba31",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
@@ -2426,7 +2426,7 @@
             }
           ]
         },
-        "elapsed_ms": 4.044,
+        "elapsed_ms": 4.574,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2434,7 +2434,7 @@
             "check_statuses": {
               "pass": 10
             },
-            "evidence_id": "de90c5ea53bc2da487dc2c8602e7d316840bbfe77d0ad2ae3f08f1baa52d2a71",
+            "evidence_id": "6c3a63744a3ee834e2fd3372904dda39547d7991b44ad43c9c452531b9a9158c",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2500,7 +2500,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "920e83ce41a79bc9041121ba6475035849519874619b2e62f7f58b424b42daa9",
+            "evidence_id": "c759f9d0566ea4adeb14ad167d54495022a99899674bdd714a2f6ae301a33d01",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2562,7 +2562,7 @@
           }
         ],
         "full_artifact_bytes": 17692,
-        "plan_digest": "990d897d01dca966073deda6eeab31d79e5ca006263c484361f7224b181a5dfa",
+        "plan_digest": "efc4187cc0a0fcb0b81dc6cec3359591c6f01a85244ffa55b6f42e049e33d99f",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
       },
@@ -2590,7 +2590,7 @@
             }
           ]
         },
-        "elapsed_ms": 4.122,
+        "elapsed_ms": 2.986,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2598,7 +2598,7 @@
             "check_statuses": {
               "pass": 10
             },
-            "evidence_id": "de90c5ea53bc2da487dc2c8602e7d316840bbfe77d0ad2ae3f08f1baa52d2a71",
+            "evidence_id": "6c3a63744a3ee834e2fd3372904dda39547d7991b44ad43c9c452531b9a9158c",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2664,7 +2664,7 @@
             "check_statuses": {
               "pass": 12
             },
-            "evidence_id": "59613cb1338f3c27a5dfdd063a55ded929800cd9a0ca38c82115e4819ad2179b",
+            "evidence_id": "66187dc96b583831b10150cd431d8b7db71f82810d0e9ad45ae2698fbc921d67",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2726,13 +2726,13 @@
           }
         ],
         "full_artifact_bytes": 18306,
-        "generation_elapsed_ms": 0.991,
+        "generation_elapsed_ms": 0.796,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 307
         },
-        "plan_digest": "dee2164a387871c11df4f047043cb3abaee030628dcefe9a88c6c1b969136fb5",
+        "plan_digest": "5ff59987eca2309501970ba1f2674e277e101af55c997f0b093d7d20d54e4a14",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
@@ -2770,7 +2770,7 @@
             }
           ]
         },
-        "elapsed_ms": 4.011,
+        "elapsed_ms": 5.147,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2778,7 +2778,7 @@
             "check_statuses": {
               "pass": 10
             },
-            "evidence_id": "14492f62c9d01b2d7cc36f71dfa527b08eee09130a528b57a11f994494e8a5ca",
+            "evidence_id": "7e4a78d7e93ebee6ada7317d5959e30820e481b10a2167bbd2eb718f02a46051",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2844,7 +2844,7 @@
             "check_statuses": {
               "pass": 11
             },
-            "evidence_id": "909d62242aaf78e7cae3e70cdad1efb1e40576a2fe0c240079dedd1ee64fdec3",
+            "evidence_id": "72ca413e656e00aaa46461c930525e76539594054ebb2ec56ab7642c9736f5e9",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -2906,7 +2906,7 @@
           }
         ],
         "full_artifact_bytes": 17692,
-        "plan_digest": "8400a1448cb3da7d1e9889790261dc9b370b47cd83fe4d8462c142ea1317c7e8",
+        "plan_digest": "6abcc7193f4416f3563d7bd91e7ca6caf2fdf05dda637540398d8c1322811129",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
       },
@@ -2934,7 +2934,7 @@
             }
           ]
         },
-        "elapsed_ms": 4.109,
+        "elapsed_ms": 4.665,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2942,7 +2942,7 @@
             "check_statuses": {
               "pass": 10
             },
-            "evidence_id": "14492f62c9d01b2d7cc36f71dfa527b08eee09130a528b57a11f994494e8a5ca",
+            "evidence_id": "7e4a78d7e93ebee6ada7317d5959e30820e481b10a2167bbd2eb718f02a46051",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -3008,7 +3008,7 @@
             "check_statuses": {
               "pass": 12
             },
-            "evidence_id": "04c0977c843bbccac4044f5e5c569a6c8f618bc28d3ef815f2d0f44e6ed9056d",
+            "evidence_id": "2b6325714585bb35ffc1c3a51775ff61ce65ea344f46b3d3594499fc94f83892",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -3070,13 +3070,13 @@
           }
         ],
         "full_artifact_bytes": 18306,
-        "generation_elapsed_ms": 1.013,
+        "generation_elapsed_ms": 1.269,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 401
         },
-        "plan_digest": "c3aaf52f43d2c59341f27b4c8703057ddfa44af0bd7a086c34862e921f8a48c9",
+        "plan_digest": "79512d631466a0645c4b1cbfb3daa66688ecead923747004838440d3ed1d1bde",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
@@ -3095,7 +3095,7 @@
             "baseline": [],
             "scoped_improvement": []
           },
-          "elapsed_ms": 53.367,
+          "elapsed_ms": 53.347,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3103,7 +3103,7 @@
               "check_statuses": {
                 "pass": 13
               },
-              "evidence_id": "5378a2b62f1c9d6e44d4f878b1378c542eb6b91f7da21b6be04f0d62b6b5fb62",
+              "evidence_id": "327508329dcd6b02ef8b4644bdd0c298e58834b4eb95d17202e160ebf6fb126c",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -3145,7 +3145,7 @@
               "check_statuses": {
                 "pass": 14
               },
-              "evidence_id": "ee73d2ee001fcca20ed895ea0729d831facc3f00dfd6f3494a9a2a6788d31297",
+              "evidence_id": "e30812e49b50e621740fcccf7f33fe8ea8bc8822f3e72b576cdbb357c2dfa3a2",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -3183,7 +3183,7 @@
             }
           ],
           "full_artifact_bytes": 22422,
-          "plan_digest": "06fcad629b6f70bbb877d02aa22e43809e56fc78c7195bfca068ac1355b09637",
+          "plan_digest": "4bd3acdbdb61d5a8ed512a48f37c752a79d4ae4625aba530a8221310cb8afd35",
           "selected_candidate_id": "scoped_improvement",
           "selection_status": "selected"
         },
@@ -3192,7 +3192,7 @@
           "critical_regressions": {
             "baseline": []
           },
-          "elapsed_ms": 37.901,
+          "elapsed_ms": 34.877,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3201,7 +3201,7 @@
                 "pass": 55,
                 "unknown": 12
               },
-              "evidence_id": "5f7e83714f0f9588eaadef6d2d224d745cca7d8bfaa3ea79309e2529043b75b7",
+              "evidence_id": "84e2a3df82dc6d457b0afdcdb985ca77123cdcddf374b3eec7e9f7327f8c2b6b",
               "feasible": false,
               "hard_fail_ids": [],
               "metrics": {
@@ -3252,7 +3252,7 @@
             }
           ],
           "full_artifact_bytes": 38039,
-          "plan_digest": "113708458f44ec328ef232493d43cc34b87987f56a24ea61940ba8fdf20416c0",
+          "plan_digest": "ff48ab80945216fb9621b0adbf708de6eea2e85d39b6fd066ae48922048c365a",
           "selected_candidate_id": "baseline",
           "selection_status": "blocked"
         }
@@ -3265,7 +3265,7 @@
           "inside_bbox_but_crosses_cutout": [],
           "shorter_link_blocks_channel": []
         },
-        "elapsed_ms": 182.794,
+        "elapsed_ms": 114.228,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3273,7 +3273,7 @@
             "check_statuses": {
               "pass": 67
             },
-            "evidence_id": "224ab67a678ede92715ce6ced5309f8f92a1e7989b7978c3ef5258ca7ff848f6",
+            "evidence_id": "da784f9f5823a6d352bdc4bbcfb8121b9added452f0910e4b295e6594f945daa",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -3316,7 +3316,7 @@
               "fail": 1,
               "pass": 67
             },
-            "evidence_id": "c2ee2b5afee2f503a5cdb46fcf7c5013f52b417815e58743a1579e7b5d097ef0",
+            "evidence_id": "078ea80cab22e95d703b969122a8eced2f92d7ea6933ee613a191da074f9e2b6",
             "feasible": false,
             "hard_fail_ids": [
               "channel:escape_bus"
@@ -3361,7 +3361,7 @@
               "fail": 1,
               "pass": 67
             },
-            "evidence_id": "97109f89a182ab9c38ac990112417103ee134636af9f4928ff49e1d0cd8c21a4",
+            "evidence_id": "cc8be4fff835437555601790aaa5e9112b60c7edecbafcc7cfa308a19df644b2",
             "feasible": false,
             "hard_fail_ids": [
               "outline:c1"
@@ -3401,7 +3401,7 @@
           }
         ],
         "full_artifact_bytes": 114511,
-        "plan_digest": "fc761d4a75fe7ddfbb91bd2b9b7d558de035bb9c62ca4a4c5f153030e63a9d97",
+        "plan_digest": "609753acd4e03e0ea0666eed35bc92b16a475eeca022edab1bf13f4085cf5349",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -3411,7 +3411,7 @@
           "baseline": [],
           "refine:211": []
         },
-        "elapsed_ms": 120.72,
+        "elapsed_ms": 68.645,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3419,7 +3419,7 @@
             "check_statuses": {
               "pass": 67
             },
-            "evidence_id": "224ab67a678ede92715ce6ced5309f8f92a1e7989b7978c3ef5258ca7ff848f6",
+            "evidence_id": "da784f9f5823a6d352bdc4bbcfb8121b9added452f0910e4b295e6594f945daa",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -3461,7 +3461,7 @@
             "check_statuses": {
               "pass": 77
             },
-            "evidence_id": "661b847d01e702d5b572bfe03738ff8a4173f91623856a2014270c2129b48596",
+            "evidence_id": "e2d41aad746471f7bb048dbdc55b2c74a3f13b5cbd84bb83d769a6e2e7999be4",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -3499,13 +3499,13 @@
           }
         ],
         "full_artifact_bytes": 82207,
-        "generation_elapsed_ms": 9.474,
+        "generation_elapsed_ms": 14.96,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 211
         },
-        "plan_digest": "282ec01bb9ee3f5428444ae5f8de8dc365f34e28db4dc0cf0cf4388a7365f684",
+        "plan_digest": "426b302d1a0184284a6bda7eacd55de8c814e6794372e5656f34a89fd2f1a4f6",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:211",
         "selection_status": "selected"
@@ -3524,7 +3524,7 @@
             "baseline": [],
             "scoped_improvement": []
           },
-          "elapsed_ms": 87.507,
+          "elapsed_ms": 64.554,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3532,7 +3532,7 @@
               "check_statuses": {
                 "pass": 13
               },
-              "evidence_id": "17a0d82ae9321f218e143f3f406de5fa6ee6a90bb3ed5d0692ae7ac856c49e77",
+              "evidence_id": "8039bfb51145ee443ff4ee6beaf2b6e71795cc49a1bc0a7420d7b6de09543f68",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -3574,7 +3574,7 @@
               "check_statuses": {
                 "pass": 14
               },
-              "evidence_id": "a934c0c678f1b3a5d7f0ad1945daf3af75a0e167d6f3868e4cb1ccb03b3392c4",
+              "evidence_id": "a4e479a90c05a0dbbdbeb83d8e7866017746d72b2e6d7e7e29fc76a913cbdef4",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -3612,7 +3612,7 @@
             }
           ],
           "full_artifact_bytes": 22526,
-          "plan_digest": "41cee9f342e29c3508a58f137fb6998700c68826c67652db4c4fc31b94c81ba4",
+          "plan_digest": "f4ceae9ed74ae66611650b6f4f665aadfc56f5eb9fa19995decc7f96165f88b3",
           "selected_candidate_id": "scoped_improvement",
           "selection_status": "selected"
         },
@@ -3621,7 +3621,7 @@
           "critical_regressions": {
             "baseline": []
           },
-          "elapsed_ms": 49.662,
+          "elapsed_ms": 36.114,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3630,7 +3630,7 @@
                 "pass": 55,
                 "unknown": 12
               },
-              "evidence_id": "46a201c56a1f2b0aeb8fdfeac44c27a4ec9784fa1e65b33f846d6878cde2a68c",
+              "evidence_id": "b2b0c8bca3bec5a459f97ce63f53d8dc4f77e5c24d395349f300d52682981cc9",
               "feasible": false,
               "hard_fail_ids": [],
               "metrics": {
@@ -3681,7 +3681,7 @@
             }
           ],
           "full_artifact_bytes": 38280,
-          "plan_digest": "8a987eddd417bab58ebf5c276d7efe529b354638cfe72dc9e9736dd8da54362f",
+          "plan_digest": "fac85d5616fd7994f2cf832e0aef2db72ee37e7256a1e4165e77f08149113aa2",
           "selected_candidate_id": "baseline",
           "selection_status": "blocked"
         }
@@ -3694,7 +3694,7 @@
           "inside_bbox_but_crosses_cutout": [],
           "shorter_link_blocks_channel": []
         },
-        "elapsed_ms": 164.018,
+        "elapsed_ms": 99.528,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3702,7 +3702,7 @@
             "check_statuses": {
               "pass": 67
             },
-            "evidence_id": "6d300041706e4823f89b37ed82ef757e5b8dd1990bb9ce38af2a01d14a907629",
+            "evidence_id": "0d9baa205bce73c83b59702963c17306d3475a7c9a1765ebae225e0d683bfd96",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -3745,7 +3745,7 @@
               "fail": 1,
               "pass": 67
             },
-            "evidence_id": "8a4ef5631ea2f56d6c4cbf063eccdbdf07b2e081568ee75db4864cf253a6d6ac",
+            "evidence_id": "128e0cfbf2aed6ba0495d288d94b8cadcd217b6f53dd74c5a104485eff6e64c9",
             "feasible": false,
             "hard_fail_ids": [
               "channel:escape_bus"
@@ -3790,7 +3790,7 @@
               "fail": 1,
               "pass": 67
             },
-            "evidence_id": "4f6c3b70cb221ed314fbb6f904d9f261ccc45988a9c179bc4215eafba6c58596",
+            "evidence_id": "a77bf79e0e519675d4e82a27617506f4b4219e4152a5ef7629dc26fac09c130e",
             "feasible": false,
             "hard_fail_ids": [
               "outline:c1"
@@ -3830,7 +3830,7 @@
           }
         ],
         "full_artifact_bytes": 115292,
-        "plan_digest": "cf0f0570980d44803cc5df14ffd3d4dc491e9c54e7313a3ecbb4489ad0e10d0a",
+        "plan_digest": "5802e8143e0b566efa70c438630764e0f0cc2aed8827146788c5f3a73e2a1fcc",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -3840,7 +3840,7 @@
           "baseline": [],
           "refine:307": []
         },
-        "elapsed_ms": 78.728,
+        "elapsed_ms": 63.102,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3848,7 +3848,7 @@
             "check_statuses": {
               "pass": 67
             },
-            "evidence_id": "6d300041706e4823f89b37ed82ef757e5b8dd1990bb9ce38af2a01d14a907629",
+            "evidence_id": "0d9baa205bce73c83b59702963c17306d3475a7c9a1765ebae225e0d683bfd96",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -3890,7 +3890,7 @@
             "check_statuses": {
               "pass": 77
             },
-            "evidence_id": "d0495056266370c4e98ec6716798c3d2f427171ef834493fa0f1c14e7f36ff00",
+            "evidence_id": "2de0b9b00c040636f56e42967928619963ffe06b15c9f566007d87de632c96d7",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -3928,13 +3928,13 @@
           }
         ],
         "full_artifact_bytes": 81440,
-        "generation_elapsed_ms": 18.855,
+        "generation_elapsed_ms": 11.965,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 307
         },
-        "plan_digest": "3689de6946797f3a45903bef99312933582385e712a37b84a36d43313ab35adf",
+        "plan_digest": "ddad3e2dde11e61e51fd2f2581865e17fb9e5b3aa18f0c174bdef57f2c818811",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:307",
         "selection_status": "selected"
@@ -3953,7 +3953,7 @@
             "baseline": [],
             "scoped_improvement": []
           },
-          "elapsed_ms": 55.301,
+          "elapsed_ms": 82.686,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3961,7 +3961,7 @@
               "check_statuses": {
                 "pass": 13
               },
-              "evidence_id": "2ef620b47903f4a3c2405171e6450ba305d18a0ff886379da42e393a9e62ce4d",
+              "evidence_id": "b8ae6879a77c3e55699124558ccb6633ff826965e51657af1622a1cf4d640d4e",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -4003,7 +4003,7 @@
               "check_statuses": {
                 "pass": 14
               },
-              "evidence_id": "70df84343986dc14b8ba1380cb5c635d53dc50b2709bea81f40bd0d35000defd",
+              "evidence_id": "ddf6e4f9c8d0f74078ee9161e9e3fd858995826b74a7ea414e78c3a75f5581b4",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -4041,7 +4041,7 @@
             }
           ],
           "full_artifact_bytes": 22566,
-          "plan_digest": "f0f9d30c46a393bb8c3e2b54e40dc02e8c821d024c10459da40e30e6e64f5730",
+          "plan_digest": "0b31775069e3605b78973f9b094b4107cf3130d9d89a5487e6370d137c5b3238",
           "selected_candidate_id": "scoped_improvement",
           "selection_status": "selected"
         },
@@ -4050,7 +4050,7 @@
           "critical_regressions": {
             "baseline": []
           },
-          "elapsed_ms": 24.887,
+          "elapsed_ms": 31.041,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -4059,7 +4059,7 @@
                 "pass": 55,
                 "unknown": 12
               },
-              "evidence_id": "b7c1ac433ad01b99ba99b092ff82adb96b7403c1cf4e26e0f88dc8f81a6848ea",
+              "evidence_id": "39661c3bec01c44358c569bc3628b991c7cd7eb0d909d8b1919e41b43531a597",
               "feasible": false,
               "hard_fail_ids": [],
               "metrics": {
@@ -4110,7 +4110,7 @@
             }
           ],
           "full_artifact_bytes": 38412,
-          "plan_digest": "c770e64b80e6103a79fdfbdd1cd03e53ded1f84878b01f513ba9c69c31b7f97f",
+          "plan_digest": "410fcc033041c4795d43c7287831f71d61a5263c6da4219c3ba9ef16b55a1b62",
           "selected_candidate_id": "baseline",
           "selection_status": "blocked"
         }
@@ -4123,7 +4123,7 @@
           "inside_bbox_but_crosses_cutout": [],
           "shorter_link_blocks_channel": []
         },
-        "elapsed_ms": 81.885,
+        "elapsed_ms": 114.989,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4131,7 +4131,7 @@
             "check_statuses": {
               "pass": 67
             },
-            "evidence_id": "5c8702cfd9e46d5b0f377542daf428077b2730ba1752f27978c73aa915696a2a",
+            "evidence_id": "47720a3415e18812e6787a825f0626864d1ea1dc833ef8ab324995688c1abea7",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -4174,7 +4174,7 @@
               "fail": 1,
               "pass": 67
             },
-            "evidence_id": "a5e5465f0ffdf7e38eda854d1d82b075d959f14a140780bfb8ae0eb4bdb46824",
+            "evidence_id": "489eb39a3f381257062d81762b7f348f5332a9d338666a069f5859cb1d41f16d",
             "feasible": false,
             "hard_fail_ids": [
               "channel:escape_bus"
@@ -4219,7 +4219,7 @@
               "fail": 1,
               "pass": 67
             },
-            "evidence_id": "054ea459099dd93a5719ce4ff1ac105c0b72d32df456b792a4d7d17d62072e29",
+            "evidence_id": "2e6af4376207903ca8bfdcc1a2657f357ee451a43f8bc5664ad5ddaba773c001",
             "feasible": false,
             "hard_fail_ids": [
               "outline:c1"
@@ -4259,7 +4259,7 @@
           }
         ],
         "full_artifact_bytes": 115726,
-        "plan_digest": "72146ac50cb79a56cc880b9e43bd3e17bf72fec5484ff854996999f708dd2374",
+        "plan_digest": "f880308d1d8df1766095dbb2e091435d857216749f8ba3a584d9f2ea02a23920",
         "selected_candidate_id": "baseline",
         "selection_status": "baseline_retained"
       },
@@ -4269,7 +4269,7 @@
           "baseline": [],
           "refine:401": []
         },
-        "elapsed_ms": 91.289,
+        "elapsed_ms": 73.871,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4277,7 +4277,7 @@
             "check_statuses": {
               "pass": 67
             },
-            "evidence_id": "5c8702cfd9e46d5b0f377542daf428077b2730ba1752f27978c73aa915696a2a",
+            "evidence_id": "47720a3415e18812e6787a825f0626864d1ea1dc833ef8ab324995688c1abea7",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -4319,7 +4319,7 @@
             "check_statuses": {
               "pass": 77
             },
-            "evidence_id": "6e616e3cb4d5fb767a70edd8350504f67a9dedc4f175cfa6ce063774cc61e65c",
+            "evidence_id": "7b54696fcbee81db095e8bb3335234c2036db068909c7e5d17ab03d408905bc3",
             "feasible": true,
             "hard_fail_ids": [],
             "metrics": {
@@ -4357,13 +4357,13 @@
           }
         ],
         "full_artifact_bytes": 82102,
-        "generation_elapsed_ms": 9.15,
+        "generation_elapsed_ms": 11.45,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 401
         },
-        "plan_digest": "779bf479816b4e8af00475b1e01d0b9df4c7549208891dbf5899c71b084e8f6f",
+        "plan_digest": "79d0d2f110b6b5d60246eb8fa3e0869a0df5a2fc1c4cff1888383101c9ad85bc",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "refine:401",
         "selection_status": "selected"
@@ -4382,7 +4382,7 @@
             "baseline": [],
             "independent_eco": []
           },
-          "elapsed_ms": 4.898,
+          "elapsed_ms": 4.221,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -4391,7 +4391,7 @@
                 "not_applicable": 2,
                 "pass": 6
               },
-              "evidence_id": "87fb8b2e003b53b74f03297e9dbdd40b9f13b5b66fa21fbdf0bae89febf109a1",
+              "evidence_id": "1f9762169d787b601c2ce44b5e0740eb99a7c2ab17cb273658b2e5449791280b",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -4434,7 +4434,7 @@
                 "not_applicable": 2,
                 "pass": 7
               },
-              "evidence_id": "8d10ab32838766804ef7b2b87487a249d9840f973b1a2734c695e518c75ec68a",
+              "evidence_id": "665ecdd662a14daaf57c05c2a319a9dde79c61976f00080971ebc70661264097",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -4472,7 +4472,7 @@
             }
           ],
           "full_artifact_bytes": 13927,
-          "plan_digest": "8e2235194771d4dfb82eb7a7da9655325a7c0e6aa435d896b81fe13658609210",
+          "plan_digest": "091426047d24eb3915b7a5a8820789b1e24ef90f84410104e96223d5fa54b0f9",
           "selected_candidate_id": "independent_eco",
           "selection_status": "selected"
         }
@@ -4484,7 +4484,7 @@
           "baseline": [],
           "move_sensitive": []
         },
-        "elapsed_ms": 7.024,
+        "elapsed_ms": 4.729,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4493,7 +4493,7 @@
               "pass": 21,
               "unknown": 2
             },
-            "evidence_id": "1c3a173aeec7ab72436996ac9ffde2f9377c1a79b0468ad75340780d77759b05",
+            "evidence_id": "4ac8f293b796ae036a70f607becc139b2bb136fbd29f6ea829da4141bcc33f99",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -4539,7 +4539,7 @@
               "pass": 22,
               "unknown": 2
             },
-            "evidence_id": "f8d33357bf7e3b06d05f37c4d9dc1047eda358e4fe5631e0cf54c33db1609813",
+            "evidence_id": "8ede105315f14521761c2d18e841f7d63f11a22576e9a5ff9b922992eb04888e",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -4580,7 +4580,7 @@
           }
         ],
         "full_artifact_bytes": 29179,
-        "plan_digest": "e65c8d32cf2134fa0da7e8c12b1a7402c1a8275e10ad3ecf61654249b01777f1",
+        "plan_digest": "1bae1620f95a5a4fb7a79831b0d44d6cfe0ec896348a5e6cbf71eb2879c0be73",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
       },
@@ -4590,7 +4590,7 @@
           "baseline": [],
           "refine:211": []
         },
-        "elapsed_ms": 6.524,
+        "elapsed_ms": 5.437,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4599,7 +4599,7 @@
               "pass": 21,
               "unknown": 2
             },
-            "evidence_id": "1c3a173aeec7ab72436996ac9ffde2f9377c1a79b0468ad75340780d77759b05",
+            "evidence_id": "4ac8f293b796ae036a70f607becc139b2bb136fbd29f6ea829da4141bcc33f99",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -4645,7 +4645,7 @@
               "pass": 25,
               "unknown": 2
             },
-            "evidence_id": "e18e8ada581b8b2daab3ebbd90c20534d2396375088e722d06c31008190d079d",
+            "evidence_id": "96deeaf1575e35686d06d6fd4aac09355fc01b33e46b3fbe451069e3783904b4",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -4686,13 +4686,13 @@
           }
         ],
         "full_artifact_bytes": 31042,
-        "generation_elapsed_ms": 2.721,
+        "generation_elapsed_ms": 1.496,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 211
         },
-        "plan_digest": "98b239b7db561c86eee4a66bd15a4d377604c741620ddfb179c8c487e8a04c3d",
+        "plan_digest": "d1c12db471c648861983cdf2133354c42b80fa3e640e8ac851e468083040c416",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
@@ -4711,7 +4711,7 @@
             "baseline": [],
             "independent_eco": []
           },
-          "elapsed_ms": 5.348,
+          "elapsed_ms": 4.348,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -4720,7 +4720,7 @@
                 "not_applicable": 2,
                 "pass": 6
               },
-              "evidence_id": "984f56b9bd54c3374abf7b8658f00e7f88563379df3ec19ae6291bb654777b45",
+              "evidence_id": "4d02dd04aefd5e6c975e1d40ff981e47d3598b152c08f7ab3837a1b66b13d596",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -4763,7 +4763,7 @@
                 "not_applicable": 2,
                 "pass": 7
               },
-              "evidence_id": "60cc9e262fa9136a053fe2e20ecc74a3cfdc739346723e45f5aa6b07565b4b25",
+              "evidence_id": "fde61265edd4745ff0cc0bd43ca59bba63f1d8796afb40894ded0ec68e3ae801",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -4801,7 +4801,7 @@
             }
           ],
           "full_artifact_bytes": 13903,
-          "plan_digest": "66c3617ccb497c3baf5f3b769d5266e64c333d7db5ae24a878485fa0dcb90aea",
+          "plan_digest": "09a5a560752036383c21f7aafeb6fb3db5dbd8c227f2d556b026bf5bad46ae2c",
           "selected_candidate_id": "independent_eco",
           "selection_status": "selected"
         }
@@ -4813,7 +4813,7 @@
           "baseline": [],
           "move_sensitive": []
         },
-        "elapsed_ms": 5.396,
+        "elapsed_ms": 4.612,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4822,7 +4822,7 @@
               "pass": 21,
               "unknown": 2
             },
-            "evidence_id": "985105f073e346da4e4c20855e567543e8bef3213eb5ad2734d96df6e3a9b86e",
+            "evidence_id": "4d3413c65b5bba5030317621cc9b5c6db84b3c26ccceb649018f4271975f2da9",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -4868,7 +4868,7 @@
               "pass": 22,
               "unknown": 2
             },
-            "evidence_id": "0ab076602f219339bd64b45ec70cf9ddf7408ecf35bd663bf7b01db767c10f24",
+            "evidence_id": "d84f79809a5550cf915ca8b54749f576f66337563863482a3b961eb5ec6bf5e3",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -4909,7 +4909,7 @@
           }
         ],
         "full_artifact_bytes": 29111,
-        "plan_digest": "2e048c7b3ef1db402c5a4f5b78ed04d1741e9caa12dc47eed4a7a2c38be1273b",
+        "plan_digest": "ff340fdf72b6b6ee3ae3beac0997a0cb6c8722997eeb4237f4c90270cad145a2",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
       },
@@ -4919,7 +4919,7 @@
           "baseline": [],
           "refine:307": []
         },
-        "elapsed_ms": 9.704,
+        "elapsed_ms": 4.569,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4928,7 +4928,7 @@
               "pass": 21,
               "unknown": 2
             },
-            "evidence_id": "985105f073e346da4e4c20855e567543e8bef3213eb5ad2734d96df6e3a9b86e",
+            "evidence_id": "4d3413c65b5bba5030317621cc9b5c6db84b3c26ccceb649018f4271975f2da9",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -4974,7 +4974,7 @@
               "pass": 25,
               "unknown": 2
             },
-            "evidence_id": "66b87aa98b564723cd9b377f61f8fd0fe00c93e3591494711d9a45bcd44fb660",
+            "evidence_id": "39be170fc8f2a2bbae3ea1707f210455801c6b3ba6cd555817a668ab570d1237",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -5015,13 +5015,13 @@
           }
         ],
         "full_artifact_bytes": 30980,
-        "generation_elapsed_ms": 1.82,
+        "generation_elapsed_ms": 1.366,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 307
         },
-        "plan_digest": "36e75271f04aab28a234d3cc721f87c461202b34f77f887b818ce683fe7c41f7",
+        "plan_digest": "cee6be9ea950c92370f23d74cf50a24d049018f2bf52df8a9f467eaa3e2b339c",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
@@ -5040,7 +5040,7 @@
             "baseline": [],
             "independent_eco": []
           },
-          "elapsed_ms": 5.731,
+          "elapsed_ms": 5.018,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -5049,7 +5049,7 @@
                 "not_applicable": 2,
                 "pass": 6
               },
-              "evidence_id": "9d0a544054bf1b36ef6580a239a5aa3694745276f3cf768ea2015c1fc5bda90a",
+              "evidence_id": "bafc6a1e18b12120cbca3bf0fdace3e6b779f75f3474eb95d203268237002363",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -5092,7 +5092,7 @@
                 "not_applicable": 2,
                 "pass": 7
               },
-              "evidence_id": "8bad3755f28ca18fb0f9048c259c30060f27eeb1c333e22c6cbd47a9c8b5b7bd",
+              "evidence_id": "39d9a4dc4f9f1777cbc2ac2da96e408eadd4e9f7a68a3772636a6a6a73301dbb",
               "feasible": true,
               "hard_fail_ids": [],
               "metrics": {
@@ -5130,7 +5130,7 @@
             }
           ],
           "full_artifact_bytes": 13919,
-          "plan_digest": "97ccec943758e3864a4641104d502b76ff91f2416ae6c7454e19228091ae629d",
+          "plan_digest": "990083577a502e458c1fe68fe40b8b196d785bbe418903c2505f9c74e572e650",
           "selected_candidate_id": "independent_eco",
           "selection_status": "selected"
         }
@@ -5142,7 +5142,7 @@
           "baseline": [],
           "move_sensitive": []
         },
-        "elapsed_ms": 6.802,
+        "elapsed_ms": 4.597,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -5151,7 +5151,7 @@
               "pass": 21,
               "unknown": 2
             },
-            "evidence_id": "573299e105dbc804ca147fa1d9ef37dfa7a0ddfa03394a8fad2700d57dfdd8f7",
+            "evidence_id": "69ae5aa8b98004df6dbf2ac7c8150ee72a5b86befd1bef52db94ab78297b18e1",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -5197,7 +5197,7 @@
               "pass": 22,
               "unknown": 2
             },
-            "evidence_id": "2eeae8f850f6ad928f6fdd834589de19c754e54468e6afd295bcbbadceaf2809",
+            "evidence_id": "a3e4fe1e57e6973b31350b7c8d29310cc190fa1c48ecb45b498b188233914440",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -5238,7 +5238,7 @@
           }
         ],
         "full_artifact_bytes": 29153,
-        "plan_digest": "8657b20bc2f03a4094581b3c89a6966fdfb66285d538089f33e62a82a714d068",
+        "plan_digest": "79e2fdf3b0c87c00cf9cf754746532c8e9349591d30b36803d1d7aa5927bf847",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
       },
@@ -5248,7 +5248,7 @@
           "baseline": [],
           "refine:401": []
         },
-        "elapsed_ms": 10.242,
+        "elapsed_ms": 4.818,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -5257,7 +5257,7 @@
               "pass": 21,
               "unknown": 2
             },
-            "evidence_id": "573299e105dbc804ca147fa1d9ef37dfa7a0ddfa03394a8fad2700d57dfdd8f7",
+            "evidence_id": "69ae5aa8b98004df6dbf2ac7c8150ee72a5b86befd1bef52db94ab78297b18e1",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -5303,7 +5303,7 @@
               "pass": 25,
               "unknown": 2
             },
-            "evidence_id": "7ad4c1a9de4469e341a36f2143c204f234b2dedce42d39d7c62d6e18adf0d5c9",
+            "evidence_id": "da182089853e07507a5f096c9f3f39b6989535274d0548e13d96e7e7d23c2f11",
             "feasible": false,
             "hard_fail_ids": [],
             "metrics": {
@@ -5344,13 +5344,13 @@
           }
         ],
         "full_artifact_bytes": 31001,
-        "generation_elapsed_ms": 2.284,
+        "generation_elapsed_ms": 1.365,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
           "seed": 401
         },
-        "plan_digest": "8b402c33a0c6f72fc5d3fcc5f68443d4c5947508c1cf3dad0e8729ae10bd4a50",
+        "plan_digest": "1a7b8c0dac0c680009f4cc962e3a2b5c7ccb9028e161fe4aa3c1de6f8d0b0560",
         "proposal_source": "existing eda_agent.placement.autoplace; proxy geometry only",
         "selected_candidate_id": "baseline",
         "selection_status": "blocked"
@@ -5380,7 +5380,7 @@
     "dense_escape",
     "mixed_isolated"
   ],
-  "first_pass_elapsed_ms": 1898.947,
+  "first_pass_elapsed_ms": 1952.447,
   "held_out_scope": "Independent computational seeds of synthetic fixtures; not a held-out expert-layout dataset",
   "held_out_seeds": [
     211,
@@ -5394,8 +5394,8 @@
     "Wall time depends on the machine; fixture/outcome digests and measured artifact bytes are recorded separately.",
     "These counterexamples do not establish optimizer superiority or manufacturing/SI/PI sign-off."
   ],
-  "measurement_elapsed_ms": 3422.415,
-  "policy_version": "placement-evidence-p0-v3",
+  "measurement_elapsed_ms": 3253.312,
+  "policy_version": "placement-evidence-p0-v4",
   "reproducibility": {
     "compared": "fixture hashes, decisions, evidence/plan digests, metrics and artifact sizes; timings excluded",
     "runs": 2,
@@ -5403,11 +5403,11 @@
   },
   "schema": 1,
   "source": {
-    "git_head": "ae9ddef439a8955e841085ddd804c2e37e787e87",
+    "git_head": "f884ebab031258575b1a45f4940d84a3682d0abf",
     "module_sha256": {
       "eda-agent/src/eda_agent/design/copper_geometry.py": "db3bfcde2b09b3cf11b413e52fafe41fd715d1a08a91805eeef8a37a388e1f8e",
       "eda-agent/src/eda_agent/design/pcb_placement.py": "64bff9211c2d99e99859114f92ff68bdfe969d9df1cf5ab66ab88a7feaa0ac3f",
-      "eda-agent/src/eda_agent/design/placement_evidence.py": "2884cd95062762df5bb927cf2d9e3b89c2e304d137bc9b9e7abcf68fbf7d40ed",
+      "eda-agent/src/eda_agent/design/placement_evidence.py": "96bfb9aa1bcce037376ae5256a23e29353184b2520021ed54fc8739501518c1c",
       "eda-agent/src/eda_agent/design/placement_p0.py": "8502375371cbe7266dce6597457a533dba3e3aaa28bc06eda85f4637828dee2a",
       "eda-agent/src/eda_agent/placement/autoplace.py": "d8ce98443398fb635bf15abdf5d5e108a04c8508f7e3ab0c828a529f9f4abeee",
       "scripts/benchmark_pcb_layout.py": "3998d36ddee1aea7f15f2e46cb9098a2ab0bb6aafddb891104b71df0e0c022ee"

@@ -59,19 +59,19 @@ excluded from equality. It also refuses a source change during execution.
 CLI parameters. Full comparison reports remain optional artifacts; the checked
 JSON records their measured sizes without duplicating every geometry witness.
 
-The checked run uses `placement-evidence-p0-v3` and the environment recorded in
-the JSON. Both passes completed in 3.42 seconds; all assertions passed. Source
+The checked run uses `placement-evidence-p0-v4` and the environment recorded in
+the JSON. Both passes completed in 3.25 seconds; all assertions passed. Source
 hashes include the P0 metric module as well as the geometry and solver modules. The table shows the median
 primary-decision time across the three seeds, the largest full primary report,
 and the maximum total check count across that decision's candidates.
 
 | Family | Required observed decision | Median ms | Max report bytes | Checks |
 |---|---|---:|---:|---:|
-| Precision analog | Reject lower ordinary-net HPWL when the transformed-pad AABB Manhattan gap regresses | 17.111 | 21,114 | 29 |
-| Switching power | Reject a compact placement with a synthetic courtyard collision | 3.886 | 19,323 | 23 |
-| Digital interface | Preserve baseline over an unnecessary no-op reapply; retain declared sides/origin | 4.011 | 17,692 | 21 |
-| Dense escape | Reject a shorter link that blocks the channel and a move across a cutout; accept the legal scoped ECO | 164.018 | 115,726 | 203 |
-| Mixed isolated | Block missing safety/unsupported creepage evidence in the dependent scope; permit the independent ECO | 6.802 | 29,179 | 47 |
+| Precision analog | Reject lower ordinary-net HPWL when the transformed-pad AABB Manhattan gap regresses | 6.234 | 21,114 | 29 |
+| Switching power | Reject a compact placement with a synthetic courtyard collision | 3.373 | 19,323 | 23 |
+| Digital interface | Preserve baseline over an unnecessary no-op reapply; retain declared sides/origin | 4.574 | 17,692 | 21 |
+| Dense escape | Reject a shorter link that blocks the channel and a move across a cutout; accept the legal scoped ECO | 114.228 | 115,726 | 203 |
+| Mixed isolated | Block missing safety/unsupported creepage evidence in the dependent scope; permit the independent ECO | 4.612 | 29,179 | 47 |
 
 The dense fixture has 10 components and 200 real synthetic pad rectangles; its
 outline is concave and includes a cutout. Cold imports and machine load affect
@@ -98,3 +98,13 @@ These checks are in `tests/test_layout_review_regressions.py` and
 `eda-agent/tests/design/test_placement_evidence.py`; they are separate from the
 15-case timing table. The focused placement/P0/protocol run passed 92 tests.
 This is not a full-suite or live-native acceptance claim.
+
+
+A live read-only capture exposed a semantic counterexample also covered by
+synthetic regressions: layer-specific `polygon_cutout` records are pour voids,
+not physical FR4 holes. Only `board_cutout` is mapped into the mechanical model;
+all raw records remain in the copper snapshot. Unknown cutout kinds remain
+required unknown. Edge notches, intersecting physical cutouts or another
+unsupported composed board contour are retained as raw evidence and produce
+unknown mechanical coverage; they are not silently treated as intact FR4.
+Exact coincidence of a courtyard with a physical hole also fails containment.

@@ -189,7 +189,11 @@ def test_single_modern_batch_operation_does_not_need_a_separator():
     code = _decommented(_source())
     start = code.index("Function Gen_BatchModify")
     body = code[start:code.index("\nFunction ", start+1)]
-    assert "(Copy(Operations, 1, 6) = 'scope=')" in body
+    # Current framing is parsed unconditionally, including one operation.
+    assert "OpStr := NextBatchOp(Remaining)" in body
+    assert "Scope := GetBatchField(OpStr, 'scope')" in body
+    assert "Pos('~~', Operations)" not in body
+    assert "SplitLegacyModifyOp" not in body
 
 
 def test_text_frame_corner_is_writable_through_its_typed_interface():

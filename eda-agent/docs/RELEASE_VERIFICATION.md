@@ -1,4 +1,4 @@
-# Release verification: 2026.11.02.p0-shim1
+# Release verification: 2026.11.03.electronics-ai-p0
 
 Version `0.7.0` adds plan-bound placement with exact target, snapshot/rule/lock
 preconditions, whole-batch preflight, durable operation identity and readback.

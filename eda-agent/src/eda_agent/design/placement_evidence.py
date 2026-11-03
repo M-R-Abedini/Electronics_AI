@@ -17,7 +17,7 @@ from itertools import chain
 from eda_agent.design import copper_geometry as geom
 from eda_agent.placement.autoplace import _rotate_offset
 
-POLICY_VERSION = "placement-evidence-p0-v3"
+POLICY_VERSION = "placement-evidence-p0-v4"
 STATUSES = {"pass", "fail", "unknown", "not_applicable"}
 PROFILE_ROLES = {
     "precision_analog": {"precision_analog", "sensitive_analog", "analog_front_end"},
@@ -311,6 +311,8 @@ def _contained(ring, region, allowances=()):
         return False
     # An enclosed hole must not disappear simply because all outer edges fit.
     for hole in region.get("holes", []):
+        if not allowances and _interior_overlap(ring, hole):
+            return False  # Coincident boundaries still enclose unsupported FR4 void.
         if any(geom.point_in_ring(p, ring, boundary=False) and not any(
                 geom.point_in_region(p, allowance) for allowance in allowances) for p in hole):
             return False

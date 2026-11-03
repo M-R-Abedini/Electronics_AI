@@ -18,7 +18,7 @@
 
 خطای compiler مربوط به `Stored` با نام `StoredManifest` اصلاح و lint آن افزوده شد. resolver برد بر مسیر صریح و هویت همان سند تکیه دارد. apply به طرح ذخیره‌شده، freshness هندسه/قواعد/قفل‌ها، checkpoint، شناسهٔ عملیات یکتا و readback وابسته است؛ optimizer هنگام apply دوباره اجرا نمی‌شود. نتیجهٔ نامعلوم یا partial خودکار تکرار نمی‌شود و native rollback تراکنشی ندارد.
 
-سیاست جاری `placement-evidence-p0-v3` چهار Tier ثابت دارد: امکان‌پذیری سخت؛ فاصلهٔ Manhattan میان AABB پدها به‌اضافهٔ penalty صریح تغییر لایه و عدم پسرفت تک‌تک مسیرهای بحرانی/VCC/GND؛ HPWL وزندار سیگنال با exclusion صریح؛ و alignment با خانواده/grid/origin صریح. هیچ tolerance مثبت برای پنهان‌کردن پسرفت Tier1 وجود ندارد. crossing صرفاً diagnostic است و حداقل via یا routing کامل را اثبات نمی‌کند. تغییر صرفاً ظاهری baseline را جایگزین نمی‌کند.
+سیاست جاری `placement-evidence-p0-v4` چهار Tier ثابت دارد: امکان‌پذیری سخت؛ فاصلهٔ Manhattan میان AABB پدها به‌اضافهٔ penalty صریح تغییر لایه و عدم پسرفت تک‌تک مسیرهای بحرانی/VCC/GND؛ HPWL وزندار سیگنال با exclusion صریح؛ و alignment با خانواده/grid/origin صریح. هیچ tolerance مثبت برای پنهان‌کردن پسرفت Tier1 وجود ندارد. crossing صرفاً diagnostic است و حداقل via یا routing کامل را اثبات نمی‌کند. تغییر صرفاً ظاهری baseline را جایگزین نمی‌کند.
 
 snapshot دیسک buffer ذخیره‌نشده را اثبات نمی‌کند. `Document.Modified=False` به‌تنهایی گواه کامل clean بودن نیست. حالت صریح `disk_and_pose_evidence` فقط فایل ذخیره‌شده و poseهای اولیه را checkpoint می‌کند؛ autosave، side-flip native و بازیابی کامل buffer وعده داده نمی‌شوند. سقف فعلی batch native ۵۰۰ حرکت است.
 
@@ -27,7 +27,7 @@ snapshot دیسک buffer ذخیره‌نشده را اثبات نمی‌کند. 
 | بررسی | شواهد و وضعیت |
 |---|---|
 | آزمون متمرکز protocol، ایرادهای review، placement و P0 | ۹۲ موفق؛ `analysis/placement-final-focused.log` |
-| benchmark سیاست v3 | ۱۵ حالت اصلی، ۵ خانواده، ۹ حالت تکمیلی، دو اجرا با نتیجه/digest یکسان؛ [JSON](PCB_LAYOUT_BENCHMARK_RESULTS.json) |
+| benchmark سیاست v4 | ۱۵ حالت اصلی، ۵ خانواده، ۹ حالت تکمیلی، دو اجرا با نتیجه/digest یکسان؛ [JSON](PCB_LAYOUT_BENCHMARK_RESULTS.json) |
 | آزمون کامل root پس از hard cut و rename | در انتظار نتیجهٔ نهایی همین revision |
 | آزمون کامل eda-agent پس از hard cut و rename | در انتظار نتیجهٔ نهایی همین revision |
 | native build/lint نسخهٔ جاری | در انتظار نتیجهٔ نهایی `2026.11.03.electronics-ai-p0` |
@@ -47,3 +47,10 @@ input gate فقط با درخواست صریح caller، پروژه و PCB واق
 آزمون native باید با یک نمونهٔ آلتیوم، نسخهٔ script جاری، مسیر صریح و فایل آزمایشی یا کپی طراحی انجام شود. سلامت اتصال، target mismatch، snapshot حافظه، stale-plan refusal، checkpoint، عملیات تکراری و readback باید جداگانه ثبت شوند. هیچ برد تولیدی برای راحتی benchmark تغییر نمی‌کند.
 
 اجرای دستی نسخهٔ قبلی اصلاح‌شده، رفع خطای compile را نشان داد، اما این شاهد جای health و apply نسخهٔ جدید را نمی‌گیرد. نتیجهٔ نهایی پذیرش زنده در جدول بالا باید به‌روز شود. DRC کامل، routing تکمیل‌شده، مقایسه با کارشناس، مدل سه‌بعدی و field simulation در benchmark فعلی اجرا نشده‌اند؛ هیچ ادعای پذیرش برای آن‌ها ارائه نمی‌شود.
+
+
+## اصلاح معنای cutout در پذیرش زنده
+
+`polygon_cutout` حفرهٔ مسیِ pour روی لایهٔ مشخص است و سوراخ FR4 نیست. فقط `board_cutout` وارد مدل مکانیکی می‌شود؛ تمام دادهٔ خام برای تحلیل مس حفظ می‌ماند. kind نامعلوم، یا ترکیب هندسیِ پشتیبانی‌نشده مانند بریدگی لبه و cutoutهای فیزیکی متقاطع، به پوشش مکانیکی unknown تبدیل می‌شود و apply را تأیید نمی‌کند. این حالت capture خواندنی را متوقف نمی‌کند و به FR4 سالم تبدیل نمی‌شود. هم‌مرزی کامل courtyard با سوراخ فیزیکی نیز مجاز شمرده نمی‌شود.
+
+مدل استخراج‌شده از snapshot خصوصی واقعی پس از اصلاح بدون خطای schema خوانده شد؛ به‌دلیل کانتور فیزیکی پشتیبانی‌نشده، پوشش outline صادقانه unknown باقی ماند. این شاهد خواندن و رفتار محافظه‌کارانه است، نه تأیید placement یا native apply.

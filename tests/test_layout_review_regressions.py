@@ -210,3 +210,83 @@ def test_unresolved_nonblank_pad_owner_cannot_be_certified_as_static_free_copper
     result = core.evaluate_placement(context_from_snapshot(snapshot, 'capture', models, fab, {}))
     assert not result['feasible']
     assert next(c for c in result['checks'] if c['id'] == 'manufacturing:pad_extraction')['status'] == 'unknown'
+
+
+
+def test_layer_polygon_voids_are_not_physical_board_holes(tmp_path):
+    from test_layout_protocol import native_fixture
+    from suite_layout import context_from_snapshot
+    snapshot, models, fab = native_fixture(tmp_path)
+    physical = [[25, 34], [27, 34], [27, 36], [25, 36]]
+    snapshot['cutouts'] = [
+        {'id': 'top-pour-void', 'kind': 'polygon_cutout', 'layer': 'TopLayer',
+         'outline': [[11, 23], [22, 23], [22, 27], [11, 27]], 'geometry_complete': True},
+        {'id': 'bottom-pour-void', 'kind': 'polygon_cutout', 'layer': 'BottomLayer',
+         'outline': [[12, 24], [23, 24], [23, 28], [12, 28]], 'geometry_complete': True},
+        {'id': 'actual-board-hole', 'kind': 'board_cutout', 'layer': 'MultiLayer',
+         'outline': physical, 'geometry_complete': True}]
+    before = copy.deepcopy(snapshot)
+    context = context_from_snapshot(snapshot, 'synthetic-cutout-semantics', models, fab, {})
+    assert context['cutouts'] == [physical]
+    assert context['copper_snapshot']['cutouts'] == snapshot['cutouts']
+    assert snapshot == before, 'Capture mapping must not mutate raw evidence'
+    assert context['coverage']['outline'] == context['coverage']['physical_cutouts'] == 'complete'
+    assert core.evaluate_placement(context)['feasible'], 'Placement on FR4 under a pour void is mechanically legal'
+    result = core.evaluate_placement(context, moves=[{'component_id': '101', 'x_mm': 26, 'y_mm': 35}])
+    assert not result['feasible']
+    assert next(c for c in result['checks'] if c['id'] == 'outline:101')['status'] == 'fail'
+
+
+@pytest.mark.parametrize('kind', [None, 'region', 'unverified-region-ordinal'])
+def test_unknown_cutout_kind_is_required_unknown_without_a_guessed_hole(tmp_path, kind):
+    from test_layout_protocol import native_fixture
+    from suite_layout import context_from_snapshot
+    snapshot, models, fab = native_fixture(tmp_path)
+    record = {'id': 'ambiguous-cutout', 'kind': kind, 'layer': 'TopLayer',
+              'outline': [[12, 23], [18, 23], [18, 27], [12, 27]], 'geometry_complete': True}
+    snapshot['cutouts'] = [record]
+    context = context_from_snapshot(snapshot, 'synthetic-unknown-cutout', models, fab, {})
+    assert context['cutouts'] == []
+    assert context['coverage']['outline'] == context['coverage']['physical_cutouts'] == 'unknown'
+    assert context['copper_snapshot']['cutouts'] == [record]
+    result = core.evaluate_placement(context)
+    assert not result['feasible']
+    assert next(c for c in result['checks'] if c['id'] == 'outline:100')['status'] == 'unknown'
+
+
+def test_unsupported_physical_cutout_contour_is_not_promoted(tmp_path):
+    from test_layout_protocol import native_fixture
+    from suite_layout import context_from_snapshot
+    snapshot, models, fab = native_fixture(tmp_path)
+    snapshot['cutouts'] = [{'id': 'bad-physical-hole', 'kind': 'board_cutout',
+        'outline': [[12, 23], [18, 27], [12, 27], [18, 23]], 'geometry_complete': True}]
+    context = context_from_snapshot(snapshot, 'synthetic-bad-physical-contour', models, fab, {})
+    assert context['cutouts'] == []
+    assert context['coverage']['outline'] == 'unknown'
+    assert not core.evaluate_placement(context)['feasible']
+
+
+
+@pytest.mark.parametrize('case', ['edge_notch', 'overlapping_physical_holes', 'outside_cutout', 'invalid_outer'])
+def test_unsupported_composed_mechanical_shape_captures_as_unknown_not_intact_fr4(tmp_path, case):
+    from test_layout_protocol import native_fixture
+    from suite_layout import context_from_snapshot
+    snapshot, models, fab = native_fixture(tmp_path)
+    if case == 'edge_notch':
+        contours = [[[28, 28], [32, 28], [32, 32], [28, 32]]]
+    elif case == 'overlapping_physical_holes':
+        contours = [[[20, 30], [24, 30], [24, 34], [20, 34]],
+                    [[22, 32], [26, 32], [26, 36], [22, 36]]]
+    elif case == 'outside_cutout':
+        contours = [[[32, 28], [34, 28], [34, 32], [32, 32]]]
+    else:
+        contours = []
+        snapshot['board_outline'] = [[10, 20], [30, 40], [10, 40], [30, 20]]
+    snapshot['cutouts'] = [{'id': f'physical-{i}', 'kind': 'board_cutout',
+                           'outline': contour, 'geometry_complete': True} for i, contour in enumerate(contours)]
+    context = core.validate_board_context(context_from_snapshot(snapshot, 'unsupported-mechanical-difference', models, fab, {}))
+    assert context['coverage']['outline'] == context['coverage']['physical_cutouts'] == 'unknown'
+    assert context['geometry_diagnostics'][0]['section'] == 'physical_board_shape'
+    assert context['cutouts'] == []
+    assert context['copper_snapshot']['cutouts'] == snapshot['cutouts']
+    assert not core.evaluate_placement(context)['feasible']
