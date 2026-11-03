@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Out-of-band metadata for the MCP tool surface.
@@ -96,6 +97,8 @@ _CATEGORY_BY_PREFIX = (
 # fully answers were published as live_only. A category is not a
 # handler, and a tool is only covered when EVERY command it sends is,
 # because one unanswered call ends the run just as surely.
+# pcb_get_components extended mechanical-geometry mode requires native Altium;
+# partial simulator coverage must not advertise the whole tool as verified.
 _SIMULATOR_TOOLS = frozenset({
     "app_context", "app_detach", "app_get_active_document",
     "app_get_report", "app_get_version",
@@ -117,7 +120,7 @@ _SIMULATOR_TOOLS = frozenset({
     "obj_select", "obj_zoom", "pcb_bind_pad_nets",
     "pcb_build_from_project", "pcb_create_nets_from_list",
     "pcb_get_board_outline", "pcb_get_board_statistics",
-    "pcb_get_components", "pcb_get_nets", "pcb_get_unrouted_nets",
+    "pcb_get_nets", "pcb_get_unrouted_nets",
     "pcb_get_vias", "pcb_move_components", "pcb_place_components",
     "pcb_place_tracks", "pcb_place_via", "pcb_run_drc",
     "proj_add_document", "proj_annotate", "proj_close", "proj_compile",

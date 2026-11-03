@@ -274,9 +274,13 @@ def test_native_source_has_loaded_only_identity_checks_and_private_dispatch():
     root = Path(__file__).resolve().parents[1]
     source = (root / 'eda-agent/scripts/altium/PCB.pas').read_text(encoding='utf-8')
     handler = source.split('Function Copper_LoadedBoard(', 1)[1].split('Procedure Copper_Push', 1)[0]
-    assert 'Client.GetDocumentByPath(Path)' in handler
+    assert 'ResolveTargetBoard(Path)' in handler
     assert 'Client.OpenDocument' not in handler and 'ResolvePCBBoard(' not in handler
-    assert 'ExpandFileName(Result.FileName)' in handler
+    main = (root / 'eda-agent/scripts/altium/Main.pas').read_text(encoding='utf-8')
+    resolver = main.split('Function ResolveTargetBoard(',1)[1].split('Function RequireTargetPCBBoard(',1)[0]
+    assert 'Client.GetDocumentByPath(TargetBoardPath)' in resolver
+    assert 'Client.OpenDocument' not in resolver and 'RequireTargetPCBBoard(' not in resolver
+    assert 'ExpandFileName(Result.FileName)' in resolver and "If TargetBoardPath = '' Then" in resolver
     assert "'get_copper_snapshot':" in source and "'focus_copper_violation':" in source
     assert '"poured":false' in source
     assert 'Region.Kind = eRegionKind_BoardCutout' in source

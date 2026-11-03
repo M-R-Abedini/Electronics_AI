@@ -72,8 +72,8 @@ def list_tools() -> list[dict[str, Any]]:
 
 def data_directory() -> Path:
     """Use the persistent plugin data root, never a package-relative cache."""
-    explicit = os.environ.get("ALTIUM_SUITE_PLUGIN_DATA")
-    root = Path(explicit) if explicit else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "plugins/data/mcp-altium-suite"
+    explicit = os.environ.get("ELECTRONICS_AI_PLUGIN_DATA")
+    root = Path(explicit) if explicit else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "plugins/data/mcp-electronics-ai"
     if not root.is_absolute():
         raise ValueError("Supply data directory must be absolute")
     return root.resolve()
@@ -364,7 +364,7 @@ class SupplyChain:
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme != "https" or parsed.hostname not in HOSTS or parsed.port not in {None, 443} or parsed.username or parsed.password:
             raise ValueError("Request is outside supported HTTPS provider origins")
-        hdr = {"User-Agent": "Altium-MCP-Suite/0.3 sourcing (read-only)", "Accept": "application/json,text/html"}
+        hdr = {"User-Agent": "Electronics_AI/0.3 sourcing (read-only)", "Accept": "application/json,text/html"}
         hdr.update(headers or {})
         body = None
         if data is not None:

@@ -15,12 +15,11 @@ def native_effects(backend, name, arguments, *, depth=0):
             try: nested = json.loads(nested)
             except ValueError: return {'opaque'}
         return native_effects(backend, str(arguments.get('name', '')), nested, depth=depth + 1)
-    if name.startswith('_suite_legacy'):
-        return native_effects('legacy', str(arguments.get('command', '')), arguments.get('params', {}), depth=depth + 1)
     if name in {'_suite_copper_snapshot', '_suite_copper_focus', 'app_ping', 'app_context',
-                'app_list_open_dialogs', 'app_press_dialog_button', 'pcb_run_drc'}:
-        # The press has its own exact dialog/session/button safety check.
+                'app_list_open_dialogs', 'pcb_run_drc'}:
         return set()
+    if name == 'app_press_dialog_button':
+        return {'opaque'}  # Only the gateway's freshly validated recovery path is exempt.
     if any(word in name for word in ('script', 'run_process', 'execute_menu', 'click_menu', 'ui_command')):
         return {'opaque'}
     if name == '_suite_layout_apply_plan':

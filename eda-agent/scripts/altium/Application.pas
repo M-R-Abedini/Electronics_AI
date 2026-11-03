@@ -138,7 +138,7 @@ Begin
     If Data = '' Then
     Begin
         Board := Nil;
-        Try Board := GetPCBBoardAnywhere(0); Except Board := Nil; End;
+        Try Board := GetFocusedPCBBoard(0); Except Board := Nil; End;
         If Board <> Nil Then
         Begin
             FileName := Board.FileName;
@@ -287,7 +287,7 @@ Begin
 
     { Try to get PCB preferences from the active board }
     Try
-        Board := GetPCBBoardAnywhere(0);
+        Board := RequireTargetPCBBoard(0);
         If Board <> Nil Then
         Begin
             Data := Data + '"pcb":{';

@@ -78,6 +78,10 @@ def test_complete_when_all_stages_ok(tmp_path):
     j = _store(tmp_path).start("x", session_id="s1")
     for st in STAGES:
         j.stage_result(st, STATUS_OK)
+    assert not j.state().complete
+    assert j.state().next_stage == 'placement'
+    for st in ('placement', 'verification'):
+        j.verified_gate(st, 'server-evidence', 'snapshot', 'test-policy', passed=True, checks=['required'])
     state = j.state()
     assert state.complete
     assert state.next_stage is None

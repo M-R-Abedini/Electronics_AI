@@ -12,11 +12,12 @@ import hashlib
 import json
 import math
 from collections import defaultdict
+from itertools import chain
 
 from eda_agent.design import copper_geometry as geom
 from eda_agent.placement.autoplace import _rotate_offset
 
-POLICY_VERSION = "placement-evidence-v1"
+POLICY_VERSION = "placement-evidence-p0-v3"
 STATUSES = {"pass", "fail", "unknown", "not_applicable"}
 PROFILE_ROLES = {
     "precision_analog": {"precision_analog", "sensitive_analog", "analog_front_end"},
@@ -130,10 +131,17 @@ def validate_board_context(context):
     pads, pids = out.setdefault("pads", []), set()
     if not isinstance(pads, list) or len(pads) > 100000:
         raise ValueError("Pad list exceeds the supported budget")
-    for p in pads:
+    stationary = out.setdefault("stationary_pads", [])
+    if not isinstance(stationary, list) or len(pads) + len(stationary) > 100000:
+        raise ValueError("Pad list exceeds the supported budget")
+    for p, owned in chain(((p, True) for p in pads), ((p, False) for p in stationary)):
         pid = p.get("id")
-        if not isinstance(pid, str) or not pid or pid in pids or p.get("component_id") not in ids:
-            raise ValueError("Pads require unique IDs and captured component_id bindings")
+        if not isinstance(pid, str) or not pid or pid in pids:
+            raise ValueError("Pads require globally unique nonempty IDs")
+        if owned and p.get("component_id") not in ids:
+            raise ValueError("Pads require captured component_id bindings")
+        if not owned and ("component_id" in p or "local_xy_mm" in p):
+            raise ValueError("Stationary pads require absolute XY and no component ownership")
         pids.add(pid)
         if "local_xy_mm" in p:
             p["local_xy_mm"] = _point(p["local_xy_mm"])
@@ -336,6 +344,15 @@ def transformed_pads(context, poses):
             else:
                 center = transform_point(local, pose)
             pad["x_mm"], pad["y_mm"] = center
+            raw_angle = raw.get('rotation_deg', 0)
+            if local is not None:
+                local_angle = raw_angle
+            else:
+                local_angle = raw_angle - old['rotation_deg']
+                if old['side'] == 'bottom':
+                    local_angle = -local_angle
+            pad['rotation_deg'] = (pose['rotation_deg'] +
+                (local_angle if pose['side'] == 'top' else -local_angle)) % 360
             if raw.get("width_mm") is not None and raw.get("height_mm") is not None:
                 shape = {**raw, "x_mm": local[0] if local is not None else raw["x_mm"],
                          "y_mm": local[1] if local is not None else raw["y_mm"]}
@@ -352,6 +369,16 @@ def transformed_pads(context, poses):
             pad["x_mm"] = pad["y_mm"] = None
             pad.pop("outline", None)
         result[raw["id"]] = pad
+    for raw in context.get("stationary_pads", []):
+        pad = dict(raw)
+        try:
+            if raw.get("width_mm") is not None and raw.get("height_mm") is not None:
+                pad["outline"] = geom.pad_outline(raw, error_mm=error)
+                pad["curve_error_mm"] = 0.0 if raw.get("shape", "rectangle") in {"rectangle", "rect", "2"} else error
+        except (ValueError, KeyError, TypeError):
+            pad.pop("outline", None)
+            pad["geometry_complete"] = False
+        result[raw["id"]] = pad
     return result
 
 
@@ -365,7 +392,7 @@ def _check(check_id, status, snapshot, *, required=True, kind="hard", scope=None
             "source": source, "fix_action": None if status in {"pass", "not_applicable"} else reason}
 
 
-def _profile_checks(context, intent, snapshot):
+def _profile_checks(context, intent, snapshot, constraint_ids=()):
     checks = []
     blocks = {b["id"]: b for b in intent.get("blocks", [])}
     scope = set(context["scope_component_ids"])
@@ -375,6 +402,21 @@ def _profile_checks(context, intent, snapshot):
             continue
         block = blocks[bid]
         for profile in assignment["profiles"]:
+            bound = block.get('requirements', {}).get('placement_check_ids')
+            by_id = {c.get('id'): c for c in constraint_ids}
+            pad_owners = {p['id']: p['component_id'] for p in context['pads']}
+            def relevant(identity):
+                if not isinstance(identity, str) or identity not in by_id:
+                    return False
+                c = by_id[identity]
+                s = c.get('scope', {})
+                affected = set(s.get('components', [])) | {pad_owners[p] for p in s.get('pads', []) if p in pad_owners}
+                return (c.get('kind', 'hard') == 'hard' and c.get('applicability', True) is True
+                    and _qualified(c.get('source')) and bool(affected & set(members)))
+            linked = isinstance(bound, list) and bool(bound) and all(relevant(x) for x in bound)
+            checks.append(_check(f'profile:{bid}:{profile}:scoped_checks', 'pass' if linked else 'unknown', snapshot,
+                scope={'components': members, 'block': bid}, verification='input_contract',
+                reason='Profiles need actual placement-phase constraint IDs; input presence is not physical verification'))
             for field in PROFILE_INPUTS[profile]:
                 value = block.get("requirements", {}).get(field)
                 qualified = assignment["role_evidence_qualified"]
@@ -386,7 +428,7 @@ def _profile_checks(context, intent, snapshot):
     return checks
 
 
-def _decoupling_checks(intent, pads, snapshot):
+def _decoupling_checks(intent, pads, snapshot, scope=None):
     checks = []
     for binding in intent.get("decoupling_connections", []):
         bid = binding.get("id")
@@ -394,7 +436,9 @@ def _decoupling_checks(intent, pads, snapshot):
             raise ValueError("Decoupling mappings require stable IDs")
         names = ("ic_power_pad", "cap_power_pad", "ic_return_pad", "cap_return_pad")
         ids = [binding.get(key) for key in names]
-        scope = {"pads": [pid for pid in ids if pid is not None]}
+        if scope is not None and not any(pads.get(pid, {}).get('component_id') in scope for pid in ids):
+            continue
+        evidence_scope = {"pads": [pid for pid in ids if pid is not None]}
         power, ret = binding.get("power_net"), binding.get("return_net")
         status, reason = "unknown", "Provide sourced power/return pad mappings; proximity alone is insufficient"
         if all(pid in pads for pid in ids) and power and ret and _qualified(binding.get("source")):
@@ -402,9 +446,54 @@ def _decoupling_checks(intent, pads, snapshot):
                      and pads[ids[2]].get("net_name") == ret and pads[ids[3]].get("net_name") == ret)
             status = "pass" if valid else "fail"
             reason = "Mapped power/return pads disagree with captured net bindings" if not valid else "Power/return mapping verified; routed loop is not verified"
-        checks.append(_check("decoupling_binding:"+bid, status, snapshot, scope=scope,
+        checks.append(_check("decoupling_binding:"+bid, status, snapshot, scope=evidence_scope,
             verification="topology_binding", reason=reason, source=binding.get("source")))
     return checks
+
+
+def _decoupling_physical_checks(context, intent, pads, snapshot):
+    """Verify both named branches using the existing routed copper graph.
+
+    No same-layer rule or guessed loop-length limit is imposed. A valid path
+    proves only routed connectivity/length in the captured geometry, not ESL,
+    PDN impedance or suitability of a manufacturer's unverified topology.
+    """
+    from .copper_audit import CopperGraph
+    result, graphs = [], {}
+    physical = copy.deepcopy(context.get('copper_snapshot'))
+    if physical is not None:
+        for pad in physical.get('pads', []):
+            proposed = pads.get(str(pad.get('id')))
+            if proposed is not None:
+                for key in ('x_mm', 'y_mm', 'rotation_deg', 'layer'):
+                    if key in proposed:
+                        pad[key] = proposed[key]
+    scope = set(context['scope_component_ids'])
+    for binding in intent.get('decoupling_connections', []):
+        ids = [binding.get(k) for k in ('ic_power_pad', 'cap_power_pad', 'ic_return_pad', 'cap_return_pad')]
+        if not any(pads.get(pid, {}).get('component_id') in scope for pid in ids):
+            continue
+        status, paths = 'unknown', []
+        if physical is not None and all(pid in pads for pid in ids) and _qualified(binding.get('source')):
+            for a, b, net in ((ids[0], ids[1], binding.get('power_net')),
+                              (ids[2], ids[3], binding.get('return_net'))):
+                if not net or pads[a].get('net_name') != net or pads[b].get('net_name') != net:
+                    status = 'fail'; break
+                if net not in graphs:
+                    graphs[net] = CopperGraph(physical, net)
+                graph = graphs[net]
+                path = graph.shortest(graph.pad_nodes.get(a, []), graph.pad_nodes.get(b, []))
+                if path is None or graph.unknowns:
+                    break
+                paths.append(path)
+            if status != 'fail' and len(paths) == 2:
+                status = 'pass'
+        measured = sum(p['length_mm'] for p in paths) if len(paths) == 2 else None
+        result.append(_check('decoupling_physical_return:'+binding['id'], status, snapshot,
+            scope={'pads': ids}, measured=measured, unit='mm', geometry={'routed_paths': paths},
+            verification='routed_copper_graph', source=binding.get('source'),
+            reason='Both explicit IC/cap power and return connections need proven copper paths; proximity alone cannot pass'))
+    return result
 
 
 def _constraint_checks(context, intent, constraints, poses, pads, snapshot):
@@ -480,6 +569,134 @@ def _constraint_checks(context, intent, constraints, poses, pads, snapshot):
     return checks
 
 
+def _manufacturing_checks(context, pads, snapshot):
+    """Project-qualified pad clearance, separate from courtyard collisions.
+
+    Rectangles are exact polygons. Circular pads use their analytical radius;
+    unsupported curved/stack geometries stay unknown instead of passing from
+    an inscribed render polygon. This is not a complete fabrication DRC.
+    """
+    profile = context.get('fabrication_profile', {})
+    limit = profile.get('minimum_pad_clearance_mm')
+    source = profile.get('source')
+    if limit is None or not _qualified(source):
+        return [_check('manufacturing:pad_clearance_input', 'unknown', snapshot,
+            reason='Supply the project fabrication minimum pad clearance and its source',
+            verification='input_contract', source=source)]
+    limit = _number(limit, 'minimum pad clearance', minimum=0)
+    scope = set(context['scope_component_ids'])
+    checks = []
+    coverage = context.get('coverage', {}).get('pads')
+    incomplete = (coverage is False or isinstance(coverage, str) and coverage in {'partial', 'unknown', 'unavailable'}
+                  or isinstance(coverage, dict) and (coverage.get('complete') is False or coverage.get('status') in {'partial', 'unknown', 'unavailable'}))
+    if incomplete:
+        checks.append(_check('manufacturing:pad_extraction', 'unknown', snapshot,
+            scope={'components': sorted(scope)}, source=source,
+            reason='Captured pad extraction is incomplete; absent pad pairs cannot establish fabrication clearance'))
+    values = sorted(pads.values(), key=lambda p: p['id'])
+    def shape(p):
+        if p.get('geometry_complete') is False:
+            return None
+        kind = str(p.get('shape', '')).lower()
+        if kind in {'round', 'circle'} and p.get('width_mm') == p.get('height_mm') and p.get('width_mm'):
+            return 'circle'
+        if (kind in {'rectangle', 'rect', 'polygon'} and p.get('outline')
+                and (kind != 'polygon' or not p.get('curve_error_mm'))
+                and geom.region_geometry_valid({'outline': p['outline']})):
+            return 'polygon'
+        return None
+    def clearance(a, b):
+        ka, kb = shape(a), shape(b)
+        if not ka or not kb or a.get('x_mm') is None or b.get('x_mm') is None:
+            return None
+        if ka == kb == 'circle':
+            return max(0, geom.distance((a['x_mm'], a['y_mm']), (b['x_mm'], b['y_mm']))
+                       - (a['width_mm'] + b['width_mm']) / 2)
+        if ka == kb == 'polygon':
+            return _ring_distance(a['outline'], b['outline'])
+        circle, poly = (a, b) if ka == 'circle' else (b, a)
+        point, ring = (circle['x_mm'], circle['y_mm']), poly['outline']
+        if geom.point_in_region(point, {'outline': ring, 'holes': []}):
+            return 0.0
+        return max(0, min(geom.point_segment_distance(point, ring[i], ring[(i+1) % len(ring)])
+                          for i in range(len(ring))) - circle['width_mm'] / 2)
+    # Only nearby same-layer pairs can violate the minimum. Bounds are exact
+    # for qualified rectangles/polygons and analytical circles; an AABB is a
+    # broad-phase bound, never a replacement for the narrow copper contour.
+    from collections import Counter
+    indices, boxes, known, unknown = {}, {}, {}, []
+    all_counts, scoped_counts = defaultdict(Counter), defaultdict(Counter)
+    for i, pad in enumerate(values):
+        layer = _layer(pad.get('layer'))
+        all_counts[layer][pad.get('net_name')] += 1
+        if pad.get('component_id') in scope:
+            scoped_counts[layer][pad.get('net_name')] += 1
+        kind = shape(pad)
+        if not kind or layer is None or pad.get('x_mm') is None or pad.get('y_mm') is None:
+            unknown.append(i); continue
+        if kind == 'circle':
+            radius = pad['width_mm'] / 2
+            box = (pad['x_mm']-radius, pad['y_mm']-radius, pad['x_mm']+radius, pad['y_mm']+radius)
+        else:
+            box = _bbox(pad['outline'])
+        index = indices.setdefault(layer, geom.SpatialIndex())
+        index.insert(i, box); boxes[i] = box; known[i] = layer
+    unresolved = []
+    for i in unknown:
+        pad = values[i]
+        layer, net = _layer(pad.get('layer')), pad.get('net_name')
+        groups = all_counts if pad.get('component_id') in scope else scoped_counts
+        relevant = Counter()
+        for candidate_layer, counts in groups.items():
+            if layer is None or candidate_layer is None or candidate_layer == layer:
+                relevant.update(counts)
+        if pad.get('component_id') in scope:
+            relevant[net] -= 1
+        if (sum(relevant.values()) - (relevant[net] if net else 0)) > 0:
+            unresolved.append(pad['id'])
+    if unresolved:
+        checks.append(_check('manufacturing:pad_clearance_unknown', 'unknown', snapshot,
+            scope={'pads': unresolved}, source=source,
+            reason='Unsupported pad contours/stacks or layer spans can affect this scope; distance is not guessed'))
+    seen, narrow_count = set(), 0
+    for i, layer in known.items():
+        a = values[i]
+        if a.get('component_id') not in scope:
+            continue
+        box = boxes[i]
+        expanded = (box[0]-limit-geom.EPS, box[1]-limit-geom.EPS,
+                    box[2]+limit+geom.EPS, box[3]+limit+geom.EPS)
+        for j in indices[layer].query(expanded):
+            pair = tuple(sorted((i, j)))
+            if i == j or pair in seen:
+                continue
+            seen.add(pair)
+            b = values[j]
+            if a.get('net_name') and a.get('net_name') == b.get('net_name'):
+                continue
+            other = boxes[j]
+            gap_x = max(0, box[0]-other[2], other[0]-box[2])
+            gap_y = max(0, box[1]-other[3], other[1]-box[3])
+            if math.hypot(gap_x, gap_y) + geom.EPS >= limit:
+                continue
+            narrow_count += 1
+            measured = clearance(a, b)
+            if measured + geom.EPS < limit:
+                checks.append(_check('manufacturing:pad_clearance:'+a['id']+':'+b['id'], 'fail', snapshot,
+                    measured=measured, limit=limit, unit='mm', scope={'pads': [a['id'], b['id']]}, source=source,
+                    geometry={'narrow_phase_pairs': narrow_count, 'stop_after_first_violation': True},
+                    reason='Exact supported pad copper violates the sourced clearance; remaining pairs not evaluated'))
+                return checks
+    # Far pairs are certified by their exact bounding-box separation; avoid
+    # materializing O(P^2) individual passing records in every candidate.
+    checks.append(_check('manufacturing:pad_clearance', 'unknown' if unresolved or incomplete else 'pass', snapshot,
+        scope={'components': sorted(scope)}, limit=limit, unit='mm', source=source,
+        geometry={'pad_count': len(values), 'narrow_phase_pairs': narrow_count,
+                  'broad_phase': 'per_layer_exact_bounds_index', 'unsupported_pad_ids': unresolved},
+        reason='Per-layer exact-bounds rejection plus analytical/contour narrow phase; not a complete fabrication DRC'))
+    return checks
+
+
 def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candidate_id="baseline"):
     """Validate final batch geometry; hard failures/unknowns cannot be scored away."""
     context = validate_board_context(context)
@@ -548,11 +765,32 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
                 scope={"components": [a, b]}, geometry={"courtyards": [rings[a], rings[b]]},
                 reason="Final-state courtyards overlap" if overlap else ""))
     pads = transformed_pads(context, poses)
-    checks += _profile_checks(context, intent, snapshot)
-    checks += _decoupling_checks(intent, pads, snapshot)
+    checks += _manufacturing_checks(context, pads, snapshot)
+    checks += _profile_checks(context, intent, snapshot, constraints)
+    checks += _decoupling_checks(intent, pads, snapshot, scoped)
+    checks += _decoupling_physical_checks(context, intent, pads, snapshot)
     checks += _constraint_checks(context, intent, constraints, poses, pads, snapshot)
     channel_checks, reservations = evaluate_channels(context, intent, poses, pads)
     checks += channel_checks
+    if intent.get('copper_intent') is not None:
+        from .copper_audit import audit_board_copper
+        physical = context.get('copper_snapshot')
+        if physical is None:
+            checks.append(_check('physical_copper', 'unknown', snapshot,
+                reason='Physical copper intent requires the captured copper snapshot'))
+        else:
+            virtual = copy.deepcopy(physical)
+            for pad in virtual.get('pads', []):
+                proposed = pads.get(str(pad.get('id')))
+                if proposed is not None:
+                    for key in ('x_mm', 'y_mm', 'rotation_deg', 'layer'):
+                        if key in proposed:
+                            pad[key] = proposed[key]
+            audit = audit_board_copper(virtual, intent['copper_intent'], policy=intent.get('copper_policy'))
+            checks.append(_check('physical_copper',
+                'fail' if audit['violations'] else 'unknown' if not audit['coverage_complete'] else 'pass', snapshot,
+                verification='copper_geometry_audit', geometry={'audit': audit},
+                reason='Existing copper auditor reused on proposed pad positions; no routing or field simulation is implied'))
     metrics = _metrics(context, intent, poses, pads)
     hard = [c for c in checks if c["required"] and c["kind"] == "hard"]
     failed = any(c["status"] == "fail" for c in hard)
@@ -572,37 +810,53 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
 
 
 def _metrics(context, intent, poses, pads):
+    from .placement_p0 import transformed_pad_aabb_manhattan_mm as gap, crossing_proxy, alignment_proxy
     by_net = defaultdict(list)
     for pad in pads.values():
         if pad.get("net_name") and pad.get("x_mm") is not None:
             by_net[pad["net_name"]].append(geom.xy(pad))
-    excluded = set(intent.get("signal_attraction_excluded_nets", []))
-    hpwl = sum(max(x for x, y in points) - min(x for x, y in points) +
-               max(y for x, y in points) - min(y for x, y in points)
+    excluded = set(intent.get("signal_attraction_excluded_nets", [])) | set(intent.get('reference_nets', [])) | set(intent.get('power_nets', [])) | {'GND'}
+    weights = intent.get('signal_net_weights', {})
+    hpwl = sum(_number(weights.get(net, 1), 'signal net weight', minimum=0) * (max(x for x, y in points) - min(x for x, y in points) +
+               max(y for x, y in points) - min(y for x, y in points))
                for net, points in by_net.items() if net not in excluded)
     complete = all(p.get("x_mm") is not None for p in pads.values())
     result = {"signal_hpwl": {"value": hpwl if complete else None, "unit": "mm", "method": "pad_hpwl_proxy",
                              "coverage": "complete" if complete else "unknown", "excluded_nets": sorted(excluded)},
               "movement": {"value": sum(geom.distance((c["x_mm"], c["y_mm"]), (poses[c["id"]]["x_mm"], poses[c["id"]]["y_mm"]))
                   for c in context["components"]), "unit": "mm", "method": "origin_displacement", "coverage": "complete"}}
+    result['ratsnest_crossings'] = {'value': crossing_proxy(pads, excluded), 'unit': 'count',
+        'method': 'existing_mst_crossing_diagnostic', 'routing_verified': False, 'pad_budget':512}
+    alignment = alignment_proxy(context, intent, poses)
+    result['alignment_penalty'] = {'value': None if alignment is None else 1-alignment, 'aligned_ratio':alignment,
+        'unit':'ratio', 'method':'declared_passive_family_grid_and_collinearity'}
+    penalty = intent.get('via_transition_penalty_mm')
     for path in intent.get("critical_paths", []):
         pid = path.get("id")
         if not isinstance(pid, str) or not pid:
             raise ValueError("Critical paths require stable IDs")
         values = [pads[p] for p in path["pad_ids"]]
         available = all(p.get("x_mm") is not None for p in values)
-        value = sum(geom.distance(geom.xy(a), geom.xy(b)) for a, b in zip(values, values[1:])) if available else None
-        result["critical_path:" + pid] = {"value": value, "unit": "mm", "method": "pin_path_chord_lower_bound",
+        legs = [gap(a,b,penalty) for a,b in zip(values,values[1:])] if available else [None]
+        value = sum(legs) if all(v is not None for v in legs) else None
+        result["critical_path:" + pid] = {"value": value, "unit": "mm", "method": "transformed_pad_aabb_manhattan_mm",
             "coverage": "complete" if available else "unknown", "pad_ids": list(path["pad_ids"]),
-            "route_verified": False, "critical": True}
+            "route_verified": False, "critical": any(p.get('component_id') in context['scope_component_ids'] for p in values)}
+        for index, leg in enumerate(legs):
+            result[f'critical_pair:{pid}:{index}'] = {**result['critical_path:'+pid], 'value':leg,
+                'pad_ids': path['pad_ids'][index:index+2]}
     for binding in intent.get("decoupling_connections", []):
         ids = [binding.get(key) for key in ("ic_power_pad", "cap_power_pad", "ic_return_pad", "cap_return_pad")]
         available = all(pid in pads and pads[pid].get("x_mm") is not None for pid in ids)
-        value = (geom.distance(geom.xy(pads[ids[0]]), geom.xy(pads[ids[1]])) +
-                 geom.distance(geom.xy(pads[ids[2]]), geom.xy(pads[ids[3]]))) if available else None
-        result["critical_decap:" + binding["id"]] = {"value": value, "unit": "mm", "method": "two_pin_center_connection_chords",
+        legs = [gap(pads[ids[0]],pads[ids[1]],penalty),gap(pads[ids[2]],pads[ids[3]],penalty)] if available else [None,None]
+        value = sum(legs) if all(v is not None for v in legs) else None
+        result["critical_decap:" + binding["id"]] = {"value": value, "unit": "mm", "method": "transformed_pad_aabb_manhattan_mm",
             "coverage": "complete" if available else "unknown", "pad_ids": ids,
-            "route_verified": False, "package_internal_path_included": False, "critical": True}
+            "route_verified": False, "package_internal_path_included": False,
+            "critical": any(pads.get(pid, {}).get('component_id') in context['scope_component_ids'] for pid in ids)}
+        for name, leg, pair in [('vcc',legs[0],ids[:2]),('gnd',legs[1],ids[2:])]:
+            result['critical_decap:'+binding['id']+':'+name] = {**result['critical_decap:'+binding['id']],
+                'value':leg, 'pad_ids':pair}
     return result
 
 
@@ -708,7 +962,14 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
         raise ValueError("Critical tolerances must reference actual reported critical metrics")
     for key, value in tolerance.items():
         _number(value, "critical nonregression tolerance", minimum=0)
-    metric_order = policy.get("priority_metrics", critical + ["signal_hpwl", "movement"])
+        if value != 0:
+            raise ValueError('P0 Tier 1 permits no positive nonregression allowance')
+    metric_order = critical + ['signal_hpwl', 'ratsnest_crossings']
+    if baseline['metrics']['alignment_penalty']['value'] is not None:
+        metric_order.append('alignment_penalty')
+    metric_order.append('movement')
+    if policy.get('priority_metrics') not in (None, metric_order):
+        raise ValueError('P0 tier order cannot be overridden by a scalar or visual metric')
     if not isinstance(metric_order, list) or any(key not in baseline["metrics"] for key in metric_order):
         raise ValueError("Priority metrics must exist in the evaluator report")
     tradeoffs, eligible = [], []
@@ -718,7 +979,7 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
             before, after = baseline["metrics"][key]["value"], report["metrics"][key]["value"]
             if before is None or after is None:
                 regressions.append({"metric": key, "reason": "critical metric unknown"})
-            elif after > before + tolerance.get(key, 0) + geom.EPS:
+            elif after > before:
                 regressions.append({"metric": key, "before": before, "after": after,
                                     "tolerance_mm": tolerance.get(key, 0)})
         if not report["feasible"]:
@@ -727,6 +988,9 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
             reason = "Critical path lower bound regressed; improved ordinary-net score cannot compensate"
         elif any(report["metrics"][key]["value"] is None for key in metric_order):
             reason = "A selection metric is unknown"
+        elif report is not baseline and not any(report['metrics'][key]['value'] < baseline['metrics'][key]['value']
+                for key in critical + ['signal_hpwl','ratsnest_crossings']):
+            reason = 'No measurable Tier 1 or Tier 2 improvement; retain baseline'
         else:
             eligible.append(report); reason = "Eligible under hard constraints and critical nonregression"
         tradeoffs.append({"candidate_id": report["candidate_id"], "reason": reason, "critical_regressions": regressions,
@@ -793,7 +1057,9 @@ def generate_placement_candidates(context, intent=None, options=None):
     pad_map = transformed_pads(context, base_poses)
     locals_by_comp = defaultdict(list)
     for p in pad_map.values():
-        cid = p["component_id"]
+        cid = p.get("component_id")
+        if cid is None:
+            continue  # Stationary board copper is audited, never proposed as a package.
         if p.get("x_mm") is None:
             raise ValueError("Known pad transforms required to generate pin-aware proposals")
         local = inverse_transform_point(geom.xy(p), base_poses[cid])
@@ -918,7 +1184,11 @@ def contract_schemas():
     base = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}
     board = {**base, "required": ["units", "components"], "properties": {
         "units": {"const": "mm"}, "components": {"type": "array", "items": component, "minItems": 1, "maxItems": 2000},
-        "pads": {"type": "array", "items": pad, "maxItems": 100000}, "snapshot_id": {"type": ["string", "null"]},
+        "pads": {"type": "array", "items": pad, "maxItems": 100000},
+        "stationary_pads": {"type": "array", "maxItems": 100000, "items": {
+            **pad, "required": ["id", "x_mm", "y_mm"],
+            "properties": {k: v for k, v in pad["properties"].items() if k not in {"component_id", "local_xy_mm"}},
+            "not": {"anyOf": [{"required": ["component_id"]}, {"required": ["local_xy_mm"]}]}}}, "snapshot_id": {"type": ["string", "null"]},
         "board_path": {"type": "string"}, "board_identity": {"type": ["string", "null"]},
         "scope_component_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
         "outline": {"oneOf": [{"type": "array", "items": point, "minItems": 3},
@@ -941,6 +1211,7 @@ def example_board_context():
     """Synthetic mm fixture, deliberately unrelated to any part or project."""
     source = {"kind": "engineering_policy", "id": "synthetic-regression", "revision": "1"}
     return {"schema": 1, "units": "mm", "snapshot_id": "synthetic-baseline", "source": "synthetic",
+        "fabrication_profile": {"minimum_pad_clearance_mm": .1, "source": source},
         "board_path": "synthetic.PcbDoc", "board_identity": "synthetic-only", "document_modified": None,
         "origin_mm": [10, 20], "outline": [[10, 20], [30, 20], [30, 40], [10, 40]], "cutouts": [],
         "coverage": {"outline": "complete", "routing_obstacles": "complete"},

@@ -191,7 +191,7 @@ def test_gateway_sanitizes_before_dispatch_preserves_images_and_meta(tmp_path):
         response = await suite.invoke('eda__sch_set_value', {'value': '100Ω'})
         assert worker.calls[0]['arguments'] == {'value': '100R'}
         assert response.content[0].type == 'image' and response.meta['existing'] == 'keep'
-        assert response.meta['altium_suite']['normalization_warnings']
+        assert response.meta['electronics_ai']['normalization_warnings']
     asyncio.run(check())
 
 
@@ -205,7 +205,7 @@ def test_default_product_discovery_stays_lazy_and_private(tmp_path):
     async def check():
         params = StdioServerParameters(command=sys.executable,
                     args=[str(root / 'suite_stdio.py'), '--backend-config', str(empty)],
-                    env={**os.environ, 'ALTIUM_SUITE_PLUGIN_DATA': str(tmp_path / 'private')})
+                    env={**os.environ, 'ELECTRONICS_AI_PLUGIN_DATA': str(tmp_path / 'private')})
         async with stdio_client(params) as streams:
             async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=20)) as client:
                 await client.initialize()

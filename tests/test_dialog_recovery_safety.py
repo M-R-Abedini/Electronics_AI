@@ -47,7 +47,7 @@ def test_blocked_bridge_recovery_dispatches_bound_button_but_never_cad_write(tmp
         response = await suite.invoke('eda__app_press_dialog_button', {'button_caption': 'Run Design Rule Check'})
         assert [c['name'] for c in worker.calls] == ['app_list_open_dialogs', 'app_press_dialog_button']
         assert worker.calls[-1]['arguments']['recovery_binding']['dialog_hwnd'] == 101
-        receipt = response.meta['altium_suite']['dialog_recovery']
+        receipt = response.meta['electronics_ai']['dialog_recovery']
         assert receipt['native_session_id'] == 'native-1'
         assert receipt['checkpoint_reused'] == 'prior-checkpoint'
         assert receipt['native_operation_completion_proven'] is False

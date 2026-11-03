@@ -56,7 +56,7 @@ def try_mutex():
         import win32api
         import win32event
         sid, _ = windows_identity()
-        handle = win32event.CreateMutex(None, False, 'Local\\AltiumMCPSuite.Engine.v1.' + sid)
+        handle = win32event.CreateMutex(None, False, 'Local\\ElectronicsAI.Engine.v1.' + sid)
         result = win32event.WaitForSingleObject(handle, 0)
         if result in (0, 0x80):  # acquired or abandoned; binding is checked separately
             lease = MutexLease(handle)
@@ -88,7 +88,7 @@ def _record(pid, started, runtime, workspace):
 
 
 def binding_path(pid, started, root=None):
-    root = Path(root) if root is not None else windows_identity()[1] / '.altium-mcp-suite' / 'coordination'
+    root = Path(root) if root is not None else windows_identity()[1] / '.electronics-ai' / 'coordination'
     return root / ('editor-%d-%d.json' % (pid, int(started * 1000000)))
 
 
@@ -121,7 +121,7 @@ def claim_editor(pid, started, runtime, workspace, root=None):
         raise RuntimeError('Editor runtime binding cannot be verified: ' + str(target)
                            + '. Confirm native Stop before explicit ownership recovery.') from error
     if any(os.path.normcase(str(Path(actual[k]).resolve())) != os.path.normcase(expected[k]) for k in ('runtime', 'workspace')):
-        raise RuntimeError('Altium editor is bound to another MCP runtime. Use ALTIUM_MCP_RUNTIME='
+        raise RuntimeError('Altium editor is bound to another MCP runtime. Use ELECTRONICS_AI_RUNTIME='
                            + actual['runtime'] + ' and EDA_AGENT_WORKSPACE=' + actual['workspace']
                            + ' in every client. No script was launched or ownership reset.')
     return target

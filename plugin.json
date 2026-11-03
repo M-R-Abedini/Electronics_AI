@@ -1,14 +1,14 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "mcp-altium-suite",
-  "version": "0.5.1",
-  "description": "Local Altium circuit design, copper-aware SI/PI review, native library inspection and sourcing with a unified MCP and engineering skills.",
+  "name": "mcp-electronics-ai",
+  "version": "0.7.0",
+  "description": "Altium circuit design, evidence-bound adaptive PCB placement, copper SI/PI review and library sourcing through one MCP and engineering skills.",
   "author": {
     "name": "M-R-Abedini",
     "url": "https://github.com/M-R-Abedini"
   },
-  "homepage": "https://github.com/M-R-Abedini/Altium-MCP-Suite",
-  "repository": "https://github.com/M-R-Abedini/Altium-MCP-Suite",
+  "homepage": "https://github.com/M-R-Abedini/Electronics_AI",
+  "repository": "https://github.com/M-R-Abedini/Electronics_AI",
   "license": "MIT AND Apache-2.0",
   "keywords": [
     "altium",
@@ -20,9 +20,9 @@
   "extensions": {
     "com.openai": {
       "requires_local_executor": true,
-      "onboardingSkill": "./skills/altium-suite-setup/SKILL.md",
+      "onboardingSkill": "./skills/electronics-ai-setup/SKILL.md",
       "interface": {
-        "displayName": "MCP Altium Suite",
+        "displayName": "Electronics AI",
         "shortDescription": "Design and inspect circuits in Altium",
         "longDescription": "One local connection for Altium schematics, PCB copper review, SI/PI rule previews, library files and sourced cloud models. Includes circuit-design and guided setup skills. Windows and separately installed Altium Designer are required.",
         "developerName": "M-R-Abedini",
@@ -31,9 +31,9 @@
           "Read",
           "Write"
         ],
-        "websiteURL": "https://github.com/M-R-Abedini/Altium-MCP-Suite",
+        "websiteURL": "https://github.com/M-R-Abedini/Electronics_AI",
         "defaultPrompt": [
-          "Set up MCP Altium Suite on this Windows computer.",
+          "Set up Electronics AI on this Windows computer.",
           "Use the circuit-design skill to review my Altium project's libraries and connectivity.",
           "Audit my Altium PCB copper and preview SI/PI design rules."
         ]

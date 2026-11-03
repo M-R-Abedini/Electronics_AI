@@ -8,7 +8,7 @@ an explicitly captured PCB snapshot runs independently of that queue.
 ## Usage
 
 Use the coordinated `eda_stdio.py` and legacy `codex_stdio.py` entry points with
-identical `ALTIUM_MCP_RUNTIME` and `EDA_AGENT_WORKSPACE` in both clients. Full and
+identical `ELECTRONICS_AI_RUNTIME` and `EDA_AGENT_WORKSPACE` in both clients. Full and
 minimal toolsets have the same behavior. In minimal mode discover these tools
 with `tool_catalog(query=..., with_schema=True)`, then use `tool_invoke`.
 

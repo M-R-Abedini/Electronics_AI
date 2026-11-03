@@ -93,8 +93,8 @@ def prepare(args) -> dict:
         if not iscc:
             raise ValueError('Inno Setup compiler missing; install it or pass --iscc')
         subprocess.run([str(iscc), '/DSourceRoot=' + str(app), '/DOutputRoot=' + str(output),
-                        '/DAppVersion=' + version, str(ROOT / 'installer/AltiumMCPSuite.iss')], check=True)
-        installer = output / 'AltiumMCPSuite-Setup-x64.exe'
+                        '/DAppVersion=' + version, str(ROOT / 'installer/ElectronicsAI.iss')], check=True)
+        installer = output / 'ElectronicsAI-Setup-x64.exe'
         if not installer.is_file():
             raise RuntimeError('Inno Setup did not create the expected installer')
         result.update(compiled=True, installer=str(installer), sha256=digest(installer))

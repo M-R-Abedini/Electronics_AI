@@ -441,7 +441,7 @@ Var
     Candidate, Name, RootPath, ParentPath, Reply : String;
     I, ExpectedCount, ClosedCount, SkippedCount : Integer;
 Begin
-    If Pos('__ALTIUM_MCP_', SUITE_SCRIPT_CATALOG) > 0 Then Exit;
+    If Pos('__ELECTRONICS_AI_', SUITE_SCRIPT_CATALOG) > 0 Then Exit;
     If Not FileExists(SUITE_SCRIPT_CATALOG) Then Exit;
     Workspace := GetWorkspace;
     If Workspace = Nil Then Exit;
@@ -1517,27 +1517,9 @@ Begin
 
     If Target = 'pcb' Then
     Begin
-        { 1) Find any PCB doc in the project, focus it.                      }
-        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
-        Begin
-            DmDoc := Project.DM_LogicalDocuments(I);
-            If DmDoc = Nil Then Continue;
-            DocKind := '';
-            Try DocKind := UpperCase(DmDoc.DM_DocumentKind); Except End;
-            If DocKind <> 'PCB' Then Continue;
-            FullPath := '';
-            Try FullPath := DmDoc.DM_FullPath; Except End;
-            If FullPath = '' Then Continue;
-            ServerDoc := Nil;
-            Try ServerDoc := Client.GetDocumentByPath(FullPath); Except End;
-            If ServerDoc = Nil Then Continue;
-            Try Client.ShowDocument(ServerDoc); Except End;
-            Break;
-        End;
-
-        { 2) Walk the board, find the component by Name.Text, select it.    }
+        { Resolve only the explicit already-loaded target, without project scanning. }
         Board := Nil;
-        Try Board := GetPCBBoardAnywhere(0); Except End;
+        Try Board := RequireTargetPCBBoard(0); Except End;
         If Board = Nil Then
         Begin
             Result := BuildErrorResponse(RequestId, 'NO_BOARD',
@@ -1766,7 +1748,7 @@ Var
     OutlineStr, LayerStr, Data, BoardFile : String;
     First : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    Board := RequireTargetPCBBoard(0);
     If Board = Nil Then Begin Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active'); Exit; End;
 
     // Board outline vertices
@@ -1812,13 +1794,7 @@ Begin
     End;
     LayerStr := LayerStr + ']';
 
-    { NAME THE BOARD THAT ANSWERED. GetPCBBoardAnywhere deliberately finds   }
-    { any open board, so with a SCHEMATIC focused this happily returns some   }
-    { other document's geometry. MEASURED: with a schematic active and a      }
-    { two-document project focused, it reported an outline belonging to       }
-    { neither, and the reply carried nothing to reveal that. The board is     }
-    { now identified, so a caller can tell whether the answer is about the    }
-    { document they meant.                                                    }
+    { Include the verified target identity with its physical geometry. }
     BoardFile := '';
     Try BoardFile := Board.FileName; Except End;
 

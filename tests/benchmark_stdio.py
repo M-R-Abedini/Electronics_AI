@@ -23,7 +23,7 @@ async def benchmark(args):
     if args.workspace:
         env['EDA_AGENT_WORKSPACE'] = str(args.workspace)
     if args.runtime:
-        env['ALTIUM_MCP_RUNTIME'] = str(args.runtime)
+        env['ELECTRONICS_AI_RUNTIME'] = str(args.runtime)
     params = StdioServerParameters(command=str(args.python),
         args=[str(args.root / 'eda_stdio.py'), '--no-dashboard', '--toolset', args.toolset], cwd=str(args.root), env=env)
     hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in args.design_file}

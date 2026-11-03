@@ -15,7 +15,7 @@ belong in the implementation report, not in this static inventory.
 The lean contract is `suite_status`, paginated `suite_catalog` with schemas and
 `suite_invoke`. Schema `limit` is 1-100 and offset is nonnegative. Client-qualified
 names below are derived from the suite's namespace routing. The maintained
-[skill tool map](../skills/altium-pcb-layout/references/tool-map.md) and generated
+[skill tool map](../skills/electronics-ai-pcb-layout/references/tool-map.md) and generated
 JSON snapshot complement runtime discovery.
 
 | Need | Real tool/function and schema summary | Units/source/backend/effect | Geometry, limit and inspected tests |

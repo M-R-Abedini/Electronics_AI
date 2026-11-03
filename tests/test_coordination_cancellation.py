@@ -14,31 +14,27 @@ from test_reliability import load_function
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize('phase', ['stop', 'start'])
 @pytest.mark.parametrize('scoped', [False, True])
 @pytest.mark.skipif(sys.platform != 'win32', reason='Exercises real Windows cross-process file locking')
-def test_cancel_retains_lock_until_worker_finishes(tmp_path, monkeypatch, phase, scoped):
+def test_cancel_retains_lock_until_worker_finishes(tmp_path, monkeypatch, scoped):
+    from types import SimpleNamespace
     monkeypatch.setattr(coord, 'LOCK', tmp_path / 'engine.lock')
     started, release, finished = threading.Event(), threading.Event(), threading.Event()
-    calls = []
-    def worker():
+    def dispatch(*args):
         started.set()
         assert release.wait(5), 'test did not release worker'
         finished.set()
-    async def tool(*a, **kw):
-        calls.append('tool')
-        return {'ok': True}
-    namespace = dict(OFFLINE=set(), original=tool, async_engine_lock=coord.async_engine_lock,
-                     run_engine_worker=coord.run_engine_worker,
-                     stop_eda=worker if phase == 'stop' else lambda: None,
-                     start_eda=worker if phase == 'start' else lambda: None,
-                     log_event=MagicMock(), sys=__import__('sys'))
-    wrapper = load_function(ROOT / 'coffeenmusic/server/codex_stdio.py', 'coordinated', namespace)
+        return {'success': True}
+    namespace = dict(async_engine_lock=coord.async_engine_lock,
+                     run_engine_worker=coord.run_engine_worker, dispatch_locked=dispatch)
+    wrapper = load_function(ROOT / 'eda_stdio.py', 'coordinated_async', namespace)
+    bridge = SimpleNamespace(is_altium_running=lambda: True, _ensure_keepalive=lambda: None,
+                             config=SimpleNamespace(poll_timeout=5))
     async def run():
         scope = anyio.CancelScope()
         async def invoke():
             with scope:
-                await wrapper('read_test')
+                await wrapper(bridge, 'pcb.get_components', {})
         task = asyncio.create_task(invoke())
         try:
             assert await asyncio.to_thread(started.wait, 2)
@@ -56,7 +52,6 @@ def test_cancel_retains_lock_until_worker_finishes(tmp_path, monkeypatch, phase,
             except asyncio.CancelledError:
                 assert not scoped
             assert finished.is_set()
-            assert calls == ([] if phase == 'stop' else ['tool'])
             handle = coord.try_lock()
             assert handle is not None
             coord.unlock(handle)

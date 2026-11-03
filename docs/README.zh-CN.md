@@ -1,81 +1,56 @@
-# Altium MCP Suite
+# Electronics AI — 0.7.0
 
 [English](../README.md) · [فارسی](README.fa.md) · [简体中文](README.zh-CN.md) · [العربية](README.ar.md)
 
-通过一个名为 **mcp altium suite** 的 MCP 连接，让 AI 读取和编辑 Altium 原理图、PCB 和库。Altium 保持打开，操作针对明确指定的项目；设计、旧版操作和库文件后端在同一连接内部协调运行。
+Electronics AI 是用于 Altium Designer 原理图和 PCB 设计自动化的本地插件，
+包含一个 `mcp-electronics-ai` 连接和环境设置、电路设计、PCB 布局三个技能。
+[Electronics_AI 仓库](https://github.com/M-R-Abedini/Electronics_AI)是源码来源；
+已安装缓存和 ZIP 均为该仓库的部署产物。
 
-**Windows · Python 3.12 · 已在 Altium Designer 26 上实测**
+**要求：Windows、Python 3.12 和单独安装并授权的 Altium Designer。**
+现有原生实测使用 Altium Designer 26，并不证明其他版本已通过验证。
 
-## 能做什么
+## 功能
 
-- 读写打开的原理图：添加元件、画线、放置网络标签和电源端口、改参数、导出 BOM 和网表。
-- 操作 PCB：移动元件、布线和过孔、检查布局间距、拼板。
-- 设计审查：孤立网络标签、悬空端口、IC 未连接引脚、缺失去耦电容、位号冲突、偏离网格的元件——一次执行 33 项 lint 检查，可选 DRC。
-- 四个只读工具做连接检查：引脚-网络映射快照（SHA-256 摘要）、逐引脚约定（期望网络，或注明原因的有意悬空）、前后 diff、原理图↔PCB 焊盘双向一致性。
-- 计算线宽、阻抗和长度预算。只是计算器，不是信号完整性证明。
-- 读写 `.SchLib` / `.PcbLib` 库文件。
-- 搜索 ChilaBoard 公共目录并下载固定版本的库，保留来源、哈希和许可证；暂存从 SnapMagic/SamacSys 官方渠道获得的本地文件。尚未实现这两家服务的直接 API 或 EPW 转换。[云库工作流程](review/CLOUD_LIBRARIES_2026-10-27.md)。
-- `$altium-circuit-design` 技能覆盖需求、数据手册、符号/封装核验、结构化原理图计划和连接检查。下载成功不等于引脚映射或封装正确。
-- 通过唯一标识管理原生装配变体，批量更新元件的装配状态并导出元件矩阵；修改前备份项目，修改后通过 Altium 接口回读验证。参见[变体工作流程](review/STORAGE_VARIANTS_2026-10-08.md)。
-- 统一原生传输：旧版兼容工具也通过同一个 EDA 引擎执行；共享队列和请求 ID 防止并发冲突及过期响应。
-- 多客户端并发：共享 FIFO 队列顺序执行 Altium 命令，一次遍历读取元件、网络和焊盘。客户端可并行分析同一快照；快照仅代表采集时的状态，不能作为实时编辑的前置条件。[用法与验证](review/CONCURRENT_CLIENTS_2026-10-14.md)。
-- 统一 EDA 脚本项目同时运行兼容处理器；启动时检查旧生成项目并保留已编辑源码。[生命周期验证](review/SCRIPT_PROJECT_LIFECYCLE_2026-10-10.md)。
+- 读取和编辑原理图、PCB，以及 `.SchLib` / `.PcbLib` 库文件。
+- 根据电路功能、真实焊盘几何和项目约束比较布局方案；使用已存储的明确移动
+  计划执行修改，并检查数据新鲜度和原生回读结果。
+- 通过 `si_pi__` 检查实际二维铜几何、分类网络、预览规则和定位违规。
+  缺失叠层或物理证据时保留未知结果，不宣称通过。
+- 搜索、暂存云库并记录来源和哈希；封装及引脚到焊盘的映射仍需单独核验。
+- 保存磁盘文件检查点，共享原生命令队列并记录操作结果。
 
-`0.5.0` 新增四个 `si_pi__` 工具：网络分类、实际二维铜几何审查、规则预览与应用、违规定位。
-缺失叠层或物理参数时会明确报告未覆盖项，不会宣称设计通过检查。参见[铜几何 SI/PI 工作流](COPPER_SI_PI.md)。
-
-## 还在开发中的功能
-
-- 辅助布局：批量布局和间距检查可用，更精细的布局工具还在做。
-- 桥的稳定性：持续修复 DelphiScript 故障，并验证异常处理与恢复行为。
-- 目前只在 Altium Designer 26 上实测过，其他版本还没测。
-
-## 当前限制
-
-- 批量编辑失败后可能留下部分修改；合并撤销步骤不保证完整回滚。大批量编辑前请保存备份。
-
-- 实验性质。某些操作可能让 Altium 的 DelphiScript 引擎崩溃、轮询停掉；让 AI 改图之前先备份。
-- 执行命令期间，原生保存和脚本按钮可能需要等待。空闲约两秒后释放引擎，后台 ping 不延长此期限；下一次协调工具调用会自动重启轮询。
-- EDA JSON 参数中高于 U+00FF 的字符（Ω、中文）在发送前被拒绝，避免静默替换为 `?`；尚未实现完整 Unicode 传输。
-- EDA 传输保留 UNC 路径；共享目录的访问取决于 Windows 权限。
-- `proj_sync_pcb` 必须显式设置 `allow_modal=True`；原理图到 PCB 的 ECO 仍会打开交互对话框。
-- 连接检查只查引脚分配，不查铜。你没喂给它的数据，它看不见。
-- 模态框阻塞脚本命令，但 Win32 对话框诊断仍可使用。处理器忙碌时拒绝发送新命令。超时后撤回尚未读取的请求；已开始的编辑无法取消，重试前应检查设计。
+专用规则应按各功能模块及本项目数据选择；某块示例板的数值和布局不能直接
+作为所有设计的固定模板。
 
 ## 安装
 
-### Codex 插件
-
-插件将统一 MCP 连接、电路设计技能和环境初始化流程一起提供。[插件指南](PLUGIN_PACKAGE.md)说明实际构建、从本地 marketplace 安装和环境诊断命令。安装后打开新对话并完成初始化。插件不包含 Altium 软件或许可证。不要同时启用手动连接和同一插件的连接。
-
-### 手动连接及其他客户端
-
-命令超时或引擎故障后的脚本所有权处理，参见[传输检查与手动恢复](review/TRANSPORT_FINDINGS_2026-10-08.md)。
-
-在 Windows 上安装 Git、Python 3.12 和 Altium。把可执行文件路径换成你自己的：
+在已准备好的开发环境中构建并安装：
 
 ```powershell
-git clone https://github.com/M-R-Abedini/Altium-MCP-Suite.git
-Set-Location Altium-MCP-Suite
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe setup.py --altium-exe "C:\Program Files\Altium\AD26\X2.EXE"
+.\.venv\Scripts\python.exe scripts/build_plugin.py --smoke --check-reproducible
+codex plugin marketplace add .\dist\marketplace --json
+$installedPlugin = codex plugin add mcp-electronics-ai@electronics-ai --json | ConvertFrom-Json
+$pluginRoot = $installedPlugin.installedPath
+py -3.12 "$pluginRoot\scripts\plugin_runtime.py" bootstrap --altium-exe "C:\Program Files\Altium\AD26\X2.EXE" --library-dir "D:\MyProject\Libraries"
+py -3.12 "$pluginRoot\scripts\plugin_runtime.py" doctor --probe-backends
 ```
 
-设置程序现在在 `mcp.local.json`（或 `codex.local.toml`）中只生成一个 `mcp-altium-suite` 连接。将其合并到客户端配置并重新连接。后端的私有配置保存在 `suite-backends.local.json`。在 Altium 打开项目后，用 `suite_catalog` 发现 `app_context`，再用 `suite_invoke` 调用确切名称 `eda__app_context`。
+替换为实际的 Altium 和库目录。`bootstrap` 新建独立的私有 Python 环境，
+以普通 wheel 安装 EDA。配置保存在缓存之外，默认路径为
+`~/.codex/plugins/data/mcp-electronics-ai`；marketplace 名称为 `electronics-ai`。
+安装或更新后重新连接 Codex。日常启动不会安装依赖。
 
-默认 `--toolset minimal` 只公布 `suite_catalog`、`suite_invoke` 和 `suite_status`。用 `suite_catalog(backend="eda", query="...", with_schema=true)` 获取参数，再用 `suite_invoke(name="eda__...", arguments={...})` 执行。命名空间为 `eda__`、`legacy__`、`libraries__`、`cloud__`。所有操作仍可用，参数在转发前验证。`--toolset full` 公布全部工具；`--separate-servers` 仅为迁移保留，仍生成统一连接。[统一连接及迁移](review/UNIFIED_SUITE_2026-10-27.md)。
+当前设置命令为 `bootstrap`、`doctor`、`configure-clients` 和 `serve`。
+详见[打包、安装与验证](PLUGIN_PACKAGE.md)和[Windows 安装器及其他客户端](INSTALLER.md)。
 
-```powershell
-.\.venv\Scripts\python.exe setup.py --altium-exe "C:\Program Files\Altium\AD26\X2.EXE" --library-dir "D:\MyProject\Libraries"
-```
+## 验证范围
 
-库操作使用独立 Python 编解码器，无需 Rust 编译器或外部库可执行文件。多个目录可重复 `--library-dir`。Altium 许可证与供应商账户不包含在内。
+安装成功或列出工具并不证明 Altium 原生连接可用，需另行进行只读连接检查。
+布局通过也不证明布线完成、DRC 无误或可以投产。批量编辑失败可能留下部分
+修改；磁盘文件检查点无法恢复所有未保存的缓冲区状态。结果不明确时先检查，
+不要直接重放操作。
 
-## 问题与贡献
-
-安装和使用问题请到 [Q&A](https://github.com/M-R-Abedini/Altium-MCP-Suite/discussions/categories/q-a) 提问。报告错误和功能建议请使用 [Issues 表单](https://github.com/M-R-Abedini/Altium-MCP-Suite/issues/new/choose)。[英文贡献指南](../CONTRIBUTING.md)介绍开发环境、测试、翻译和共同作者署名。
-
-## 许可
-
-协调代码、原生库编解码器与旧版兼容层采用 MIT；EDA 后端采用 Apache-2.0。参见[许可范围](../THIRD_PARTY_NOTICES.md)及[上游快照](../UPSTREAM.json)。
+参见 [PCB 布局技能](../skills/electronics-ai-pcb-layout/SKILL.md)、
+[铜几何 SI/PI](COPPER_SI_PI.md)、[编辑保护](PRODUCT_SAFETY.md)和
+[许可证说明](../THIRD_PARTY_NOTICES.md)。

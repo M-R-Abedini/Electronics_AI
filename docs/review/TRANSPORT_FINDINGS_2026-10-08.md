@@ -82,7 +82,7 @@ Write `{"id":"other-id","success":"false","data":"accepted"}` to the expected re
 
 ## Tracking recommendation
 
-Create five separate issues in **Altium-MCP-Suite**, with the titles, evidence and acceptance criteria above. Fix legacy ownership first, then batch-record validation and path consistency. Separate these confirmed bugs from ongoing native limitations such as single-threaded scripting, modal ECO and lack of copper verification.
+Create five separate issues in **Electronics_AI**, with the titles, evidence and acceptance criteria above. Fix legacy ownership first, then batch-record validation and path consistency. Separate these confirmed bugs from ongoing native limitations such as single-threaded scripting, modal ECO and lack of copper verification.
 
 GitHub issue search on 2026-10-08 returned no existing issues for this repository. No issues were published by this review; the subsequent repair is tracked in source and regression tests. Relevant upstream proposals can use these minimal reproducers after native validation.
 

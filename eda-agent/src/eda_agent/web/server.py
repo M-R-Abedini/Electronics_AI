@@ -409,89 +409,6 @@ $cards
 </html>"""
 
 
-_PAGE_HTML = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>eda-agent: pairwise vote</title>
-<style>
-  :root {
-    --bg: #f4f4f4;
-    --card: #fff;
-    --accent: #0066cc;
-    --good: #2c7a2c;
-    --tie: #777;
-    --bad: #b03030;
-    --txt: #222;
-  }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         margin: 0; padding: 20px; background: var(--bg); color: var(--txt); }
-  h1 { margin: 0 0 10px 0; font-size: 18px; }
-  .stats { color: #666; font-size: 13px; margin-bottom: 20px; }
-  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .card { background: var(--card); border: 1px solid #ddd; border-radius: 6px;
-          padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-  .card h2 { margin: 0 0 6px 0; font-size: 14px; color: #666; }
-  .card .score { font-size: 12px; color: #888; margin-bottom: 6px; font-family: monospace; }
-  .svgwrap { background: #fff; border: 1px solid #eee; }
-  .svgwrap svg { display: block; width: 100%; height: auto; max-height: 70vh; }
-  .actions { margin-top: 20px; display: flex; gap: 10px; justify-content: center; }
-  .actions form { display: inline; }
-  button { padding: 12px 28px; font-size: 15px; border: 0; border-radius: 6px;
-           cursor: pointer; color: white; font-weight: 600; }
-  .vote-a { background: var(--good); }
-  .vote-b { background: var(--good); }
-  .vote-tie { background: var(--tie); }
-  .vote-bad { background: var(--bad); }
-  button:hover { opacity: 0.9; }
-  .err { color: var(--bad); padding: 12px; background: #fee; border-radius: 6px; }
-  .footer { margin-top: 30px; color: #888; font-size: 12px; text-align: center; }
-  kbd { background: #eee; padding: 2px 6px; border-radius: 3px; font-family: monospace;
-        font-size: 12px; border-bottom: 2px solid #ccc; }
-</style>
-</head>
-<body>
-<h1>Which layout is better?</h1>
-<div class="stats">
-  Plan: $plan_name &middot; Votes so far: $n_votes &middot; Model status: $model_status
-  &middot; Keyboard: <kbd>A</kbd> / <kbd>B</kbd> / <kbd>T</kbd> (tie) / <kbd>X</kbd> (both bad)
-</div>
-<div class="pair">
-  <div class="card">
-    <h2>Variant A</h2>
-    <div class="score">score=$score_a &middot; crossings=$cross_a &middot; through_body=$tb_a &middot; overlaps=$ov_a &middot; length=$len_a</div>
-    <div class="svgwrap">$svg_a</div>
-  </div>
-  <div class="card">
-    <h2>Variant B</h2>
-    <div class="score">score=$score_b &middot; crossings=$cross_b &middot; through_body=$tb_b &middot; overlaps=$ov_b &middot; length=$len_b</div>
-    <div class="svgwrap">$svg_b</div>
-  </div>
-</div>
-<div class="actions">
-  <form method="post" action="/vote"><input type="hidden" name="pair_id" value="$pair_id"><input type="hidden" name="winner" value="a"><button class="vote-a">A is better</button></form>
-  <form method="post" action="/vote"><input type="hidden" name="pair_id" value="$pair_id"><input type="hidden" name="winner" value="b"><button class="vote-b">B is better</button></form>
-  <form method="post" action="/vote"><input type="hidden" name="pair_id" value="$pair_id"><input type="hidden" name="winner" value="tie"><button class="vote-tie">Tie</button></form>
-  <form method="post" action="/vote"><input type="hidden" name="pair_id" value="$pair_id"><input type="hidden" name="winner" value="bad"><button class="vote-bad">Both bad &mdash; skip</button></form>
-</div>
-<div class="footer">Log: $log_path</div>
-<script>
-  document.addEventListener('keydown', function(e) {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    var key = e.key.toLowerCase();
-    var sel = null;
-    if (key === 'a') sel = 'a';
-    else if (key === 'b') sel = 'b';
-    else if (key === 't') sel = 'tie';
-    else if (key === 'x') sel = 'bad';
-    if (sel) {
-      var form = document.querySelector('form input[value="' + sel + '"]').closest('form');
-      form.submit();
-    }
-  });
-</script>
-</body>
-</html>"""
 
 
 _ERROR_HTML = """<!doctype html>
@@ -782,48 +699,6 @@ def create_app(plan: DesignPlan, extractor: SymbolExtractor, plan_name: str = "d
         state["champion_canvas"] = None
         return redirect("/", code=303)
 
-    @app.route("/legacy_pair")
-    def legacy_index():
-        """Legacy A/B pairwise UI; kept for backwards compat."""
-        pair = present_pair(plan, extractor)
-        if not pair.get("ok"):
-            return _ERROR_HTML.format(error=pair.get("error", "unknown"))
-        # Inline the SVG content (so we don't need a separate route).
-        svg_a = Path(pair["svg_a_path"]).read_text(encoding="utf-8")
-        svg_b = Path(pair["svg_b_path"]).read_text(encoding="utf-8")
-        # Strip the outer <?xml...> if present so it embeds cleanly.
-        if svg_a.startswith("<?xml"):
-            svg_a = svg_a.split("?>", 1)[-1]
-        if svg_b.startswith("<?xml"):
-            svg_b = svg_b.split("?>", 1)[-1]
-        from string import Template
-        from eda_agent.design.quality import _load_quality_model
-        model = _load_quality_model()
-        if model:
-            model_status = (
-                f"learned from {model.get('n_pairs', '?')} votes "
-                f"(acc {model.get('training_metrics', {}).get('accuracy', 0)*100:.0f}%)"
-            )
-        else:
-            model_status = "heuristic (no votes trained yet)"
-        return Template(_PAGE_HTML).safe_substitute(
-            plan_name=plan_name,
-            n_votes=_count_records(_pref_log_path()),
-            model_status=model_status,
-            pair_id=pair["pair_id"],
-            score_a=f"{pair['score_a']:.1f}",
-            score_b=f"{pair['score_b']:.1f}",
-            cross_a=int(pair["features_a"]["wire_crossings"]),
-            tb_a=int(pair["features_a"]["wires_through_bodies"]),
-            ov_a=int(pair["features_a"]["body_overlaps"]),
-            len_a=int(pair["features_a"]["total_wire_length"]),
-            cross_b=int(pair["features_b"]["wire_crossings"]),
-            tb_b=int(pair["features_b"]["wires_through_bodies"]),
-            ov_b=int(pair["features_b"]["body_overlaps"]),
-            len_b=int(pair["features_b"]["total_wire_length"]),
-            svg_a=svg_a, svg_b=svg_b,
-            log_path=str(_pref_log_path()),
-        )
 
     @app.route("/vote", methods=["POST"])
     def vote():

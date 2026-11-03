@@ -1,4 +1,4 @@
-# Contributing to Altium MCP Suite
+# Contributing to Electronics AI
 
 Help is welcome with reproducible bug reports, Windows setup, documentation,
 translations, bridge reliability, and tests. Start with a small change that you
@@ -6,10 +6,10 @@ can verify on its own.
 
 ## Questions and bug reports
 
-Use [Q&A](https://github.com/M-R-Abedini/Altium-MCP-Suite/discussions/categories/q-a)
+Use [Q&A](https://github.com/M-R-Abedini/Electronics_AI/discussions/categories/q-a)
 for setup and usage questions. When an answer solves your question, mark it as
 the answer so other users can find it. Use
-[Issues](https://github.com/M-R-Abedini/Altium-MCP-Suite/issues/new/choose) for
+[Issues](https://github.com/M-R-Abedini/Electronics_AI/issues/new/choose) for
 reproducible defects and feature requests. Search existing topics first.
 
 For bridge problems, include the suite commit (`git rev-parse HEAD`), Windows,
@@ -108,7 +108,7 @@ compatibility evidence is recorded separately from offline checks.
 The plugin combines the unified MCP connection, circuit-design skill and setup
 workflow. Keep one maintained source for each skill in `skills/`; generated
 packages must not become an independent copy to edit. The normal runtime uses
-`suite_catalog`, `suite_invoke` and `suite_status`, with `eda__`, `legacy__`,
+`suite_catalog`, `suite_invoke` and `suite_status`, with `eda__`,
 `libraries__` and `cloud__` names discovered on demand.
 
 Build a clean distribution from the checkout:

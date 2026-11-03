@@ -126,9 +126,8 @@ def _build_decoupling_report(
     return _construct.decoupling_report(place_comps, pos, rot, sides, place_nets)
 
 
-# A net touching more than this many parts is treated as a power/ground rail
-# (routed as a plane/pour) and excluded from the SIGNAL ratsnest count, since
-# its crossings do not become signal vias.
+# Diagnostic fanout filtering only: this threshold does not classify a net's
+# electrical function or remove its local power/return obligations.
 _RATSNEST_SIGNAL_FANOUT = 4
 
 
@@ -140,9 +139,8 @@ def _build_ratsnest_report(
 ) -> dict[str, Any]:
     """Ratsnest crossing counts as a routability / via-pressure indicator.
 
-    ``signal_crossings`` excludes high-fanout rails (planes carry no signal
-    via) and is the figure that predicts routing difficulty; ``total_crossings``
-    is the conservative all-net count (power assumed routed as traces).
+    ``signal_crossings`` is the historical name for the fanout-filtered count.
+    Neither figure classifies power nets or proves a routing/via requirement.
     """
     from ..design import pcb_placement as _construct
 
@@ -805,7 +803,9 @@ def register_pcb_tools(mcp):
         return result
 
     @mcp.tool()
-    async def pcb_get_components() -> dict[str, Any]:
+    async def pcb_get_components(include_package_geometry: bool = False,
+                                 courtyard_layers: list[int] | None = None,
+                                 body_layers: list[int] | None = None) -> dict[str, Any]:
         """Get all components from the active PCB with position and properties.
 
         DATASHEET DISCIPLINE: The response carries a `_datasheet_guidance`
@@ -818,9 +818,24 @@ def register_pcb_tools(mcp):
             Dictionary with "components" array (each with designator, x, y,
             rotation, layer, footprint) and "count", plus
             `_datasheet_guidance` + `_datasheet_parts`.
+
+        Extended geometry mode requires an explicit target_board_path, returns
+        actual pad and component-owned mechanical primitives in mm and explicit
+        courtyard coverage. Caller-declared layer IDs are not inferred roles.
+        Raw primitives are not a qualified closed courtyard boundary.
         """
         bridge = get_bridge()
-        result = await bridge.send_command_async("pcb.get_components", {})
+        if include_package_geometry:
+            from ..bridge.targeting import TARGET
+            layers = [*(courtyard_layers or []), *(body_layers or [])]
+            if len(layers)>128 or any(isinstance(v,bool) or not isinstance(v,int) or not 0<=v<=2147483647 for v in layers):
+                raise ValueError('Bounded native layer IDs are required')
+            result = await bridge.send_command_async('pcb.get_package_geometry', {
+                'board_path': TARGET.get() or '',
+                'courtyard_layers': ','.join(map(str,courtyard_layers or [])),
+                'body_layers': ','.join(map(str,body_layers or []))})
+        else:
+            result = await bridge.send_command_async("pcb.get_components", {})
         return tag_response(result, components=result, context="pcb_get_components")
 
     @mcp.tool()
@@ -1354,7 +1369,6 @@ def register_pcb_tools(mcp):
         engine: str = "refine",
         restarts: int = 1,
         render_png: Optional[str] = None,
-        apply: bool = False,
     ) -> dict[str, Any]:
         """Connectivity-driven auto-placement: shorten wirelength, keep
         components legal. **Dry-run by default** -- returns a proposed
@@ -1387,12 +1401,11 @@ def register_pcb_tools(mcp):
         considered for top-side parts currently sitting at an orthogonal
         angle (others keep their rotation).
 
-        Workflow: call once with ``apply=False`` (default), read the
-        ``hpwl_improvement_pct`` and ``overlap_pairs_after``, eyeball the
-        ``moves``, then call again with ``apply=True`` to commit them in
-        one ``pcb.batch_move_components`` transaction. Components on
-        opposite layers may share an X/Y footprint (they cannot
-        physically collide).
+        This preview endpoint produces candidate geometry without native edits.
+        Use the suite's ``layout__`` capabilities to bind a reviewed exact move
+        list to evidence and apply it without rerunning the optimizer.
+        Opposite-side XY overlap alone does not establish physical collision;
+        holes, body protrusion, height and assembly access need separate checks.
 
         Seeding: by default the solver refines the board's CURRENT
         positions (small, sensible nudges). Pass ``reseed_grid=True`` for
@@ -1483,12 +1496,10 @@ def register_pcb_tools(mcp):
                 net stars) to that path and return it as ``preview_png``
                 (offline, matplotlib). Rendering never breaks the move data;
                 failures surface as ``preview_error``.
-            apply: When True, commit the moves to the board. Default
-                False (dry-run).
 
         Returns:
             Dict with:
-              - ``dry_run``: bool (True unless ``apply`` and moves exist)
+              - ``dry_run``: bool (always True)
               - ``engine``: the solver core used
               - ``component_count``, ``movable_count``, ``fixed_count``
               - ``net_count`` (nets used after filtering)
@@ -1529,7 +1540,7 @@ def register_pcb_tools(mcp):
                 rotation}}`` in mils/degrees; ``to.rotation`` is null
                 when the orientation was unchanged)
               - ``region`` used, ``notes`` from the solver, and
-                ``apply_result`` when ``apply=True``.
+                native apply requires the suite's evidence-bound layout protocol.
         """
         bridge = get_bridge()
 
@@ -2005,26 +2016,6 @@ def register_pcb_tools(mcp):
         }
         if auto_constraints:
             summary["auto_constraints"] = auto_constraints
-
-        if apply and moves:
-            # Pack as designator,x,y,rotation (empty rotation field leaves
-            # the orientation unchanged).
-            ops = []
-            for m in moves:
-                rot = m["to"]["rotation"]
-                rot_str = "" if rot is None else str(rot)
-                ops.append(
-                    f"{m['designator']},{m['to']['x']},{m['to']['y']},{rot_str}"
-                )
-            apply_result = await bridge.send_command_async(
-                "pcb.batch_move_components",
-                {"moves": "|".join(ops)},
-            )
-            summary["dry_run"] = False
-            summary["apply_result"] = apply_result
-        elif apply and not moves:
-            summary["apply_result"] = {"moves_applied": 0,
-                                       "reason": "no moves to apply"}
 
         if render_png:
             try:

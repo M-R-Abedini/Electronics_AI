@@ -123,7 +123,7 @@ class FreeroutingProvider:
             raise ValueError("Routing output must be a new file; existing sessions are not overwritten")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if work_dir is None:
-            with tempfile.TemporaryDirectory(prefix="altium-suite-router-") as temporary:
+            with tempfile.TemporaryDirectory(prefix="electronics-ai-router-") as temporary:
                 return self.route(source, output_path, max_passes=max_passes,
                                   timeout_seconds=timeout_seconds, work_dir=Path(temporary))
         command = self.command(source, output_path, passes=max_passes, work_dir=work_dir)
@@ -183,9 +183,9 @@ class AutorouteService:
         path = self.data_dir / "config.json"
         value = json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
         raw = value.get("freerouting", {})
-        executable = raw.get("executable") or os.environ.get("ALTIUM_SUITE_FREEROUTING_EXE")
-        jar = raw.get("jar") or os.environ.get("ALTIUM_SUITE_FREEROUTING_JAR")
-        java = raw.get("java") or os.environ.get("ALTIUM_SUITE_JAVA")
+        executable = raw.get("executable") or os.environ.get("ELECTRONICS_AI_FREEROUTING_EXE")
+        jar = raw.get("jar") or os.environ.get("ELECTRONICS_AI_FREEROUTING_JAR")
+        java = raw.get("java") or os.environ.get("ELECTRONICS_AI_JAVA")
         if not executable and not jar:
             raise ValueError("Configure a local Freerouting executable or JAR in private config.json; no router is downloaded on tool invocation")
         return FreeroutingProvider(Path(executable) if executable else None,

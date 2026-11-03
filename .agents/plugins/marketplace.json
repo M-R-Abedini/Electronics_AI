@@ -1,9 +1,9 @@
 {
-  "name": "altium-mcp-suite",
-  "interface": {"displayName": "Altium MCP Suite"},
+  "name": "electronics-ai",
+  "interface": {"displayName": "Electronics AI"},
   "plugins": [
     {
-      "name": "mcp-altium-suite",
+      "name": "mcp-electronics-ai",
       "source": {"source": "local", "path": "./"},
       "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
       "category": "Productivity"

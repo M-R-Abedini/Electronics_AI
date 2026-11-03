@@ -19,3 +19,7 @@ coffeenmusic/server/config.json
 *.egg-info/
 build/
 dist/
+
+/analysis/
+
+/tools/

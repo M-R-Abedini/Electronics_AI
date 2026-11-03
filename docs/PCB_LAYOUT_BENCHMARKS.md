@@ -16,7 +16,7 @@ the implementation report.
 Include a professional existing baseline and a small-ECO case. Baseline retention
 is a valid result; score improvement alone is not success. Exercise a candidate
 with lower HPWL/crossings but a worse critical path or escape, and require
-rejection or a clearly scoped, authorized trade-off instead of automatic choice.
+rejection. Under the P0 policy, no positive regression of an individual critical pair or decoupling VCC/GND leg is allowed; a caller cannot bypass this by supplying a positive tolerance.
 
 For reproducibility, publish fixture/input hashes, source/schema/policy versions,
 seeds, candidate/time/iteration budgets, transforms/units and selected plan IDs.
@@ -35,3 +35,66 @@ not a screenshot or quoted coordinate/wirelength figures. Compare engineering
 outcomes under equal routing conditions; pixel or coordinate similarity is not
 the target. If expert review or native Altium is unavailable, mark that acceptance
 unexecuted and state exactly which input or capability would close the gap.
+
+## Executed synthetic decision benchmark
+
+Run from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark_pcb_layout.py
+```
+
+The measured output is [PCB_LAYOUT_BENCHMARK_RESULTS.json](PCB_LAYOUT_BENCHMARK_RESULTS.json).
+It contains 15 primary cases: the five families above with computational seeds
+`211,307,401`, kept separate from development seeds `0,1,7,8`. Each case also
+exercises one proposal from the existing refiner (8 iterations). Extra dense
+package-unknown and scoped-ECO cases, plus an independent ECO on the mixed
+isolated board, are recorded. All inputs are synthetic; no production PCB is
+loaded or edited.
+
+The script executes the complete case set twice and compares fixture hashes,
+selection, metrics, evidence/plan digests and artifact byte sizes. Timings are
+excluded from equality. It also refuses a source change during execution.
+`--seeds`, `--iterations`, `--output` and optional `--artifacts-dir` are actual
+CLI parameters. Full comparison reports remain optional artifacts; the checked
+JSON records their measured sizes without duplicating every geometry witness.
+
+The checked run uses `placement-evidence-p0-v3` and the environment recorded in
+the JSON. Both passes completed in 3.42 seconds; all assertions passed. Source
+hashes include the P0 metric module as well as the geometry and solver modules. The table shows the median
+primary-decision time across the three seeds, the largest full primary report,
+and the maximum total check count across that decision's candidates.
+
+| Family | Required observed decision | Median ms | Max report bytes | Checks |
+|---|---|---:|---:|---:|
+| Precision analog | Reject lower ordinary-net HPWL when the transformed-pad AABB Manhattan gap regresses | 17.111 | 21,114 | 29 |
+| Switching power | Reject a compact placement with a synthetic courtyard collision | 3.886 | 19,323 | 23 |
+| Digital interface | Preserve baseline over an unnecessary no-op reapply; retain declared sides/origin | 4.011 | 17,692 | 21 |
+| Dense escape | Reject a shorter link that blocks the channel and a move across a cutout; accept the legal scoped ECO | 164.018 | 115,726 | 203 |
+| Mixed isolated | Block missing safety/unsupported creepage evidence in the dependent scope; permit the independent ECO | 6.802 | 29,179 | 47 |
+
+The dense fixture has 10 components and 200 real synthetic pad rectangles; its
+outline is concave and includes a cutout. Cold imports and machine load affect
+timings, and the first precision case includes startup work. These are measured
+smoke/regression timings, not a latency guarantee or a solver-superiority claim.
+
+The seeds hold out computational starts only: there is no expert-layout dataset,
+native placement/routing run, native DRC, field simulation, measured via
+optimization or routing-completion comparison here. Reported HPWL, transformed-pad AABB Manhattan gaps
+and channel cross-section capacity remain proxies or lower bounds. A
+professional-baseline comparison still requires the actual expert artifacts
+and matched constraints described above.
+
+
+## P0 completeness and stationary copper regressions
+
+The focused regression suite also covers omitted/free copper pads and incomplete
+snapshot sections. A fixed pad without a component owner must still obstruct
+manufacturing clearance and reserved channels; it cannot be silently dropped or
+turned into a movable fictional package. Incomplete pad, board-outline or cutout
+extraction must produce a required unknown. Conversely, explicitly complete
+placement geometry is not invalidated merely by an unrelated unknown stackup.
+These checks are in `tests/test_layout_review_regressions.py` and
+`eda-agent/tests/design/test_placement_evidence.py`; they are separate from the
+15-case timing table. The focused placement/P0/protocol run passed 92 tests.
+This is not a full-suite or live-native acceptance claim.

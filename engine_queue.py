@@ -153,9 +153,19 @@ def _startup_lock(root):
 def _endpoint(root):
     path = root / 'endpoint.json'
     try:
-        if path.stat().st_size > MAX_MESSAGE:
-            raise ValueError('Oversized endpoint')
-        record = json.loads(path.read_text(encoding='utf-8'))
+        # Windows file scanners may briefly deny an open immediately after
+        # atomic publication. Retry that read only; never treat denial as an
+        # absent endpoint or start a second service on uncertain evidence.
+        for attempt in range(5):
+            try:
+                if path.stat().st_size > MAX_MESSAGE:
+                    raise ValueError('Oversized endpoint')
+                record = json.loads(path.read_text(encoding='utf-8'))
+                break
+            except PermissionError:
+                if sys.platform != 'win32' or attempt == 4:
+                    raise
+                time.sleep(.02)
         if (record.get('protocol') != PROTOCOL or type(record.get('port')) is not int
                 or not 0 < record['port'] < 65536 or type(record.get('pid')) is not int
                 or not isinstance(record.get('started'), (int, float))

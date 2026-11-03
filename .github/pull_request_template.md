@@ -10,4 +10,4 @@ include the version and observed outcome; distinguish these from mock or offline
 ## Notes for review
 
 Mention remaining limitations, affected translations, or changes to bundled sources
-when relevant. See [CONTRIBUTING.md](https://github.com/M-R-Abedini/Altium-MCP-Suite/blob/main/CONTRIBUTING.md) for setup and test commands.
+when relevant. See [CONTRIBUTING.md](https://github.com/M-R-Abedini/Electronics_AI/blob/main/CONTRIBUTING.md) for setup and test commands.

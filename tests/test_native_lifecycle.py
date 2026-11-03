@@ -11,16 +11,16 @@ from test_handover_confirmation import native
 
 def test_completion_keeps_owner_until_ui_thread_returns(ownership, monkeypatch):
     done = ownership / 'done.json'
-    coord.begin_legacy('id', ownership / 'request.json', done)
+    coord.begin_operation('id', ownership / 'request.json', done)
     done.write_text('{"request_id":"id"}')
     barrier = MagicMock(side_effect=TimeoutError('still returning'))
     monkeypatch.setattr(coord, '_confirm_editor_return', barrier)
     with pytest.raises(TimeoutError):
         coord._guard_editor()
-    assert coord._legacy_marker().exists() and done.exists()
+    assert coord._operation_marker().exists() and done.exists()
     barrier.side_effect = None
     coord._guard_editor()
-    assert not coord._legacy_marker().exists()
+    assert not coord._operation_marker().exists()
 
 
 @pytest.mark.parametrize('after', [dict(pid=78, hwnd=10, blocked=False),
@@ -77,7 +77,7 @@ def test_close_rejects_lossy_path_before_stopping_or_publishing(close, monkeypat
     stop.assert_not_called()
     launch.assert_not_called()
     assert not (close / 'project-close-request.json').exists()
-    assert not coord._legacy_marker().exists()
+    assert not coord._operation_marker().exists()
 
 
 def test_uncompleted_close_is_withdrawn_without_replay(close, monkeypatch):
@@ -86,7 +86,7 @@ def test_uncompleted_close_is_withdrawn_without_replay(close, monkeypatch):
     with pytest.raises(TimeoutError, match='ownership retained'):
         coord.close_project_once({'project_path': 'scratch.PrjPcb'}, 0)
     launch.assert_called_once()
-    assert coord._legacy_marker().exists()
+    assert coord._operation_marker().exists()
     assert not (close / 'project-close-request.json').exists()
     with pytest.raises(RuntimeError, match='not confirmed completion'):
         coord._guard_editor()
@@ -102,7 +102,7 @@ def test_completed_close_requires_targeted_native_readback(close, monkeypatch):
         (close / ('close-completed_' + rid + '.json')).write_text(json.dumps({'request_id': rid}))
     monkeypatch.setattr(coord.subprocess, 'Popen', launch)
     assert coord.close_project_once({'project_path': 'scratch.PrjPcb', 'save': False}, 1)['closed']
-    assert not coord._legacy_marker().exists()
+    assert not coord._operation_marker().exists()
     assert not list(close.glob('close-*'))
 
 
@@ -111,8 +111,6 @@ def test_completion_tails_never_pump_messages():
     files = [
         ('eda-agent/scripts/altium/Dispatcher.pas', "WriteFileContent(WorkspaceDir + 'bridge-stopped.json'"),
         ('eda-agent/scripts/altium/Dispatcher.pas', "WriteFileContent(WorkspaceDir + 'close-completed_'"),
-        ('coffeenmusic/server/AltiumScript/Altium_API.pas', "RequestData.SaveToFile(ROOT_DIR + 'completed_'"),
-        ('coffeenmusic/server/SandboxScript/Sandbox.pas', "OutLines.SaveToFile('__ALTIUM_MCP_SANDBOX_COMPLETION__')"),
     ]
     for name, publication in files:
         tail = (root / name).read_text().split(publication, 1)[1]

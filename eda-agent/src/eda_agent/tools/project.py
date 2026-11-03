@@ -894,8 +894,6 @@ def register_project_tools(mcp):
     async def proj_export_image(
         output_path: str,
         format: str = "pdf",
-        width: int = 1920,
-        height: int = 1080,
     ) -> dict[str, Any]:
         """Export the active schematic / PCB document, silent (no dialog).
 
@@ -923,12 +921,10 @@ def register_project_tools(mcp):
             format: Output format. Only ``"pdf"`` is silent today
                 (default). ``"png"``, ``"jpg"``, ``"bmp"`` return an
                 explicit ``IMAGE_FORMAT_UNSUPPORTED`` error.
-            width: Kept for API compatibility. Unused by the PDF path.
-            height: Kept for API compatibility. Unused by the PDF path.
 
         Returns:
             Dictionary confirming the export with the resolved path,
-            format, width, height, and the scoped schematic. Sets
+            format and the scoped schematic. Sets
             ``file_exists`` based on a Python-side existence check.
         """
         import os
@@ -939,8 +935,6 @@ def register_project_tools(mcp):
             {
                 "output_path": output_path,
                 "format": format,
-                "width": str(width),
-                "height": str(height),
             },
             timeout=120.0,
         )

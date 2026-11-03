@@ -41,7 +41,7 @@ def _schema(properties, required=()):
 
 def list_tools():
     string = {"type": "string"}
-    cache = {"type": "string", "description": "Absolute staging/cache directory; defaults to configured ALTIUM_SUITE_CLOUD_CACHE."}
+    cache = {"type": "string", "description": "Absolute staging/cache directory; defaults to configured ELECTRONICS_AI_CLOUD_CACHE."}
     tools = [
         ("cloud_library_providers", "Show supported cloud library adapters, official access links and integration limitations.", _schema({}), True),
         ("cloud_library_search", "Search ChilaBoard's public component catalog; cache a revision-pinned index. Results are unverified library candidates, not validated components.",
@@ -100,9 +100,9 @@ def _text(value, name, maximum=4096, empty=False):
 
 
 def _root(value):
-    value = value or os.environ.get("ALTIUM_SUITE_CLOUD_CACHE")
+    value = value or os.environ.get("ELECTRONICS_AI_CLOUD_CACHE")
     if not value:
-        raise ValueError("Set ALTIUM_SUITE_CLOUD_CACHE or pass an explicit absolute cache_dir")
+        raise ValueError("Set ELECTRONICS_AI_CLOUD_CACHE or pass an explicit absolute cache_dir")
     path = Path(_text(value, "cache_dir"))
     if not path.is_absolute():
         raise ValueError("cache_dir must be absolute")
@@ -156,7 +156,7 @@ def _fetch(url, limit, deadline):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("Cloud library operation deadline exceeded")
-    request = urllib.request.Request(url, headers={"User-Agent": "mcp-altium-suite/cloud-libraries", "Accept": "application/vnd.github+json"})
+    request = urllib.request.Request(url, headers={"User-Agent": "mcp-electronics-ai/cloud-libraries", "Accept": "application/vnd.github+json"})
     try:
         with urllib.request.build_opener(_NoRedirect).open(request, timeout=min(15, remaining)) as response:
             declared = response.headers.get("Content-Length")

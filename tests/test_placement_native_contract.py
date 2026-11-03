@@ -143,3 +143,12 @@ def test_snapshot_proof_includes_supported_rules_locks_and_physical_metadata():
     proof = snapshot.split("Item := '{\"schema\":1", 1)[1].split('If Length(Item)', 1)[0]
     assert 'native_rules' in proof and 'native_rule_values' in proof
     assert 'document_modified' in proof and 'elapsed_ms' not in proof
+
+
+def test_native_proof_records_separate_drc_participation_with_unknown_fallback():
+    source = (ROOT / 'eda-agent/scripts/altium/PCB.pas').read_text(encoding='utf-8')
+    builder = source.split('Function PCB_DesignRulesData(', 1)[1].split('Function PCB_GetDesignRules(', 1)[0]
+    assert 'BoolToJsonStr(Rule.Enabled)' in builder
+    assert 'BoolToJsonStr(Rule.DRCEnabled)' in builder
+    assert "DrcEnabledJson := 'null'" in builder
+    assert "'\"drc_enabled\":' + DrcEnabledJson" in builder

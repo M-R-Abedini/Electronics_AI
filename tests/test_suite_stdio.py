@@ -254,7 +254,7 @@ def test_protocol_initialize_discover_forward_and_prompt(tmp_path, toolset):
         async with stdio_client(params) as streams:
             async with ClientSession(*streams, read_timeout_seconds=timedelta(seconds=20)) as client:
                 initialized = await client.initialize()
-                assert initialized.serverInfo.name == "mcp altium suite"
+                assert initialized.serverInfo.name == "Electronics AI"
                 listed = await client.list_tools()
                 names = {tool.name for tool in listed.tools}
                 assert {"suite_catalog", "suite_invoke", "suite_status"} <= names

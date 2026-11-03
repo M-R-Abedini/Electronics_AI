@@ -9,6 +9,7 @@ import copy
 import contextvars
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import time
@@ -16,7 +17,28 @@ import time
 from suite_si_pi import SiPiService, _json, _path
 from suite_checkpoints import _atomic, digest
 
-POLICY_VERSION = 'placement-evidence-v1'
+POLICY_VERSION = 'placement-evidence-p0-v3'
+
+
+def bounded_checks(value):
+    """Keep full immutable evidence on disk and bound routine MCP responses.
+
+    Prioritize failures/unknowns over passing geometry rows. Explicit
+    get_evidence calls retain the complete artifact for deliberate inspection.
+    """
+    if isinstance(value, list):
+        return [bounded_checks(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {key: bounded_checks(item) for key, item in value.items() if key != 'checks'}
+    if isinstance(value.get('checks'), list):
+        checks = value['checks']
+        important = [c for c in checks if c.get('status') != 'pass']
+        selected = (important + [c for c in checks if c.get('status') == 'pass'])[:64]
+        result.update(checks=selected, checks_total=len(checks), checks_truncated=len(checks) > len(selected))
+    elif 'checks' in value:
+        result['checks'] = value['checks']
+    return result
 
 
 def capture_digest(snapshot):
@@ -25,11 +47,78 @@ def capture_digest(snapshot):
         'native_snapshot_token', 'native_snapshot_json', 'capture_metrics', 'provenance'}})
 
 
+def unexpected_post_changes(before, after, context, moves):
+    """Compare the whole captured state, permitting only planned rigid poses.
+
+    Derived AABBs of moved packages are requalified by the geometry evaluator;
+    they cannot be predicted from an old AABB after an arbitrary rotation.
+    Untouched copper, rule participation, locks and object identities remain
+    dependencies. Unsupported component-owned copper changes fail closed.
+    """
+    from eda_agent.design.placement_evidence import transformed_pads, transform_point, inverse_transform_point
+    expected, observed = copy.deepcopy(before), copy.deepcopy(after)
+    old = {c['id']: c for c in context['components']}
+    poses = {c['id']: {k: c[k] for k in ('x_mm', 'y_mm', 'rotation_deg', 'side')} for c in context['components']}
+    changed = {m['component_id']: m for m in moves}
+    for m in moves:
+        poses[m['component_id']].update({k: m[k] for k in ('x_mm', 'y_mm', 'rotation_deg', 'side')})
+    projected = transformed_pads(context, poses)
+    errors = []
+    actual_components = {c['id']: c for c in observed.get('components', [])}
+    def normalise_position(actual, target, label):
+        for key in ('x_mm', 'y_mm', 'rotation_deg'):
+            if key not in target:
+                continue
+            value = actual.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                errors.append(label); continue
+            difference = (abs((value-target[key]+180) % 360-180) if key == 'rotation_deg'
+                          else abs(value-target[key]))
+            if difference > (.000001 if key == 'rotation_deg' else .0000031):
+                errors.append(label)
+            actual[key] = target[key]
+    for comp in expected.get('components', []):
+        cid = comp['id']
+        if cid not in changed:
+            continue
+        comp.update({k: changed[cid][k] for k in ('x_mm', 'y_mm', 'rotation_deg', 'side')})
+        actual = actual_components.get(cid)
+        if actual is None:
+            errors.append('component:'+cid); continue
+        normalise_position(actual, comp, 'component:'+cid)
+        comp.pop('bbox_mm', None); actual.pop('bbox_mm', None)
+    actual_pads = {str(p['id']): p for p in observed.get('pads', [])}
+    moved_pad_owners = {}
+    for pad in expected.get('pads', []):
+        pid = str(pad['id'])
+        if pid not in projected or projected[pid].get('component_id') not in changed:
+            continue
+        moved_pad_owners[pid] = projected[pid]['component_id']
+        pad.update({k: projected[pid][k] for k in ('x_mm', 'y_mm', 'rotation_deg')})
+        if pid not in actual_pads:
+            errors.append('pad:'+pid); continue
+        normalise_position(actual_pads[pid], pad, 'pad:'+pid)
+    actual_holes = {str(p['id']): p for p in observed.get('holes', [])}
+    for hole in expected.get('holes', []):
+        owner = moved_pad_owners.get(str(hole.get('owner_id')))
+        if owner is None:
+            continue
+        point = transform_point(inverse_transform_point((hole['x_mm'], hole['y_mm']), old[owner]), poses[owner])
+        hole.update(x_mm=point[0], y_mm=point[1])
+        if str(hole['id']) in actual_holes:
+            normalise_position(actual_holes[str(hole['id'])], hole, 'hole:'+str(hole['id']))
+    ignored = {'native_snapshot_token', 'native_snapshot_json', 'capture_metrics', 'provenance', 'document_modified'}
+    for key in set(expected) | set(observed):
+        if key not in ignored and digest(expected.get(key)) != digest(observed.get(key)):
+            errors.append('dependency:'+key)
+    return sorted(set(errors))
+
+
 def context_from_snapshot(snapshot, snapshot_id, models, fabrication, assembly):
     """Use explicit pad ownership. A native AABB never becomes a courtyard."""
     components, references = [], {}
     allowed_model = {'courtyard_local', 'courtyard_source', 'body_local', 'height_mm',
-                     'through_hole', 'allowed_rotations', 'allowed_sides', 'overhang'}
+                     'through_body', 'allowed_rotations_deg', 'allowed_sides', 'overhang'}
     for row in snapshot['components']:
         identity, ref = str(row['id']), row.get('designator', '')
         if not ref or ref in references:
@@ -40,28 +129,56 @@ def context_from_snapshot(snapshot, snapshot_id, models, fabrication, assembly):
             raise ValueError('Package geometry cannot override captured identity, pose or lock state')
         layer = row.get('layer', '')
         side = row.get('side') or ('bottom' if 'bottom' in layer.lower() else
-                                   'top' if 'top' in layer.lower() else 'unknown')
+                                   'top' if 'top' in layer.lower() else None)
+        if side not in {'top', 'bottom'}:
+            side = None
         components.append(dict(model, id=identity, reference=ref, x_mm=row['x_mm'], y_mm=row['y_mm'],
-            rotation_deg=row.get('rotation_deg', 0), side=side, locked=row.get('locked'),
+            rotation_deg=row.get('rotation_deg', 0), side=side, locked=row.get('locked') is True,
             fixed=row.get('locked') is not False))
     unknown_models = set(models) - set(references) - set(references.values())
     if unknown_models:
         raise ValueError('Geometry models reference uncaptured components: ' + ', '.join(sorted(unknown_models)))
-    pads = []
+    pads, stationary_pads = [], []
+    unknown_ownership = False
     for row in snapshot['pads']:
         owner = references.get(row.get('component'))
         if owner is None:
-            continue  # Free copper pads remain obstacles, not fictional package pins.
-        pads.append(dict(copy.deepcopy(row), component_id=owner))
+            # Absolute, fixed board copper remains in clearance/channel checks.
+            # A nonblank unresolvable owner also makes pad extraction unknown:
+            # that pad might move with a component whose geometry is omitted.
+            unknown_ownership |= bool(row.get('component'))
+            stationary_pads.append(copy.deepcopy(row))
+        else:
+            pads.append(dict(copy.deepcopy(row), component_id=owner))
+    source_coverage = snapshot.get('coverage', {})
+    def complete(section):
+        value = source_coverage.get(section)
+        if value is None:
+            return snapshot.get('complete') is True
+        if isinstance(value, dict):
+            return (value.get('complete') is not False
+                    and value.get('status') not in {'partial', 'unknown', 'unsupported', 'unavailable'}
+                    and (value.get('complete') is True or value.get('status') == 'complete'))
+        return value is True or value == 'complete'
+    # The outer ring does not prove cutout extraction. Native cutouts are
+    # regions; an explicit cutouts section may qualify them independently.
+    cutouts_complete = complete('cutouts') if 'cutouts' in source_coverage else complete('regions')
+    cutouts_complete &= all(isinstance(row, dict) and bool(row.get('outline'))
+                            and row.get('geometry_complete') is not False
+                            for row in snapshot.get('cutouts', []))
+    outline_complete = bool(snapshot.get('board_outline')) and complete('board_outline') and cutouts_complete
+    pads_complete = complete('pads') and not unknown_ownership
     cutouts = [copy.deepcopy(row.get('outline', [])) for row in snapshot.get('cutouts', [])
                if isinstance(row, dict) and row.get('outline')]
     result = dict(schema=1, units='mm', board_path=snapshot['board_path'],
         board_identity=snapshot.get('board_identity'), snapshot_id=snapshot_id,
         source=snapshot['source'], document_modified=snapshot.get('document_modified'),
-        outline=copy.deepcopy(snapshot.get('board_outline', [])), cutouts=cutouts,
-        layers=copy.deepcopy(snapshot['layers']), components=components, pads=pads,
+        unsaved_detection_complete=snapshot.get('unsaved_detection_complete') is True,
+        outline=copy.deepcopy(snapshot.get('board_outline') or None), cutouts=cutouts,
+        layers=copy.deepcopy(snapshot['layers']), components=components, pads=pads, stationary_pads=stationary_pads,
         fabrication_profile=copy.deepcopy(fabrication), assembly_profile=copy.deepcopy(assembly),
-        coverage={'outline': 'complete' if snapshot.get('board_outline') else 'unknown',
+        coverage={'outline': 'complete' if outline_complete else 'unknown',
+                  'pads': 'complete' if pads_complete else 'unknown',
                   'routing_obstacles': 'complete' if snapshot.get('complete') else 'partial'},
         native_rules=copy.deepcopy(snapshot.get('native_rules')),
         copper_snapshot=copy.deepcopy(snapshot),
@@ -80,8 +197,11 @@ def list_tools():
             properties=properties, required=list(required), additionalProperties=False))
     return [
         tool('get_contracts', 'Discover the actual placement context, intent and constraint contracts; no CAD call.', {}),
+        tool('get_workflow', 'Read the existing design state machine for this placement scope; caller claims never pass its verified gates.',
+             dict(context_id=string), ['context_id']),
         tool('capture_context', 'Capture an explicit loaded PCB, or register caller-provided offline geometry. Does not save or edit Altium.',
-             dict(board_path=string, board_context=obj, package_geometry=obj, fabrication_profile=obj, assembly_profile=obj)),
+             dict(board_path=string, board_context=obj, package_geometry=obj, fabrication_profile=obj, assembly_profile=obj,
+                  scope_component_ids={'type': 'array', 'items': string, 'uniqueItems': True}, input_gate=obj)),
         tool('plan_placement', 'Reuse seeded PCB solvers, compare baseline and alternatives with hard constraints outside score. No CAD edits.',
              dict(context_id=string, design_intent=obj, constraints={'type': 'array', 'items': obj}, options=obj), ['context_id']),
         tool('validate_plan', 'Re-evaluate the exact stored moves against fresh live geometry and recovery policy; caller stage results cannot pass this gate.',
@@ -100,7 +220,7 @@ class LayoutService(SiPiService):
                  snapshot_reader=None, checkpoint=None):
         super().__init__(data_dir, native_dispatch=native_dispatch, native_sequence=native_sequence,
                          snapshot_reader=snapshot_reader)
-        self.data_dir = Path(data_dir or Path.home() / '.altium-suite').resolve() / 'placement'
+        self.data_dir = Path(data_dir or Path.home() / '.electronics-ai').resolve() / 'placement'
         self.checkpoint = checkpoint
         self._lock = asyncio.Lock()
         self._native_ticket = contextvars.ContextVar('placement_native_ticket', default=None)
@@ -119,26 +239,42 @@ class LayoutService(SiPiService):
         if name not in {t['name'] for t in list_tools()} or method is None:
             raise ValueError('Unknown placement capability')
         async with self._lock:
-            return await method(**arguments)
+            return bounded_checks(await method(**arguments))
 
     async def capture_context(self, board_path=None, board_context=None, package_geometry=None,
-                              fabrication_profile=None, assembly_profile=None):
+                              fabrication_profile=None, assembly_profile=None, scope_component_ids=None, input_gate=None):
         from eda_agent.design.placement_evidence import validate_board_context
+        if input_gate is not None:
+            from eda_agent.design.project_gate import evaluate_project_gate
+            readiness = evaluate_project_gate(input_gate['project_dir'], input_gate['safety_requirements'])
+            if not readiness['passed'] or not board_path:
+                return dict(context_id=None, input_gate=readiness, native_edits=False,
+                    suitable_as_native_precondition=False, status=readiness['status'] if not readiness['passed']
+                    else 'ready_requires_explicit_board_path')
+            if _path(board_path) != _path(readiness['target_board_path']):
+                raise ValueError('ERR_TARGET_DOCUMENT_MISMATCH: input gate and capture target differ')
         if board_context is not None:
             context = copy.deepcopy(board_context)
             if board_path and _path(board_path) != _path(context['board_path']):
                 raise ValueError('Offline context targets another board')
             context['source'] = 'caller_provided'
-            validate_board_context(context)
+            if scope_component_ids is not None:
+                context['scope_component_ids'] = scope_component_ids
+            context = validate_board_context(context)
             record = dict(context=context, trusted_live=False, snapshot=None, captured_at=time.time())
         else:
             snapshot_id, raw = await self._snapshot(board_path=board_path, source='live')
             context = context_from_snapshot(raw['snapshot'], snapshot_id, package_geometry or {},
                                             fabrication_profile or {}, assembly_profile or {})
-            validate_board_context(context)
+            if scope_component_ids is not None:
+                context['scope_component_ids'] = scope_component_ids
+            context = validate_board_context(context)
             record = dict(context=context, trusted_live=raw['trusted_live'], snapshot=raw['snapshot'],
                 capture_digest=capture_digest(raw['snapshot']), models=package_geometry or {},
                 fabrication=fabrication_profile or {}, assembly=assembly_profile or {}, captured_at=time.time())
+        if input_gate is not None:
+            record['input_gate_request'] = copy.deepcopy(input_gate)
+            record['input_gate_digest'] = readiness['evidence_id']
         context_id = self._save('contexts', record)
         return dict(context_id=context_id, context=context, suitable_as_native_precondition=record['trusted_live'],
                     missing_package_geometry=[c['id'] for c in context['components'] if not c.get('courtyard_local')])
@@ -150,6 +286,38 @@ class LayoutService(SiPiService):
 
     def _scope(self, context_id, value):
         _atomic(self._scope_path(context_id), _json(value))
+
+    def _journal(self, context_id):
+        from eda_agent.design.session import SessionStore
+        store = SessionStore(self.data_dir / 'sessions')
+        journal = store.get(context_id)
+        if not journal.path.exists():
+            journal = store.start('Evidence-bound placement review of an existing board',
+                                  context_id, workflow='placement_review')
+        return journal
+
+    async def get_workflow(self, context_id):
+        from dataclasses import asdict
+        from eda_agent.design.state_machine import next_action
+        record = self._load('contexts', context_id)
+        freshness = 'offline_not_qualified'
+        if record['trusted_live']:
+            expected = record['capture_digest']
+            scope = next((s for s in self.active_scopes() if s['context_id']==context_id), {})
+            if scope.get('receipt_id'):
+                expected = self._load('receipts', scope['receipt_id']).get('post_capture_digest')
+            try:
+                _, current = await self._snapshot(board_path=record['context']['board_path'], source='live')
+                freshness = 'fresh' if expected and capture_digest(current['snapshot'])==expected else 'stale'
+            except Exception:
+                freshness = 'unknown'
+            if freshness != 'fresh':
+                for stage in ('placement', 'verification'):
+                    self._journal(context_id).verified_gate(stage, context_id, context_id, POLICY_VERSION,
+                        passed=False, checks=['fresh_live_evidence_required'])
+        state = self._journal(context_id).state()
+        return dict(state=asdict(state), next_action=asdict(next_action(state)), freshness=freshness,
+                    qualification_scope='placement_only; routing, DRC and fabrication release are separate')
 
     def active_scopes(self):
         values = []
@@ -173,8 +341,8 @@ class LayoutService(SiPiService):
         from eda_agent.design.placement_evidence import compare_placement_candidates, generate_placement_candidates
         record = self._load('contexts', context_id)
         context, intent, rules, options = record['context'], design_intent or {}, constraints or [], options or {}
-        allowed = {'engine', 'seed', 'candidate_budget', 'iterations', 'grid_mm', 'managed_scope',
-                   'selection_policy', 'recovery_mode', 'candidates'}
+        allowed = {'mode', 'seed', 'candidate_count', 'iterations', 'search_grid_mm', 'managed_scope',
+                   'restart_radius_mm', 'proposal_clearance_mm', 'selection_policy', 'recovery_mode', 'candidates'}
         if set(options) - allowed:
             raise ValueError('Unknown placement search options: ' + ', '.join(sorted(set(options) - allowed)))
         recovery = options.get('recovery_mode', 'require_clean_document')
@@ -186,9 +354,19 @@ class LayoutService(SiPiService):
             candidates = await asyncio.to_thread(generate_placement_candidates, context, intent, options)
         comparison = await asyncio.to_thread(compare_placement_candidates, context, intent, rules, candidates,
                                              options.get('selection_policy'))
+        comparison['plan'].update(target_board_path=context['board_path'],
+            board_revision_digest=record.get('capture_digest') or comparison['input_digest'],
+            exact_moves=copy.deepcopy(comparison['plan']['moves']),
+            diff_vs_baseline=[{'component_id':m['component_id'],
+                'before':next(c for c in context['components'] if c['id']==m['component_id']),
+                'after':m} for m in comparison['plan']['moves']])
+        comparison['plan']['plan_digest'] = digest({k:v for k,v in comparison['plan'].items() if k!='plan_digest'})
         stored = dict(context_id=context_id, intent=intent, constraints=rules, options=options,
                       comparison=comparison, policy_version=POLICY_VERSION)
         plan_id = self._save('plans', stored)
+        journal = self._journal(context_id)
+        journal.plan_revision(journal.state().plan_revision + 1, plan_hash=plan_id)
+        journal.artifact(plan_id, kind='placement_plan')
         if record['trusted_live'] and options.get('managed_scope', True):
             self._scope(context_id, dict(active=True, context_id=context_id, plan_id=plan_id,
                 board_path=context['board_path'], phase='preview', gate_passed=False))
@@ -198,6 +376,11 @@ class LayoutService(SiPiService):
     async def _fresh_context(self, record):
         if not record['trusted_live']:
             raise ValueError('Caller-provided/offline geometry cannot authorize a native edit')
+        if record.get('input_gate_request'):
+            from eda_agent.design.project_gate import evaluate_project_gate
+            current = evaluate_project_gate(**record['input_gate_request'])
+            if not current['passed'] or current['evidence_id'] != record['input_gate_digest']:
+                raise ValueError('STALE_PLACEMENT_INPUT: project artifact or declared input gate changed')
         _, raw = await self._snapshot(board_path=record['context']['board_path'], source='live')
         if capture_digest(raw['snapshot']) != record['capture_digest']:
             raise ValueError('STALE_PLACEMENT: board, rules, locks or copper changed; capture and preview again')
@@ -206,17 +389,30 @@ class LayoutService(SiPiService):
     async def validate_plan(self, plan_id):
         from eda_agent.design.placement_evidence import evaluate_placement
         plan = self._load('plans', plan_id)
+        if plan.get('policy_version') != POLICY_VERSION:
+            raise ValueError('STALE_PLACEMENT_POLICY: generate a new plan under the current server policy')
         context_record = self._load('contexts', plan['context_id'])
         selected = plan['comparison']['plan']
         snapshot = await self._fresh_context(context_record) if context_record['trusted_live'] else None
         report = await asyncio.to_thread(evaluate_placement, context_record['context'], plan['intent'],
             plan['constraints'], selected['moves'], candidate_id=selected['candidate_id'])
         blockers = list(report['blockers'])
+        if not selected.get('apply_eligible'):
+            blockers.append('candidate_selection_blocked')
         if not context_record['trusted_live']:
             blockers.append('trusted_live_capture')
-        if plan['options'].get('recovery_mode', 'require_clean_document') == 'require_clean_document':
-            if context_record['context'].get('document_modified') is not False:
+        if selected['moves'] and plan['options'].get('recovery_mode', 'require_clean_document') == 'require_clean_document':
+            if (context_record['context'].get('document_modified') is not False or
+                    not context_record['context'].get('unsaved_detection_complete')):
                 blockers.append('unsaved_recovery_coverage')
+        if selected['moves'] and context_record['trusted_live']:
+            from suite_placement_adapter import prepare_layout_native_batch
+            try:
+                prepare_layout_native_batch(context_record['context']['board_path'],
+                    (snapshot or {}).get('board_identity'), (snapshot or {}).get('native_snapshot_token'),
+                    selected['moves'], 'gate_transport_validation')
+            except ValueError:
+                blockers.append('native_transport_unsupported')
         if any(m.get('side') != next(c['side'] for c in context_record['context']['components']
                    if c['id'] == m['component_id']) for m in selected['moves']):
             blockers.append('native_side_change_unsupported')
@@ -228,6 +424,9 @@ class LayoutService(SiPiService):
             dependencies=['geometry', 'rules', 'intent', 'constraints', 'locks', 'policy', 'package_geometry'],
             measured_at=time.time())
         validation_id = self._save('validations', gate)
+        self._journal(plan['context_id']).verified_gate('placement', validation_id,
+            context_record['context'].get('snapshot_id') or plan['context_id'], POLICY_VERSION,
+            passed=gate['passed'], checks=gate['required_checks'])
         return dict(validation_id=validation_id, **gate)
 
     async def apply_plan(self, plan_id, validation_id, operation_id):
@@ -244,6 +443,8 @@ class LayoutService(SiPiService):
                             current_freshness_verified=False)
             raise ValueError('OPERATION_OUTCOME_UNKNOWN: inspect native receipt and board; no automatic retry')
         plan = self._load('plans', plan_id)
+        if plan.get('policy_version') != POLICY_VERSION:
+            raise ValueError('STALE_PLACEMENT_POLICY: old policy cannot authorize a native edit')
         gate = self._load('validations', validation_id)
         if gate['plan_id'] != plan_id or gate['policy_version'] != POLICY_VERSION or not gate['passed']:
             raise ValueError('A passing server-generated validation for this exact plan is required')
@@ -254,6 +455,9 @@ class LayoutService(SiPiService):
             if not snapshot.get('native_snapshot_token'):
                 raise ValueError('Native placement freshness proof is unavailable')
             if not selected['moves']:
+                self._journal(plan['context_id']).verified_gate('verification', validation_id,
+                    record['context'].get('snapshot_id') or plan['context_id'], POLICY_VERSION,
+                    passed=True, checks=gate['required_checks'])
                 return dict(applied=False, reason='baseline retained; no placement mutation', gate_passed=True)
             if self.checkpoint is None:
                 raise ValueError('Placement requires the configured disk checkpoint service')
@@ -263,7 +467,18 @@ class LayoutService(SiPiService):
             recovery = dict(checkpoint_id=checkpoint['checkpoint_id'], snapshot_kind='disk_only',
                 unsaved_memory_captured=False, original_poses=record['context']['components'],
                 automatic_rollback=False)
-            _atomic(operation, _json(dict(binding=binding, status='dispatching', recovery=recovery)))
+            # Exclusive first publication across suite processes. A concurrent
+            # caller cannot overwrite an earlier operation or its receipt.
+            operation.parent.mkdir(parents=True, exist_ok=True)
+            claim = operation.with_name(operation.name + '.' + os.urandom(12).hex() + '.tmp')
+            try:
+                _atomic(claim, _json(dict(binding=binding, status='dispatching', recovery=recovery)))
+                try:
+                    os.link(claim, operation)
+                except FileExistsError as exc:
+                    raise ValueError('Concurrent operation already claimed; inspect its receipt') from exc
+            finally:
+                claim.unlink(missing_ok=True)
             try:
                 native_arguments = dict(
                     board_path=record['context']['board_path'], board_identity=snapshot['board_identity'],
@@ -276,16 +491,49 @@ class LayoutService(SiPiService):
                     self._native_ticket.reset(ticket)
                 receipt = dict(plan_id=plan_id, validation_id=validation_id, operation_id=operation_id,
                     native=native, recovery=recovery, applied=native.get('success') is True,
-                    qualified_placement=False, automatic_retry=False)
+                    qualified_placement=False, automatic_retry=False,
+                    possible_partial_native_edit=native.get('possible_partial_native_edit') is True)
+                receipt.update(target_board_path=record['context']['board_path'],
+                    board_revision_digest=record['capture_digest'], exact_moves=selected['moves'],
+                    applied_objects=native.get('applied_ids', []), skipped_locked_objects=native.get('skipped_locked_objects', []),
+                    failed_objects=native.get('failed_ids', []), readback_coords=native.get('readback', []))
                 if receipt['applied']:
                     _, post = await self._snapshot(board_path=record['context']['board_path'], source='live')
-                    from eda_agent.design.placement_evidence import evaluate_placement
+                    from eda_agent.design.placement_evidence import evaluate_placement, compare_placement_candidates
                     post_context = context_from_snapshot(post['snapshot'], 'post-apply', record.get('models', {}),
                         record.get('fabrication', {}), record.get('assembly', {}))
+                    post_context['scope_component_ids'] = record['context']['scope_component_ids']
                     verified = evaluate_placement(post_context, plan['intent'], plan['constraints'], [])
+                    actual = {c['id']: c for c in post_context['components']}
+                    # One native coordinate plus JSON decimal serialization
+                    # error, not an engineering/design-clearance allowance.
+                    pose_errors = [m['component_id'] for m in selected['moves']
+                        if m['component_id'] not in actual or any(
+                            abs(actual[m['component_id']][axis] - m[axis]) > 0.0000031
+                            for axis in ('x_mm', 'y_mm')) or
+                        abs((actual[m['component_id']]['rotation_deg'] - m['rotation_deg'] + 180) % 360 - 180) > .000001 or
+                        actual[m['component_id']]['side'] != m['side']]
                     receipt['post_validation'] = verified
-                    receipt['qualified_placement'] = verified['feasible']
+                    receipt['post_capture_digest'] = capture_digest(post['snapshot'])
+                    receipt['post_pose_mismatch_ids'] = pose_errors
+                    actual_moves = [{**m, **{k:actual[m['component_id']][k] for k in ('x_mm','y_mm','rotation_deg','side')}}
+                                    for m in selected['moves'] if m['component_id'] in actual]
+                    post_comparison = compare_placement_candidates(record['context'], plan['intent'], plan['constraints'],
+                        [{'id':'post-apply-readback','moves':actual_moves}], plan['options'].get('selection_policy'))
+                    receipt['post_tier_1_regressions'] = post_comparison['tradeoffs'][-1]['critical_regressions']
+                    receipt['post_improvement_verified'] = post_comparison['selection_status']=='selected'
+                    changed_dependencies = unexpected_post_changes(record['snapshot'], post['snapshot'],
+                                                                    record['context'], selected['moves'])
+                    receipt['unexpected_post_changes'] = changed_dependencies
+                    receipt['qualified_placement'] = (verified['feasible'] and not pose_errors and not changed_dependencies
+                        and not receipt['post_tier_1_regressions'] and receipt['post_improvement_verified'])
                 receipt_id = self._save('receipts', receipt)
+                journal = self._journal(plan['context_id'])
+                journal.verified_gate('verification', receipt_id,
+                    record['context'].get('snapshot_id') or plan['context_id'], POLICY_VERSION,
+                    passed=receipt['qualified_placement'], checks=gate['required_checks'])
+                if not receipt['applied']:
+                    journal.stage_result('verification', 'failed', verdict='Inspect native partial/unverified receipt; no automatic replay')
                 _atomic(operation, _json(dict(binding=binding, status='completed', receipt_id=receipt_id)))
                 self._scope(plan['context_id'], dict(active=True, context_id=plan['context_id'], plan_id=plan_id,
                     board_path=record['context']['board_path'], phase='applied' if receipt['applied'] else 'inspect',

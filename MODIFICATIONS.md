@@ -56,7 +56,7 @@
 
 ## Added 2026-10-27
 
-- Unified `mcp altium suite` stdio endpoint with lean discovery/invocation/status,
+- Unified `Electronics AI` stdio endpoint with lean discovery/invocation/status,
   namespaced EDA/legacy/library/cloud tools, retained original schemas/results,
   lazy workers, cancellation draining and migrated per-tool restrictions.
   Setup/deployment now support the one-connection layout; configuration migration
@@ -66,7 +66,7 @@
   bounded immutable staging. Authorized local SnapMagic/SamacSys CAD downloads
   can be staged for inspection. No private provider API is assumed. See
   [cloud libraries](docs/review/CLOUD_LIBRARIES_2026-10-27.md).
-- Added researched `skills/altium-circuit-design`. Modified Apache-2.0 files
+- Added researched `skills/electronics-ai-circuit-design`. Modified Apache-2.0 files
   `eda-agent/src/eda_agent/design/discipline.py` and `tools/design.py` to correct
   zone/label guidance and add discoverable DesignRequirement schema while
   retaining existing response keys. Upstream notices and licenses are retained.
@@ -181,3 +181,22 @@ capability gaps documented explicitly; no invented registry/API contracts.
   boundary. Counts, simulator metadata and release documentation were synchronized
   while running the complete EDA regression suite.
 - Verification results and coverage limits are recorded in `docs/STEP1_VERIFICATION.md`.
+
+
+## 0.6.0 evidence-bound PCB placement
+
+- Reused the existing placement solvers and copper geometry/audit, adding source-qualified conditional profiles and exact plan-bound native placement.
+- Extended design sessions with an explicit placement-review workflow; caller stage claims do not pass verified placement gates.
+- Disabled optimizer reruns through the old apply flag, retained preview compatibility, and added freshness, checkpoint and readback contracts.
+- Added native rule participation metadata, bounded idempotent placement batches and an adaptive PCB layout Skill.
+- Unsupported unsaved-buffer recovery, 3D, full DRC and simulation remain explicit coverage limits.
+
+## 0.7.0 Electronics AI / P0 hard cut
+
+- Unified the working repository at `D:\project\Electronics_AI` and renamed the product, repository, plugin, marketplace, runtime and three skills consistently.
+- Removed the37 legacy API adapters, their contracts/server/native units, old setup/migration/overlay paths, unused preview-apply/export-size arguments and obsolete pairwise UI route. Retained only the useful MIT ANSI validator with its copyright and complete terms.
+- All PCB operations resolve an explicit loaded target. Nested gateway calls retain the target and reject conflicting document paths before dispatch.
+- Fixed DelphiScript's reserved `Stored` identifier; added45-second initial connection grace with normal idle release after the first real request. Ownership proofs and no-replay behavior remain enforced.
+- P0 v3 uses fixed feasibility, per-pair power/return path, signal wirelength and optional alignment tiers. Partial geometry is unknown; free pads remain stationary obstacles; any Tier1 regression rejects the candidate.
+- Bootstrap creates a fresh private regular-wheel environment; release payloads exclude private analyses/tools and retired binaries. The current surface is519 capabilities in9 namespaces plus3 discovery tools.
+- Windows endpoint publication now retries a bounded transient sharing denial without treating uncertain ownership as an absent queue.

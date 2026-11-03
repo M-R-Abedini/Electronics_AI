@@ -1,4 +1,13 @@
-# Release verification: 2026.11.01.copper-si-pi1
+# Release verification: 2026.11.02.p0-shim1
+
+Version `0.7.0` adds plan-bound placement with exact target, snapshot/rule/lock
+preconditions, whole-batch preflight, durable operation identity and readback.
+Its Python, native lint and live scratch acceptance are distinct checks. See
+the root PCB_PLACEMENT_REPORT.fa.md for actual runs and remaining limits.
+Native capture observes a document Modified flag; it does not establish complete
+unsaved-buffer detection. Disk checkpoints do not provide transactional undo.
+
+## Historical copper-aware verification: 2026.11.01.copper-si-pi1
 
 The copper-aware revision adds private `pcb.get_copper_snapshot`,
 `pcb.focus_copper_violation` and `pcb.apply_copper_rules` handlers in the existing

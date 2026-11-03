@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # Modified by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
@@ -873,6 +874,8 @@ class AltiumBridge:
 
     def _execute_command(self, command: str, params: dict[str, Any], timeout: float) -> Any:
         """Execute a command synchronously (blocking)."""
+        from .targeting import bind_target
+        params = bind_target(params)
         request = CommandRequest(command=command, params=params)
         workspace_dir = self.config.workspace_dir
 
@@ -936,8 +939,10 @@ class AltiumBridge:
             timeout = self.config.poll_timeout
         self._ensure_keepalive()
         loop = asyncio.get_running_loop()
+        from contextvars import copy_context
         return await loop.run_in_executor(
             _executor,
+            copy_context().run,
             self._execute_command,
             command,
             params or {},

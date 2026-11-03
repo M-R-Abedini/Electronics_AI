@@ -1,4 +1,4 @@
-"""Client configuration, private-runtime migration and offline installer contracts."""
+"""Client configuration, independent runtime installation and offline installer contracts."""
 import importlib.util
 import json
 import os
@@ -45,7 +45,7 @@ def test_codex_tables_preserve_comments_settings_and_plugin_duplicate():
     assert tomllib.loads(rendered)['mcp_servers']['other'] == {'command': 'other'}
     repeated, _ = clients.render_client(rendered, 'codex', definition)
     assert tomllib.loads(repeated) == tomllib.loads(rendered)
-    enabled = '[plugins."mcp-altium-suite@altium-mcp-suite"]\nenabled = true\n'
+    enabled = '[plugins."mcp-electronics-ai@electronics-ai"]\nenabled = true\n'
     assert clients.render_client(enabled, 'codex', definition) == (enabled, False)
 
 
@@ -75,66 +75,6 @@ def test_client_apply_keeps_exact_backup_and_plan_is_read_only(tmp_path):
     done = clients.configure_clients('cursor', root, sys.executable, data, config=config, apply=True)
     assert done['applied'] and (Path(done['backup']) / 'cursor.json').read_bytes() == old
     assert json.loads(config.read_text())['mcpServers']['old'] == {'command': 'x'}
-
-
-def make_adopted(tmp_path):
-    old = tmp_path / 'old'; old.mkdir()
-    (old / 'eda_stdio.py').touch()
-    (old / 'coffeenmusic/server').mkdir(parents=True)
-    (old / 'coffeenmusic/server/codex_stdio.py').touch()
-    altium = tmp_path / 'X2.EXE'; altium.touch()
-    binary = old / 'rust.exe'; binary.write_bytes(b'not executed in this test')
-    config = old / 'libraries.json'; config.write_text(json.dumps({'allowed_paths': [str(tmp_path)], 'logging': {'level': 'warn'}}))
-    common = {'ALTIUM_EXE': str(altium), 'ALTIUM_MCP_RUNTIME': str(tmp_path / 'native'),
-              'EDA_AGENT_WORKSPACE': str(tmp_path / 'workspace')}
-    template = {'backends': {
-        'eda': {'command': sys.executable, 'args': [str(old / 'eda_stdio.py')], 'env': common,
-                'disabled_tools': ['danger'], 'timeout_seconds': 77},
-        'legacy': {'command': sys.executable, 'args': [str(old / 'coffeenmusic/server/codex_stdio.py')],
-                   'env': dict(common), 'enabled_tools': ['only'], 'startup_timeout_seconds': 35},
-        'libraries': {'command': str(binary), 'args': [str(config)], 'disabled_tools': ['write']}}}
-    path = tmp_path / 'backends.json'; path.write_text(json.dumps(template))
-    data = tmp_path / 'private'; runtime.adopt(path, sys.executable, data, probe=False)
-    return data, old, template
-
-
-def test_detach_preserves_identity_restrictions_and_copies_dependencies(tmp_path, monkeypatch):
-    data, old, before = make_adopted(tmp_path)
-    monkeypatch.setattr(runtime.sys, 'platform', 'win32')
-    monkeypatch.setattr(runtime, 'install_runtime', lambda python, root: None)
-    def fake_run(command, **kwargs):
-        if '-m' in command and 'venv' in command:
-            python = Path(command[-1]) / 'Scripts/python.exe'; python.parent.mkdir(parents=True); python.touch()
-        return SimpleNamespace(returncode=0)
-    monkeypatch.setattr(runtime.subprocess, 'run', fake_run)
-    runtime.detach(data, ROOT, probe=False)
-    state, after = runtime.checked_state(data)
-    assert state['mode'] == 'self-contained'
-    assert Path(state['python']).is_relative_to(data)
-    assert after['backends']['eda']['disabled_tools'] == ['danger']
-    assert after['backends']['eda']['timeout_seconds'] == 77
-    assert after['backends']['legacy']['enabled_tools'] == ['only']
-    assert after['backends']['legacy']['startup_timeout_seconds'] == 35
-    for name in ('eda', 'legacy'):
-        assert after['backends'][name]['env']['ALTIUM_MCP_RUNTIME'] == before['backends'][name]['env']['ALTIUM_MCP_RUNTIME']
-        assert after['backends'][name]['env']['EDA_AGENT_WORKSPACE'] == before['backends'][name]['env']['EDA_AGENT_WORKSPACE']
-    library = after['backends']['libraries']
-    assert Path(library['command']).is_relative_to(data)
-    assert json.loads(Path(runtime.library_configuration_path(library)).read_text()) == json.loads((old / 'libraries.json').read_text())
-    assert list((data / 'backups').glob('*/state.json'))
-
-
-def test_failed_detach_does_not_publish_partial_state(tmp_path, monkeypatch):
-    data, _, _ = make_adopted(tmp_path)
-    before = (data / 'state.json').read_bytes()
-    monkeypatch.setattr(runtime.sys, 'platform', 'win32')
-    monkeypatch.setattr(runtime.subprocess, 'run', lambda *a, **kw: None)
-    def failed(*args):
-        raise RuntimeError('install failed')
-    monkeypatch.setattr(runtime, 'install_runtime', failed)
-    with pytest.raises(RuntimeError, match='install failed'):
-        runtime.detach(data, ROOT, probe=False)
-    assert (data / 'state.json').read_bytes() == before
 
 
 def test_runtime_install_is_regular_wheel_not_editable(tmp_path, monkeypatch):

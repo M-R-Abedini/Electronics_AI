@@ -1,169 +1,101 @@
 # Codex plugin packaging and setup
 
-MCP Altium Suite is a local Windows plugin that bundles one MCP connection,
-the circuit-design skill and a setup/diagnosis skill. The canonical source is
-this repository. An installed cache and a generated ZIP are deployment
-artifacts, not separate copies to develop.
+Electronics AI 0.7.0 bundles one MCP connection and three skills for circuit
+design, PCB layout and setup. The canonical source is the
+[Electronics_AI repository](https://github.com/M-R-Abedini/Electronics_AI), locally
+`D:\project\Electronics_AI`. Build artifacts and installed caches are deployment
+outputs; edit and test the source repository.
 
-For startup diagnosis, `scripts/plugin_runtime.py doctor --probe-backends`
-initializes the configured EDA worker and reads its tool catalog without calling
-CAD tools. A successful probe establishes worker initialization, not native
-editor readiness. On failure, retain the diagnostic ID, phase and nested causes;
-possible dispatched design writes must not be replayed automatically.
+The package contains root `plugin.json`, `mcp.json`, and `skills/`. Its launcher
+resolves installed files through `${PLUGIN_ROOT}`. Altium automation requires
+Windows and a separately installed, licensed Altium Designer. The plugin setup
+runtime requires Python 3.12; the standalone installer supplies its own reviewed
+runtime. See [installer and client support](INSTALLER.md).
 
-The package follows the [official plugin packaging format](https://developers.openai.com/plugins/build/plugins):
-root `plugin.json`, root `mcp.json` and the maintained `skills/` directory.
-The MCP launcher uses the host's `${PLUGIN_ROOT}` placeholder to locate its
-installed files. Altium requires local execution, as described in the
-[desktop plugin guidance](https://developers.openai.com/plugins/deploy/desktop-only).
+## Package contents
 
-## What the package includes
+- Plugin/MCP ID `mcp-electronics-ai`, display name **Electronics AI**,
+  marketplace `electronics-ai`.
+- `electronics-ai-setup`, `electronics-ai-circuit-design` and
+  `electronics-ai-pcb-layout` skills.
+- The EDA bridge, original native Python library codecs, analysis services,
+  DelphiScript sources, runtime requirements and applicable license notices.
 
-- `mcp-altium-suite`: one endpoint, displayed as **mcp altium suite**. Once
-  configured, minimal mode advertises `suite_catalog`, `suite_invoke` and
-  `suite_status`. Namespaced backend tools are discovered on demand.
-- `altium-circuit-design`: requirements, sourced parts, symbol/footprint
-  checks, structured schematic execution and connectivity evidence.
-- `altium-suite-setup`: explicit onboarding, adopting an existing suite or
-  preparing a new runtime, and diagnosis.
-- Python and DelphiScript sources, independent native library codecs,
-  compatibility contracts and runtime dependency requirements with license notices.
+Configured minimal mode exposes `suite_catalog`, `suite_invoke` and
+`suite_status`; namespaced capabilities are discovered on demand. Persistent
+backend configuration contains exactly `eda` and `libraries`. Library operations
+run through Python OLE2 codecs without an external binary, Rust compiler or crate
+sources. The package excludes credentials, user designs, private settings,
+Altium and a Python interpreter.
 
-The ZIP does not include Altium Designer, a Python interpreter, private
-settings, account credentials or design files. Altium and its license remain
-separate prerequisites. Use Python 3.12 on Windows. Library operations execute
-in the gateway through the original Python OLE2 codecs; no external library
-executable, Rust compiler or crate sources are required.
+## Build and install
 
-## Build a clean distribution
-
-Run from the repository root with the development environment prepared:
+From a prepared development checkout:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/build_plugin.py --output dist --smoke --check-reproducible
-```
-
-The builder creates:
-
-```text
-dist/
-  mcp-altium-suite-0.5.0.zip
-  artifacts.json
-  marketplace/
-    .agents/plugins/marketplace.json
-    plugins/mcp-altium-suite/
-      plugin.json
-      mcp.json
-      skills/
-      scripts/
-      ... bundled runtime sources and notices
-```
-
-`--smoke` exercises the staged package's MCP initialization, minimal tool
-surface and cloud provider discovery using an isolated empty backend
-configuration. It does not launch Altium, read private machine settings or
-require an external library executable. `--check-reproducible` compares repeated builds with
-the same package inputs. The artifact manifest records the selected files
-and hashes. Do not distribute a recursive copy of an installed checkout:
-it may contain local configurations and repair backups.
-
-## Install the built plugin in Codex
-
-The following commands use the supported
-[Codex plugin CLI](https://learn.chatgpt.com/docs/developer-commands). Run from
-the repository root; use an absolute marketplace path if working elsewhere:
-
-```powershell
 codex plugin marketplace add .\dist\marketplace --json
-$installedPlugin = codex plugin add mcp-altium-suite@altium-mcp-suite --json | ConvertFrom-Json
+$installedPlugin = codex plugin add mcp-electronics-ai@electronics-ai --json | ConvertFrom-Json
 $pluginRoot = $installedPlugin.installedPath
 ```
 
-Keep that marketplace folder available for local updates. `codex plugin list
---json` reports actual installation and enabled state; adding a marketplace
-alone does not establish plugin installation. Start a new Codex session, or
-reconnect the desktop client, to load the plugin's skills and MCP tools.
+Outputs include `dist/mcp-electronics-ai-0.7.0.zip`, `artifacts.json` and the
+local `dist/marketplace` tree. The builder selects public package files; private
+`analysis/`, `tools/`, environments, configuration and repair backups are not
+release inputs. `--smoke` initializes an isolated empty-config package and checks
+its MCP surface without launching Altium. `--check-reproducible` compares builds
+from identical selected inputs and records their file hashes.
 
-A Git marketplace can be used when the chosen Git ref actually contains the
-plugin and marketplace manifests. Do not assume that an unmerged local
-change already exists on GitHub's default branch. GitHub/local marketplace
-distribution is separate from publication in OpenAI's public directory.
+Keep the local marketplace folder available for updates. `codex plugin list
+--json` reports actual installation and enabled state; registering a marketplace
+alone does not install the plugin. Reconnect Codex after installing or updating
+to load its current skills and MCP definitions. A Git marketplace must point to
+a published ref containing the manifests. Local/Git distribution does not imply
+publication in the public plugin directory.
 
-## Configure the runtime once
+## Configure the private runtime
 
-Run the bundled onboarding skill, `$altium-suite-setup`, or use the commands
-below. The examples assume the Windows Python launcher can select Python
-3.12; an explicit path to that interpreter is also valid.
-
-Before configuration, the launcher exposes a setup-needed `suite_status`
-response. That is a usable diagnosis path, not a claim that the native editor
-is ready. Normal serving does not install dependencies or launch a second
-Altium instance.
-
-### Adopt an existing suite
-
-Use the existing explicit backend manifest and an environment that already
-has the runtime dependencies:
-
-```powershell
-py -3.12 "$pluginRoot\scripts\plugin_runtime.py" adopt --backend-config "C:\Path\To\suite-backends.local.json" --python "C:\Path\To\.venv\Scripts\python.exe" --altium-exe "C:\Program Files\Altium\AD26\X2.EXE"
-py -3.12 "$pluginRoot\scripts\plugin_runtime.py" doctor
-```
-
-Adoption retains the selected native runtime/workspace identity, library
-configuration, restrictions and explicit timeouts. The retired executable
-path is ignored during migration. It does not
-edit designs. EDA worker and in-process legacy compatibility code resolve against the current
-installed plugin on each launch, so upgrading the package upgrades its code.
-Private state stays outside the versioned cache.
-
-Adoption can still depend on the selected old interpreter.
-To make dependencies independent of the old checkout while retaining the same
-native workspace, run `py -3.12 "$pluginRoot\scripts\plugin_runtime.py" detach`.
-This creates a private regular-wheel Python environment and private library
-configuration before switching state, retaining the old files for
-recovery. See [multi-client and installer setup](INSTALLER.md).
-
-Before switching an existing client, retain its configuration backup and
-verify the plugin's doctor and protocol checks. Then disable the old manual
-suite connection so the client exposes one intended connection. Do not
-clear native ownership markers or move an open editor into another workspace
-as a shortcut to setup.
-
-### Prepare a new machine
-
-Supply the installed Altium executable and intended library roots:
+Use `$electronics-ai-setup` or run the installed helper explicitly:
 
 ```powershell
 py -3.12 "$pluginRoot\scripts\plugin_runtime.py" bootstrap --altium-exe "C:\Program Files\Altium\AD26\X2.EXE" --library-dir "D:\MyProject\Libraries"
-py -3.12 "$pluginRoot\scripts\plugin_runtime.py" doctor
+py -3.12 "$pluginRoot\scripts\plugin_runtime.py" doctor --probe-backends
 ```
 
-Repeat `--library-dir` for intended existing library roots. Bootstrap explicitly creates a private Python environment
-and installs `requirements-runtime.txt` once. It does not install the
-development test/render/dashboard extras or run package installation on
-ordinary MCP calls.
+Repeat `--library-dir` for intended existing library roots. Bootstrap creates a
+fresh environment at `data/runtimes/<UTC-id>/python-3.12` and installs the packaged
+EDA sources as a regular wheel. It verifies dependencies before switching the
+stored runtime state. It keeps backups of previous settings and does not delete
+the previous environment. Development rendering/test/dashboard extras are not
+part of normal runtime setup.
 
-The normal data directory is `CODEX_HOME/plugins/data/mcp-altium-suite`,
-using `~/.codex` when `CODEX_HOME` is unset. An absolute
-`ALTIUM_SUITE_PLUGIN_DATA` or `--data-dir` can select another location. Global
-options precede the operation:
+A subsequent bootstrap retains current configured library roots, logging
+options, tool restrictions, timeouts and the selected native runtime/workspace
+identity. A conflicting workspace fails preflight. Never clear ownership
+markers or move a running editor to another workspace to make setup pass.
+
+Default state is `CODEX_HOME/plugins/data/mcp-electronics-ai`, using `~/.codex`
+when `CODEX_HOME` is unset. The native runtime and workspace default to
+`%LOCALAPPDATA%/ElectronicsAI` and its `workspace` subdirectory. An absolute
+`ELECTRONICS_AI_PLUGIN_DATA` or global `--data-dir` selects another state path:
 
 ```powershell
-py -3.12 "$pluginRoot\scripts\plugin_runtime.py" --data-dir "D:\AltiumSuiteData" doctor
+py -3.12 "$pluginRoot\scripts\plugin_runtime.py" --data-dir "D:\ElectronicsAIData" doctor
 ```
 
-Use the same selection for setup and launch. The launcher accepts `-DataDir`
-for an explicit process invocation; plugin-configured launches normally use
-the default or environment setting. `serve` is the internal gateway command,
-not another setup operation. State reconfiguration keeps recoverable prior
-state, and an incomplete state/template pair fails diagnosis instead of
-guessing a different native runtime.
+Use the same path for setup and launch. Product environment names use
+`ELECTRONICS_AI_*`; `ALTIUM_EXE` and `EDA_AGENT_WORKSPACE` retain their technical
+meaning. The launcher accepts `-DataDir` for an explicit invocation.
 
-## Verify the configured plugin
+The supported helper commands are `bootstrap`, `doctor`, `configure-clients`
+and `serve`. Normal `serve` resolves workers from the currently selected package
+and never installs dependencies or launches Altium. Before setup, the launcher
+provides only a setup-needed `suite_status`, which does not establish editor
+readiness. An incomplete state/template pair is refused rather than guessed.
 
-After reconnecting, discover the exact live schema and invoke the names
-returned by the catalog:
+## Verify the installed connection
+
+After reconnecting, discover the live schema and invoke the returned name:
 
 ```text
 suite_status()
@@ -172,39 +104,32 @@ suite_invoke(name="eda__app_context", arguments={})
 suite_catalog(backend="libraries", query="list_components", with_schema=true)
 ```
 
-`suite_status` and doctor report configuration/load state. A successful
-native `app_context` call with an open Altium editor supplies separate bridge
-evidence. Use an explicit permitted sample library to exercise its reader.
-Setup tests do not prove schematic correctness, a fresh ERC/DRC or tested
-hardware. Native design mutations belong in an explicit test fixture or
-intended project, with the existing ownership and target-save safeguards.
+`doctor --probe-backends` initializes the EDA worker and lists tools without
+calling a native tool. Success proves worker/catalog availability. A successful
+read-only `app_context` call with one intended Altium instance supplies separate
+native bridge evidence. Use an explicit permitted sample library for a reader
+check. A production design is not a setup fixture.
 
-Cloud search/download and local download staging are documented in
-[cloud libraries](review/CLOUD_LIBRARIES_2026-10-27.md). ChilaBoard has an
-automated public adapter. SnapMagic/SamacSys official account/API access and
-EPW conversion are not supplied by plugin installation. Downloaded models
-still require exact part/package and pin-to-pad verification.
+Retain an initialization failure's diagnostic ID, phase and causes. An ambiguous
+or possibly dispatched design write must not be replayed automatically. Setup,
+metadata and catalog checks do not prove schematic correctness, ERC/DRC,
+manufacturing readiness or tested hardware.
 
-## Updates and source maintenance
+Cloud search/staging is described in [cloud library support](review/CLOUD_LIBRARIES_2026-10-27.md).
+Provider accounts/API access and model verification are separate from plugin
+installation. Downloaded symbols/footprints need exact part, package and
+pin-to-pad verification.
 
-Edit this repository's sources and `skills/`, run the tests, then rebuild the
-clean package. Reinstall/refresh the built local marketplace version and
-reconnect; do not edit the installed cache. Preserve private runtime state
-and native workspace identity through an upgrade. A changed code package
-does not authorize overwriting user designs or library roots.
+## Maintain and update
 
-Treat a distributed version as immutable. Increase `plugin.json`'s version for
-a new release, rebuild and retain its ZIP checksum. For a Git marketplace,
-select the published revision explicitly when reproducibility matters. Local
-development rebuilds of the same version are test artifacts, not a new release.
+Edit source, run tests, build the package, install the new marketplace version
+and reconnect. Never patch the installed cache. Keep one active connection to
+the native editor and preserve current modern native workspace identity and
+private library/tool policy through updates. Setup does not edit or save
+user designs.
 
-The suite's existing [license scope](../THIRD_PARTY_NOTICES.md) remains in
-effect. Original suite code, vendored backends and their dependencies retain
-their own terms. The builder includes MIT and Apache-2.0 notices and rejects retired binary,
-crate and Rust-source artifacts. Historical release tags keep their original
-contents and licensing; they are not rewritten by this source update.
-
-See [CONTRIBUTING](../CONTRIBUTING.md) for the source checks, package tests and
-native-test boundaries. Current validation evidence should distinguish
-offline protocol tests, clean artifact tests, actual plugin registration and
-native Altium checks.
+Treat published versions as immutable; increment the package version and record
+the new ZIP checksum for each release. Historical tags retain their original
+contents. Current source uses MIT and Apache-2.0 components with the notices in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). See
+[CONTRIBUTING](../CONTRIBUTING.md) for source, package and native verification.

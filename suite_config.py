@@ -1,4 +1,4 @@
-"""Shared, portable configuration for the coordinated Windows MCP servers."""
+"""Shared, portable configuration for the Electronics AI native worker."""
 from pathlib import Path
 import hashlib
 import json
@@ -16,9 +16,9 @@ def settings():
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as error:
-        raise RuntimeError(f'Cannot read {path}. Repair the JSON or regenerate it with setup.py --altium-exe.') from error
+        raise RuntimeError(f'Cannot read {path}. Repair the JSON or regenerate it with scripts/plugin_runtime.py bootstrap --altium-exe.') from error
     if not isinstance(value, dict):
-        raise RuntimeError(f'{path} must contain a JSON object. Regenerate it with setup.py --altium-exe.')
+        raise RuntimeError(f'{path} must contain a JSON object. Regenerate it with scripts/plugin_runtime.py bootstrap --altium-exe.')
     executable = value.get('altium_exe')
     if executable is not None and (not isinstance(executable, str) or not executable.strip()):
         raise RuntimeError(f'{path}: altium_exe must be a non-empty path string.')
@@ -26,8 +26,8 @@ def settings():
 
 
 def runtime_dir():
-    default = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'AltiumMCPSuite'
-    return Path(os.environ.get('ALTIUM_MCP_RUNTIME', str(default))).resolve()
+    default = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData/Local')) / 'ElectronicsAI'
+    return Path(os.environ.get('ELECTRONICS_AI_RUNTIME', str(default))).resolve()
 
 
 def workspace_dir():
@@ -42,11 +42,11 @@ def workspace_dir():
     except FileNotFoundError:
         recorded = None
     except (OSError, ValueError, KeyError, TypeError) as error:
-        raise RuntimeError(f'Cannot validate {identity}; repair the shared workspace configuration before starting either server.') from error
+        raise RuntimeError(f'Cannot validate {identity}; repair the shared workspace configuration before starting the native worker.') from error
     explicit = os.environ.get('EDA_AGENT_WORKSPACE')
     selected = Path(explicit).resolve() if explicit else recorded or runtime / 'workspace'
     if recorded is not None and os.path.normcase(str(selected)) != os.path.normcase(str(recorded)):
-        raise RuntimeError(f'Workspace mismatch: requested {selected}, shared runtime {runtime} uses {recorded}. Set EDA_AGENT_WORKSPACE identically for both servers; no script was launched.')
+        raise RuntimeError(f'Workspace mismatch: requested {selected}, shared runtime {runtime} uses {recorded}. Set EDA_AGENT_WORKSPACE consistently across clients; no script was launched.')
     return selected
 
 
@@ -77,39 +77,27 @@ def altium_exe():
         return Path(value)
     candidates = list((Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Altium').glob('AD*/X2.EXE'))
     if len(candidates) != 1:
-        raise RuntimeError('Set ALTIUM_EXE or run setup.py --altium-exe with the intended X2.EXE path.')
+        raise RuntimeError('Set ALTIUM_EXE or run scripts/plugin_runtime.py bootstrap --altium-exe with the intended X2.EXE path.')
     return candidates[0]
 
 
-def prepare_runtime(script_body=None):
+def prepare_runtime():
     """Copy scripts to a content-addressed path so Altium recompiles changes.
 
     Generates only runtime files; never changes the machine-wide EDA workspace
     pointer. The EDA server writes that pointer when it actually starts.
     """
     runtime = runtime_dir()
-    exchange = runtime / 'legacy-exchange'
-    exchange.mkdir(parents=True, exist_ok=True)
     sources = {'eda': ROOT / 'eda-agent/scripts/altium'}
     projects = {}
     for kind, source in sources.items():
         files = sorted(p for p in source.iterdir() if p.suffix.lower() in {'.pas', '.dfm', '.prjscr'})
-        if kind == 'eda':
-            # build.py's ignored monolithic output is not compiled by the
-            # modular project. Different local builds must not cause two
-            # clients with identical sources to keep restarting each other.
-            template = source / 'Altium_API.PrjScr'
-            references_mono = (template.is_file() and any(
-                line.strip().casefold() == 'documentpath=altium_mcp.pas'
-                for line in template.read_text(encoding='utf-8-sig').splitlines()))
-            if not references_mono:
-                files = [p for p in files if p.name.casefold() != 'altium_mcp.pas']
+        # The installed product compiles the modular project only; generated
+        # monolithic developer output is outside its source identity.
+        files = [p for p in files if p.name.casefold() != 'altium_mcp.pas']
         contents = {path: path.read_bytes() for path in files}
-        if script_body is not None:
-            from suite_script_overlay import render_script_unit
-            contents[source / 'LegacySandbox.pas'] = render_script_unit(script_body).encode('utf-8')
         workspace = workspace_dir()
-        digest = hashlib.sha256(('script-project-lifecycle-v1:' + str(exchange)).encode())
+        digest = hashlib.sha256(('electronics-ai-script-project-v1:' + str(runtime)).encode())
         if kind == 'eda':
             digest.update(('workspace:' + str(workspace)).encode())
         for path in files:
@@ -125,9 +113,9 @@ def prepare_runtime(script_body=None):
             data = contents[path]
             if kind == 'eda' and path.name == 'Main.pas':
                 text = data.decode('utf-8')
-                for token, value in [('__ALTIUM_MCP_SCRIPT_PROJECT__', project),
-                                     ('__ALTIUM_MCP_SCRIPT_CATALOG__', runtime / CATALOG),
-                                     ('__ALTIUM_MCP_WORKSPACE__', workspace)]:
+                for token, value in [('__ELECTRONICS_AI_SCRIPT_PROJECT__', project),
+                                     ('__ELECTRONICS_AI_SCRIPT_CATALOG__', runtime / CATALOG),
+                                     ('__ELECTRONICS_AI_WORKSPACE__', workspace)]:
                     if text.count(token) != 1:
                         raise RuntimeError(f'{path} must contain exactly one {token} placeholder.')
                     text = text.replace(token, str(value).replace("'", "''"))
@@ -141,21 +129,17 @@ def prepare_runtime(script_body=None):
         register_project(project, kind, hashes)
         projects[kind] = project
     refresh_catalog(runtime)
-    # Kept as a migration/configuration alias; there is one native project.
-    projects['legacy'] = projects['eda']
     return projects
 
 
 def configure_environment():
     bind_workspace()
     scripts = prepare_runtime()
-    os.environ['ALTIUM_MCP_RUNTIME'] = str(runtime_dir())
-    os.environ['ALTIUM_MCP_EDA_SCRIPT'] = str(scripts['eda'])
+    os.environ['ELECTRONICS_AI_RUNTIME'] = str(runtime_dir())
+    os.environ['ELECTRONICS_AI_EDA_SCRIPT'] = str(scripts['eda'])
     os.environ.setdefault('EDA_AGENT_WORKSPACE', str(workspace_dir()))
     # Suite scripts contain their workspace. Upstream workspace preparation
     # must not repoint another installation through the machine-global file.
     os.environ.setdefault('EDA_AGENT_POINTER_FILE', str(runtime_dir() / 'workspace-path.txt'))
     os.environ.setdefault('ALTIUM_EXE', str(altium_exe()))
-    os.environ['ALTIUM_MCP_LEGACY_SCRIPT'] = str(scripts['legacy'])
-    os.environ['ALTIUM_MCP_LEGACY_EXCHANGE'] = str(runtime_dir() / 'legacy-exchange')
     return scripts

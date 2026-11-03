@@ -225,19 +225,11 @@ BAD_PATTERNS: list[tuple[re.Pattern, str, str]] = [
         ": String; caller loops and checks for ''",
     ),
     (
-        # PCBServer.GetCurrentPCBBoard is focus-dependent, it returns
-        # nil whenever the active Altium tab is a schematic, even though
-        # the PCB is loaded in the project. Handlers should use the
-        # focus-independent helper GetPCBBoardAnywhere (Main.pas)
-        # instead; it tries the focused lookup first, then falls back
-        # to PCBServer.GetPCBBoardByPath on the project's .PcbDoc.
-        # The only legitimate direct caller is GetPCBBoardAnywhere
-        # itself (lives in Main.pas).
+        # Native PCB handlers resolve only the request's explicit loaded target.
+        # Raw focus lookup is confined to Main.pas for identity verification.
         re.compile(r"PCBServer\.GetCurrentPCBBoard\b"),
-        "Direct PCBServer.GetCurrentPCBBoard, fails when user is on a "
-        "sch tab. Use GetPCBBoardAnywhere (focus-independent wrapper)",
-        "Board := GetPCBBoardAnywhere;  "
-        "(only GetPCBBoardAnywhere itself may call the raw API)",
+        "Direct PCBServer.GetCurrentPCBBoard bypasses explicit PCB targeting",
+        "Board := RequireTargetPCBBoard(0); (raw focus lookup is confined to Main.pas)",
         frozenset({"Main.pas"}),
     ),
     (

@@ -332,12 +332,12 @@ def register_application_tools(mcp):
                     ready = {}
             except (OSError, ValueError):
                 pass
-        expected = os.environ.get("ALTIUM_MCP_EDA_SCRIPT")
+        expected = os.environ.get("ELECTRONICS_AI_EDA_SCRIPT")
         actual = ready.get("project_path")
         if not isinstance(actual, str):
             actual = None
         identity = {
-            "runtime_path": os.environ.get("ALTIUM_MCP_RUNTIME"),
+            "runtime_path": os.environ.get("ELECTRONICS_AI_RUNTIME"),
             "workspace_path": str(workspace) if workspace is not None else None,
             "native_session_id": ready.get("session_id"),
             "compiled_project_path": actual,

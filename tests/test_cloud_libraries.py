@@ -154,7 +154,7 @@ def test_zip_compression_bomb_and_absent_cad_rejected(tmp_path):
 def test_stage_epw_honestly_reports_no_conversion_and_uses_configured_cache(tmp_path, monkeypatch):
     source = tmp_path / "part.epw"
     source.write_bytes(b"provider-specific EPW")
-    monkeypatch.setenv("ALTIUM_SUITE_CLOUD_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("ELECTRONICS_AI_CLOUD_CACHE", str(tmp_path / "cache"))
     result = cloud.call_tool("cloud_library_stage_local", {"source_path": str(source), "provider": "samacsys"})
     assert "not implemented" in result["conversion"]
     assert result["license"]["status"] == "not_provided"
@@ -204,7 +204,7 @@ def test_catalog_accepts_current_cp1252_data_and_counts_malformed_rows():
 
 
 def test_relative_or_unconfigured_cache_and_bool_limits_rejected(tmp_path, monkeypatch):
-    monkeypatch.delenv("ALTIUM_SUITE_CLOUD_CACHE", raising=False)
+    monkeypatch.delenv("ELECTRONICS_AI_CLOUD_CACHE", raising=False)
     with pytest.raises(ValueError, match="explicit absolute"):
         cloud._root(None)
     with pytest.raises(ValueError, match="absolute"):

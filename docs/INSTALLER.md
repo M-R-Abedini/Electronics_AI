@@ -5,28 +5,32 @@ Codex integration because it installs the MCP endpoint and skills together. The
 standalone Windows installer is an alternative for machines without Python
 and for other AI clients. Altium Designer is a separate prerequisite.
 
-## Remove dependency on an adopted old checkout
+## Independent plugin runtime
 
-Use an installed Python 3.12 interpreter to run:
+With an installed Python 3.12, run the current installed helper:
 
 ```powershell
-python scripts/plugin_runtime.py --data-dir "C:\path\to\plugin-data" detach
-python scripts/plugin_runtime.py --data-dir "C:\path\to\plugin-data" doctor
+py -3.12 "$pluginRoot\scripts\plugin_runtime.py" bootstrap --altium-exe "C:\Program Files\Altium\AD26\X2.EXE" --library-dir "D:\MyProject\Libraries"
+py -3.12 "$pluginRoot\scripts\plugin_runtime.py" doctor --probe-backends
 ```
 
-`detach` creates a fresh private venv in `data/runtimes/<UTC-id>/python`, installs
-the EDA package as a regular wheel, and migrates library configuration
-to the native Python service in that private runtime. It retains the native runtime,
-workspace identity, allowed library roots, tool restrictions, timeouts and audit
-destination. It publishes new state only after dependency and identity checks.
-Prior state remains in backups and the original environment is never deleted.
-Restart MCP clients after migration before archiving their old Python environment.
-Current worker source still resolves to the current plugin version on each launch.
-Fresh `bootstrap` also installs a regular wheel rather than an editable package.
-Supported hub/gateway entry points suppress bytecode writes before importing
-product modules. Plugin launches, configured clients and worker subprocesses
-also set `PYTHONDONTWRITEBYTECODE=1`, keeping generated caches out of package roots.
-Persistent checkpoints, sourcing caches and configuration stay in private data.
+Each explicit bootstrap prepares a fresh private environment under
+`data/runtimes/<UTC-id>/python-3.12` and installs the EDA package as a regular
+wheel. It checks dependencies before switching stored settings and keeps
+previous environments/settings for recovery. Subsequent setup preserves current
+library roots, options, tool restrictions, timeouts and native workspace identity;
+it refuses a conflicting identity. Only EDA and native Python libraries are
+configured backends.
+
+The plugin ID and MCP server ID are `mcp-electronics-ai`; marketplace
+`electronics-ai`. Default data is `~/.codex/plugins/data/mcp-electronics-ai` and
+the default native runtime is `%LOCALAPPDATA%/ElectronicsAI`. The supported helper
+commands are `bootstrap`, `doctor`, `configure-clients` and `serve`.
+
+Normal startup resolves the current package code without installing dependencies
+or launching the editor. Supported launchers and subprocesses pass `-B` and
+`PYTHONDONTWRITEBYTECODE=1`, keeping caches out of immutable package roots.
+Checkpoints, sourcing caches and configuration stay in private data.
 
 ## Multi-client configuration
 
@@ -42,11 +46,11 @@ Default user files on Windows:
 
 | Client | User configuration |
 | --- | --- |
-| Codex | `~/.codex/config.toml` |
+| Codex | `CODEX_HOME/config.toml`, otherwise `~/.codex/config.toml` |
 | Claude Desktop | `%APPDATA%/Claude/claude_desktop_config.json` |
 | Claude Code | `~/.claude.json`, top-level user-scoped `mcpServers` |
 | Cursor | `~/.cursor/mcp.json` |
-| Windsurf / legacy Cascade in Devin | `%APPDATA%/devin/mcp_config.json`; existing old `~/.codeium/windsurf/mcp_config.json` retained if no new file exists |
+| Windsurf / Cascade in Devin | `%APPDATA%/devin/mcp_config.json` |
 | VS Code | `%APPDATA%/Code/User/mcp.json`, `servers` table |
 
 These are Windows defaults, not proof that a particular version/profile reads
@@ -61,7 +65,7 @@ byte-exact backups are made; JSONC comments/trailing commas cause an actionable
 failure with no writes rather than being discarded. TOML unrelated tables and
 comments are retained. An enabled matching Codex plugin is detected and a
 duplicate standalone registration is skipped. The client itself may still
-require its own trust/enable step. `--all` configures all six files, not the apps.
+require its own trust/enable step. `--client all` plans/configures all six files, not the apps.
 
 The plugin helper also accepts a global `--client` before the subcommand:
 
@@ -70,7 +74,7 @@ python scripts/plugin_runtime.py --data-dir "C:\path\to\plugin-data" --client cu
 python scripts/plugin_runtime.py --data-dir "C:\path\to\plugin-data" --client cursor configure-clients --apply
 ```
 
-`--client` with `bootstrap`, `adopt` or `detach` applies client configuration
+`--client` with `bootstrap` applies client configuration
 after successful setup. Omitting it never changes client settings. A standalone
 MCP registration supplies tools; it does not claim to install skills into other
 clients. The Codex plugin bundles the skills directly.
@@ -78,7 +82,7 @@ clients. The Codex plugin bundles the skills directly.
 ## Altium discovery and startup
 
 ```powershell
-python altium_installation.py --script-project "C:\path\to\Altium_API.PrjScr"
+python altium_installation.py --script-project "C:\path\to\ElectronicsAI-EDA.PrjScr"
 ```
 
 Detection reads both Windows uninstall registry views and bounded standard
@@ -97,14 +101,13 @@ Build on Windows x64 with Python 3.12 and Inno Setup 6+:
 ```powershell
 python installer/build_installer.py --python-embed "C:\inputs\python-3.12.x-embed-amd64.zip" `
   --python-embed-sha256 "<independently-reviewed-sha256>" --iscc "C:\path\ISCC.exe" `
-  --output "C:\build\altium-installer-new"
+  --output "C:\build\electronics-ai-installer-new"
 ```
 
 The explicit runtime input must be verified against its publisher. There is no
-unverified `latest` download. Python 3.12.10 was the last official Windows
-embeddable binary; current 3.12 security releases are source-only. Do not describe
-an installer built with 3.12.10 as the current security runtime. A distribution
-release must review/refresh its runtime build before publishing. The pipeline
+unverified `latest` download. Review the selected runtime build and its security updates before publishing
+a distribution. A pinned input is reproducible; that alone does not establish
+that it is the latest security runtime. The pipeline
 records the exact Python/runtime dependency versions and SHA-256 values in
 `INSTALLER_PROVENANCE.json`. It rejects traversal and symlinks before extraction.
 
@@ -116,7 +119,7 @@ Native library codecs are original Python source in the shared plugin package. N
 source archive is produced. Wheel distribution metadata and the embedded Python
 license remain in the installation.
 
-Inno Setup installs under `%LOCALAPPDATA%/Programs/AltiumMCPSuite` without admin,
+Inno Setup installs under `%LOCALAPPDATA%/Programs/ElectronicsAI` without admin,
 adds a local setup wizard, and leaves private state/backups on uninstall. The
 wizard lets the user select Altium and one AI client; it does not launch native
 scripts or save designs. CLI equivalent:

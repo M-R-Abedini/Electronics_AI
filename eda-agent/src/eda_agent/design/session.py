@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """Design session journal: the autonomy-harness backbone (roadmap 1.4).
@@ -47,6 +48,7 @@ STAGES = (
 
 # Terminal stage outcomes.
 STATUS_OK = "ok"
+WORKFLOWS = {'full_design': STAGES, 'placement_review': ('placement', 'verification')}
 STATUS_BLOCKED = "blocked"
 STATUS_FAILED = "failed"
 
@@ -59,6 +61,7 @@ KIND_ARTIFACT = "artifact"
 KIND_BLOCKED = "blocked"
 KIND_RESOLVED = "resolved"
 KIND_NOTE = "note"
+KIND_VERIFIED_GATE = 'verified_gate'
 
 
 @dataclass
@@ -83,6 +86,9 @@ class SessionState:
     artifacts: list
     complete: bool
     attempts: dict = field(default_factory=dict)  # stage -> stage_result count
+    workflow: str = 'full_design'
+    verified_gates: dict = field(default_factory=dict)
+    claims_are_advisory: bool = True
 
 
 class SessionJournal:
@@ -105,10 +111,13 @@ class SessionJournal:
     def _next_seq(self) -> int:
         return sum(1 for _ in self._raw_lines()) + 1
 
-    def start(self, requirement: str, *, now: Optional[datetime] = None) -> JournalEvent:
+    def start(self, requirement: str, *, now: Optional[datetime] = None,
+              workflow: str = 'full_design') -> JournalEvent:
+        if workflow not in WORKFLOWS:
+            raise ValueError('Unknown design workflow')
         return self._append(
             KIND_SESSION_START,
-            {"session_id": self.session_id, "requirement": requirement},
+            {"session_id": self.session_id, "requirement": requirement, 'workflow': workflow},
             now=now,
         )
 
@@ -172,6 +181,19 @@ class SessionJournal:
     def state(self) -> SessionState:
         return _replay(self.session_id, self.events())
 
+    def verified_gate(self, stage, evidence_id, source_snapshot, policy_version, *, passed, checks):
+        """Internal verifier event, absent from the public session-log tool.
+
+        Journal files are not a sandbox against a host administrator. Qualified
+        apply also verifies immutable evidence and a live native precondition.
+        """
+        _check_stage(stage)
+        if not all(isinstance(s, str) and s for s in (evidence_id, source_snapshot, policy_version)):
+            raise ValueError('Verified gates require evidence and dependency identities')
+        return self._append(KIND_VERIFIED_GATE, dict(stage=stage, evidence_id=evidence_id,
+            source_snapshot=source_snapshot, policy_version=policy_version, passed=passed is True,
+            checks=list(checks), producer='server_verifier'))
+
 
 def _check_stage(stage: str) -> None:
     if stage not in STAGES:
@@ -187,12 +209,16 @@ def _replay(session_id: str, events: list[JournalEvent]) -> SessionState:
     plan_revision = 0
     open_question = None
     artifacts: list[dict] = []
+    workflow, verified_gates = 'full_design', {}
 
     for ev in events:
         p = ev.payload
         if ev.kind == KIND_SESSION_START:
             requirement = p.get("requirement", "")
             created = created or ev.ts
+            workflow = p.get('workflow', 'full_design')
+            if workflow not in WORKFLOWS:
+                workflow = 'placement_review'
         elif ev.kind == KIND_STAGE_ENTER:
             current_stage = p.get("stage")
         elif ev.kind == KIND_STAGE_RESULT:
@@ -202,6 +228,7 @@ def _replay(session_id: str, events: list[JournalEvent]) -> SessionState:
             if p.get("status") == STATUS_OK and current_stage == stage:
                 current_stage = None
         elif ev.kind == KIND_PLAN_REVISION:
+            verified_gates.clear()
             plan_revision = p.get("revision", plan_revision)
         elif ev.kind == KIND_ARTIFACT:
             artifacts.append({"path": p.get("path"), "kind": p.get("kind", "")})
@@ -209,11 +236,16 @@ def _replay(session_id: str, events: list[JournalEvent]) -> SessionState:
             open_question = p.get("question")
         elif ev.kind == KIND_RESOLVED:
             open_question = None
+        elif ev.kind == KIND_VERIFIED_GATE and p.get('producer') == 'server_verifier':
+            if p.get('stage') in STAGES and p.get('evidence_id') and p.get('source_snapshot') and p.get('policy_version'):
+                verified_gates[p['stage']] = dict(p)
 
     # next_stage: first pipeline stage not yet marked ok.
     next_stage = None
-    for st in STAGES:
-        if stage_status.get(st) != STATUS_OK:
+    for st in WORKFLOWS[workflow]:
+        passed = (stage_status.get(st) == STATUS_OK if workflow == 'full_design' and st not in {'placement', 'verification'}
+                  else verified_gates.get(st, {}).get('passed') is True)
+        if not passed:
             next_stage = st
             break
     complete = next_stage is None
@@ -231,6 +263,7 @@ def _replay(session_id: str, events: list[JournalEvent]) -> SessionState:
         artifacts=artifacts,
         complete=complete,
         attempts=attempts,
+        workflow=workflow, verified_gates=verified_gates,
     )
 
 
@@ -248,11 +281,11 @@ class SessionStore:
         return self.root / f"{session_id}.jsonl"
 
     def start(self, requirement: str, session_id: Optional[str] = None,
-              *, now: Optional[datetime] = None) -> SessionJournal:
+              *, now: Optional[datetime] = None, workflow: str = 'full_design') -> SessionJournal:
         now = now or datetime.now()
         sid = session_id or now.strftime("%Y%m%d-%H%M%S")
         journal = SessionJournal(self._path(sid), sid)
-        journal.start(requirement, now=now)
+        journal.start(requirement, now=now, workflow=workflow)
         return journal
 
     def get(self, session_id: str) -> SessionJournal:

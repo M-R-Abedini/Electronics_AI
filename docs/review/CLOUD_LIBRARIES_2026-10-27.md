@@ -1,4 +1,4 @@
-# Cloud libraries in MCP Altium Suite
+# Cloud libraries in Electronics AI
 
 The `cloud` backend provides four tools through the suite catalog/invoker:
 
@@ -8,7 +8,7 @@ The `cloud` backend provides four tools through the suite catalog/invoker:
 - `cloud__cloud_library_stage_local`: stage an already downloaded local SchLib/PcbLib/IntLib/STEP/STP/EPW/ZIP with `provider=snapmagic|samacsys|other`, source URL and optional license note.
 
 The cache root comes from an explicit absolute `cache_dir` argument or configured
-`ALTIUM_SUITE_CLOUD_CACHE`. Add that root to the library-file backend's existing
+`ELECTRONICS_AI_CLOUD_CACHE`. Add that root to the library-file backend's existing
 allowed paths during setup so its inspection tools can read the staged files.
 The adapter does not initialize Altium or alter a design.
 

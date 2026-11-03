@@ -12,11 +12,11 @@ import suite_config
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     root = tmp_path / 'sources'
-    for relative in ('eda-agent/scripts/altium', 'coffeenmusic/server/AltiumScript'):
+    for relative in ('eda-agent/scripts/altium',):
         shutil.copytree(suite_config.ROOT / relative, root / relative)
     monkeypatch.setattr(suite_config, 'ROOT', root)
     runtime = tmp_path / "owner's runtime"
-    monkeypatch.setenv('ALTIUM_MCP_RUNTIME', str(runtime))
+    monkeypatch.setenv('ELECTRONICS_AI_RUNTIME', str(runtime))
     return runtime, root
 
 
@@ -28,16 +28,13 @@ def test_reload_tracks_old_and_new_without_replacing_sources(runtime):
     main.write_bytes(main.read_bytes() + b'\n{ regression reload }\n')
     second = suite_config.prepare_runtime()
     assert first['eda'] != second['eda']
-    assert first['legacy'] == first['eda']
-    assert second['legacy'] == second['eda']
     assert (first['eda'].parent / 'Main.pas').read_bytes() == original
     assert {first['eda'], second['eda']} == registry.refresh_catalog(folder)
-    assert second['eda'].name == 'AltiumMCP-EDA.PrjScr'
-    assert second['legacy'].name == 'AltiumMCP-EDA.PrjScr'
+    assert second['eda'].name == 'ElectronicsAI-EDA.PrjScr'
     assert not list((folder / 'scripts').glob('legacy-*'))
     bound = (second['eda'].parent / 'Main.pas').read_text()
     assert str(second['eda']).replace("'", "''") in bound
-    assert '__ALTIUM_MCP_SCRIPT_' not in bound
+    assert '__ELECTRONICS_AI_SCRIPT_' not in bound
     catalog = folder / registry.CATALOG
     stamp = catalog.stat().st_mtime_ns
     assert suite_config.prepare_runtime() == second
@@ -51,12 +48,11 @@ def test_native_workspace_is_embedded_and_changes_generation(runtime, monkeypatc
     first=suite_config.prepare_runtime()
     source=(first['eda'].parent/'Main.pas').read_text()
     assert str(first_work).replace("'","''") in source
-    assert '__ALTIUM_MCP_WORKSPACE__' not in source
+    assert '__ELECTRONICS_AI_WORKSPACE__' not in source
     second_work=folder/'second workspace'
     monkeypatch.setenv('EDA_AGENT_WORKSPACE',str(second_work))
     second=suite_config.prepare_runtime()
     assert first['eda']!=second['eda']
-    assert first['legacy']==first['eda'] and second['legacy']==second['eda']
     source=(second['eda'].parent/'Main.pas').read_text()
     assert str(second_work).replace("'","''") in source
 
@@ -76,7 +72,7 @@ def test_suite_uses_private_pointer_without_overriding_explicit_test_pointer(run
     import os
     # configure_environment sets these directly; reserve undo entries so a
     # test's generated script/workspace cannot leak into subsequent tests.
-    for name in ('ALTIUM_MCP_EDA_SCRIPT','ALTIUM_MCP_LEGACY_SCRIPT','ALTIUM_MCP_LEGACY_EXCHANGE'):
+    for name in ('ELECTRONICS_AI_EDA_SCRIPT',):
         monkeypatch.setenv(name,os.environ.get(name,''))
     monkeypatch.setenv('EDA_AGENT_WORKSPACE',str(folder/'workspace'))
     exe=folder/'X2.EXE';exe.parent.mkdir(parents=True,exist_ok=True);exe.touch()
@@ -119,37 +115,8 @@ def test_damaged_or_external_markers_never_enter_catalog(runtime, damage):
     assert project not in registry.refresh_catalog(folder)
 
 
-def test_pre_marker_snapshot_requires_matching_original_digest(runtime):
-    folder, source = runtime
-    scripts = folder / 'scripts'; scripts.mkdir(parents=True)
-    upstream = source / 'eda-agent/scripts/altium'
-    digest = hashlib.sha256(str(folder / 'legacy-exchange').encode())
-    for path in sorted(upstream.iterdir()):
-        if path.suffix.lower() in {'.pas', '.dfm', '.prjscr'}:
-            digest.update(path.name.encode()); digest.update(path.read_bytes())
-    old = scripts / ('eda-' + digest.hexdigest()[:16])
-    shutil.copytree(upstream, old)
-    project = old / 'Altium_API.PrjScr'
-    unrelated = folder / 'user-project' / 'Altium_API.PrjScr'
-    unrelated.parent.mkdir(); unrelated.write_text('user project')
-    forged = scripts / 'eda-0000000000000000'
-    shutil.copytree(upstream, forged)
-    assert registry.refresh_catalog(folder) == {project}
-    assert (old / registry.MARKER).exists()
-    assert not (forged / registry.MARKER).exists()
-    assert unrelated.read_text() == 'user project'
 
 
-def test_registered_private_sandbox_is_eligible_only_while_intact(runtime):
-    folder, _ = runtime
-    sandbox = folder / 'legacy-exchange/sandbox' / ('a' * 32)
-    sandbox.mkdir(parents=True)
-    (sandbox / 'Sandbox.pas').write_text('procedure Run; begin end;')
-    project = sandbox / 'Sandbox.PrjScr'; project.write_text('[Document1]\nDocumentPath=Sandbox.pas\n')
-    registry.register_sandbox_project(project)
-    assert project in registry.refresh_catalog(folder)
-    (sandbox / 'Sandbox.pas').write_text('user edits')
-    assert project not in registry.refresh_catalog(folder)
 
 
 def test_native_cleanup_excludes_current_and_requires_verified_focus():
@@ -189,16 +156,14 @@ def test_native_cleanup_finishes_before_readiness():
     assert startup.index('CleanupManagedScriptProjects(0)') < startup.index("WriteFileContent(WorkspaceDir + 'bridge-ready.json'")
 
 
-def test_snippet_overlay_reuses_one_project_and_content_addressed_sources(runtime):
-    folder, _ = runtime
-    base = suite_config.prepare_runtime()
-    snippet = "SandboxLog('read'); ResultText := IntToStr(GetWorkspace.DM_ProjectCount);"
-    first = suite_config.prepare_runtime(script_body=snippet)
-    assert first['eda'] != base['eda'] and first['legacy'] == first['eda']
-    assert suite_config.prepare_runtime(script_body=snippet) == first
-    unit = (first['eda'].parent / 'LegacySandbox.pas').read_text()
-    assert snippet in unit
-    assert 'LegacySandbox.pas' in first['eda'].read_text()
-    assert 'Procedure Run;' not in unit
-    assert not list((folder / 'scripts').glob('legacy-*'))
-    assert (base['eda'].parent / 'LegacySandbox.pas').read_text() != unit
+
+
+def test_no_marker_adoption_or_retired_project_aliases(runtime):
+    folder, source = runtime
+    projects = suite_config.prepare_runtime()
+    assert set(projects) == {'eda'}
+    assert set(registry.PROJECT_NAMES) == {'eda'}
+    unowned = folder / 'scripts' / ('eda-' + '0' * 16)
+    shutil.copytree(source / 'eda-agent/scripts/altium', unowned)
+    assert registry.refresh_catalog(folder) == {projects['eda']}
+    assert not (unowned / registry.MARKER).exists()
