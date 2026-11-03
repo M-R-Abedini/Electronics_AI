@@ -25,7 +25,7 @@
             }
           ]
         },
-        "elapsed_ms": 884.113,
+        "elapsed_ms": 927.115,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -171,7 +171,7 @@
           "baseline": [],
           "refine:211": []
         },
-        "elapsed_ms": 7.056,
+        "elapsed_ms": 7.133,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -307,7 +307,7 @@
           }
         ],
         "full_artifact_bytes": 22683,
-        "generation_elapsed_ms": 1.737,
+        "generation_elapsed_ms": 1.739,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -346,7 +346,7 @@
             }
           ]
         },
-        "elapsed_ms": 6.217,
+        "elapsed_ms": 7.239,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -492,7 +492,7 @@
           "baseline": [],
           "refine:307": []
         },
-        "elapsed_ms": 7.272,
+        "elapsed_ms": 6.206,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -628,7 +628,7 @@
           }
         ],
         "full_artifact_bytes": 22700,
-        "generation_elapsed_ms": 1.545,
+        "generation_elapsed_ms": 1.561,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -667,7 +667,7 @@
             }
           ]
         },
-        "elapsed_ms": 6.234,
+        "elapsed_ms": 8.388,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -813,7 +813,7 @@
           "baseline": [],
           "refine:401": []
         },
-        "elapsed_ms": 6.846,
+        "elapsed_ms": 11.195,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -949,7 +949,7 @@
           }
         ],
         "full_artifact_bytes": 22696,
-        "generation_elapsed_ms": 1.392,
+        "generation_elapsed_ms": 1.512,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -975,7 +975,7 @@
           "baseline": [],
           "compact_but_collision": []
         },
-        "elapsed_ms": 3.622,
+        "elapsed_ms": 5.676,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1150,7 +1150,7 @@
           "baseline": [],
           "refine:211": []
         },
-        "elapsed_ms": 3.129,
+        "elapsed_ms": 5.253,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1312,7 +1312,7 @@
           }
         ],
         "full_artifact_bytes": 20254,
-        "generation_elapsed_ms": 0.827,
+        "generation_elapsed_ms": 1.362,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -1338,7 +1338,7 @@
           "baseline": [],
           "compact_but_collision": []
         },
-        "elapsed_ms": 3.024,
+        "elapsed_ms": 3.794,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1513,7 +1513,7 @@
           "baseline": [],
           "refine:307": []
         },
-        "elapsed_ms": 3.224,
+        "elapsed_ms": 3.185,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1675,7 +1675,7 @@
           }
         ],
         "full_artifact_bytes": 20273,
-        "generation_elapsed_ms": 0.755,
+        "generation_elapsed_ms": 0.787,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -1701,7 +1701,7 @@
           "baseline": [],
           "compact_but_collision": []
         },
-        "elapsed_ms": 3.373,
+        "elapsed_ms": 3.284,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -1876,7 +1876,7 @@
           "baseline": [],
           "refine:401": []
         },
-        "elapsed_ms": 2.963,
+        "elapsed_ms": 3.298,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2038,7 +2038,7 @@
           }
         ],
         "full_artifact_bytes": 20270,
-        "generation_elapsed_ms": 0.76,
+        "generation_elapsed_ms": 0.932,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -2082,7 +2082,7 @@
             }
           ]
         },
-        "elapsed_ms": 2.847,
+        "elapsed_ms": 2.938,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2246,7 +2246,7 @@
             }
           ]
         },
-        "elapsed_ms": 3.641,
+        "elapsed_ms": 3.08,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2382,7 +2382,7 @@
           }
         ],
         "full_artifact_bytes": 18306,
-        "generation_elapsed_ms": 0.73,
+        "generation_elapsed_ms": 0.766,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -2426,7 +2426,7 @@
             }
           ]
         },
-        "elapsed_ms": 4.574,
+        "elapsed_ms": 6.377,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2590,7 +2590,7 @@
             }
           ]
         },
-        "elapsed_ms": 2.986,
+        "elapsed_ms": 4.09,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2726,7 +2726,7 @@
           }
         ],
         "full_artifact_bytes": 18306,
-        "generation_elapsed_ms": 0.796,
+        "generation_elapsed_ms": 1.272,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -2770,7 +2770,7 @@
             }
           ]
         },
-        "elapsed_ms": 5.147,
+        "elapsed_ms": 3.404,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -2934,7 +2934,7 @@
             }
           ]
         },
-        "elapsed_ms": 4.665,
+        "elapsed_ms": 5.518,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3070,7 +3070,7 @@
           }
         ],
         "full_artifact_bytes": 18306,
-        "generation_elapsed_ms": 1.269,
+        "generation_elapsed_ms": 1.757,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -3095,7 +3095,7 @@
             "baseline": [],
             "scoped_improvement": []
           },
-          "elapsed_ms": 53.347,
+          "elapsed_ms": 66.874,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3192,7 +3192,7 @@
           "critical_regressions": {
             "baseline": []
           },
-          "elapsed_ms": 34.877,
+          "elapsed_ms": 38.234,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3265,7 +3265,7 @@
           "inside_bbox_but_crosses_cutout": [],
           "shorter_link_blocks_channel": []
         },
-        "elapsed_ms": 114.228,
+        "elapsed_ms": 128.758,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3411,7 +3411,7 @@
           "baseline": [],
           "refine:211": []
         },
-        "elapsed_ms": 68.645,
+        "elapsed_ms": 75.263,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3499,7 +3499,7 @@
           }
         ],
         "full_artifact_bytes": 82207,
-        "generation_elapsed_ms": 14.96,
+        "generation_elapsed_ms": 13.155,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -3524,7 +3524,7 @@
             "baseline": [],
             "scoped_improvement": []
           },
-          "elapsed_ms": 64.554,
+          "elapsed_ms": 57.563,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3621,7 +3621,7 @@
           "critical_regressions": {
             "baseline": []
           },
-          "elapsed_ms": 36.114,
+          "elapsed_ms": 32.24,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -3694,7 +3694,7 @@
           "inside_bbox_but_crosses_cutout": [],
           "shorter_link_blocks_channel": []
         },
-        "elapsed_ms": 99.528,
+        "elapsed_ms": 106.212,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3840,7 +3840,7 @@
           "baseline": [],
           "refine:307": []
         },
-        "elapsed_ms": 63.102,
+        "elapsed_ms": 72.682,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -3928,7 +3928,7 @@
           }
         ],
         "full_artifact_bytes": 81440,
-        "generation_elapsed_ms": 11.965,
+        "generation_elapsed_ms": 12.698,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -3953,7 +3953,7 @@
             "baseline": [],
             "scoped_improvement": []
           },
-          "elapsed_ms": 82.686,
+          "elapsed_ms": 55.53,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -4050,7 +4050,7 @@
           "critical_regressions": {
             "baseline": []
           },
-          "elapsed_ms": 31.041,
+          "elapsed_ms": 44.699,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -4123,7 +4123,7 @@
           "inside_bbox_but_crosses_cutout": [],
           "shorter_link_blocks_channel": []
         },
-        "elapsed_ms": 114.989,
+        "elapsed_ms": 93.565,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4269,7 +4269,7 @@
           "baseline": [],
           "refine:401": []
         },
-        "elapsed_ms": 73.871,
+        "elapsed_ms": 68.543,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4357,7 +4357,7 @@
           }
         ],
         "full_artifact_bytes": 82102,
-        "generation_elapsed_ms": 11.45,
+        "generation_elapsed_ms": 14.594,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -4382,7 +4382,7 @@
             "baseline": [],
             "independent_eco": []
           },
-          "elapsed_ms": 4.221,
+          "elapsed_ms": 4.346,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -4484,7 +4484,7 @@
           "baseline": [],
           "move_sensitive": []
         },
-        "elapsed_ms": 4.729,
+        "elapsed_ms": 5.272,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4590,7 +4590,7 @@
           "baseline": [],
           "refine:211": []
         },
-        "elapsed_ms": 5.437,
+        "elapsed_ms": 5.272,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4686,7 +4686,7 @@
           }
         ],
         "full_artifact_bytes": 31042,
-        "generation_elapsed_ms": 1.496,
+        "generation_elapsed_ms": 1.321,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -4711,7 +4711,7 @@
             "baseline": [],
             "independent_eco": []
           },
-          "elapsed_ms": 4.348,
+          "elapsed_ms": 4.062,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -4813,7 +4813,7 @@
           "baseline": [],
           "move_sensitive": []
         },
-        "elapsed_ms": 4.612,
+        "elapsed_ms": 5.596,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -4919,7 +4919,7 @@
           "baseline": [],
           "refine:307": []
         },
-        "elapsed_ms": 4.569,
+        "elapsed_ms": 5.308,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -5015,7 +5015,7 @@
           }
         ],
         "full_artifact_bytes": 30980,
-        "generation_elapsed_ms": 1.366,
+        "generation_elapsed_ms": 1.311,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -5040,7 +5040,7 @@
             "baseline": [],
             "independent_eco": []
           },
-          "elapsed_ms": 5.018,
+          "elapsed_ms": 4.102,
           "evaluations": [
             {
               "candidate_id": "baseline",
@@ -5142,7 +5142,7 @@
           "baseline": [],
           "move_sensitive": []
         },
-        "elapsed_ms": 4.597,
+        "elapsed_ms": 6.079,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -5248,7 +5248,7 @@
           "baseline": [],
           "refine:401": []
         },
-        "elapsed_ms": 4.818,
+        "elapsed_ms": 5.246,
         "evaluations": [
           {
             "candidate_id": "baseline",
@@ -5344,7 +5344,7 @@
           }
         ],
         "full_artifact_bytes": 31001,
-        "generation_elapsed_ms": 1.365,
+        "generation_elapsed_ms": 1.363,
         "generator_budget": {
           "candidate_count": 1,
           "iterations": 8,
@@ -5380,7 +5380,7 @@
     "dense_escape",
     "mixed_isolated"
   ],
-  "first_pass_elapsed_ms": 1952.447,
+  "first_pass_elapsed_ms": 2022.015,
   "held_out_scope": "Independent computational seeds of synthetic fixtures; not a held-out expert-layout dataset",
   "held_out_seeds": [
     211,
@@ -5394,7 +5394,7 @@
     "Wall time depends on the machine; fixture/outcome digests and measured artifact bytes are recorded separately.",
     "These counterexamples do not establish optimizer superiority or manufacturing/SI/PI sign-off."
   ],
-  "measurement_elapsed_ms": 3253.312,
+  "measurement_elapsed_ms": 3510.0,
   "policy_version": "placement-evidence-p0-v4",
   "reproducibility": {
     "compared": "fixture hashes, decisions, evidence/plan digests, metrics and artifact sizes; timings excluded",
@@ -5403,11 +5403,11 @@
   },
   "schema": 1,
   "source": {
-    "git_head": "f884ebab031258575b1a45f4940d84a3682d0abf",
+    "git_head": "a80ed17705fc9c8a46afebdea040ace5fd6ebba3",
     "module_sha256": {
       "eda-agent/src/eda_agent/design/copper_geometry.py": "db3bfcde2b09b3cf11b413e52fafe41fd715d1a08a91805eeef8a37a388e1f8e",
       "eda-agent/src/eda_agent/design/pcb_placement.py": "64bff9211c2d99e99859114f92ff68bdfe969d9df1cf5ab66ab88a7feaa0ac3f",
-      "eda-agent/src/eda_agent/design/placement_evidence.py": "96bfb9aa1bcce037376ae5256a23e29353184b2520021ed54fc8739501518c1c",
+      "eda-agent/src/eda_agent/design/placement_evidence.py": "3a2e109b296791040d9bf0a4ba49a4b61d30bfd043a98af0ff371922d8cae8bf",
       "eda-agent/src/eda_agent/design/placement_p0.py": "8502375371cbe7266dce6597457a533dba3e3aaa28bc06eda85f4637828dee2a",
       "eda-agent/src/eda_agent/placement/autoplace.py": "d8ce98443398fb635bf15abdf5d5e108a04c8508f7e3ab0c828a529f9f4abeee",
       "scripts/benchmark_pcb_layout.py": "3998d36ddee1aea7f15f2e46cb9098a2ab0bb6aafddb891104b71df0e0c022ee"

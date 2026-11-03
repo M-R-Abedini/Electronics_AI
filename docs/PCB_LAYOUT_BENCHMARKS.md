@@ -60,18 +60,18 @@ CLI parameters. Full comparison reports remain optional artifacts; the checked
 JSON records their measured sizes without duplicating every geometry witness.
 
 The checked run uses `placement-evidence-p0-v4` and the environment recorded in
-the JSON. Both passes completed in 3.25 seconds; all assertions passed. Source
+the JSON. Both passes completed in 3.51 seconds; all assertions passed. Source
 hashes include the P0 metric module as well as the geometry and solver modules. The table shows the median
 primary-decision time across the three seeds, the largest full primary report,
 and the maximum total check count across that decision's candidates.
 
 | Family | Required observed decision | Median ms | Max report bytes | Checks |
 |---|---|---:|---:|---:|
-| Precision analog | Reject lower ordinary-net HPWL when the transformed-pad AABB Manhattan gap regresses | 6.234 | 21,114 | 29 |
-| Switching power | Reject a compact placement with a synthetic courtyard collision | 3.373 | 19,323 | 23 |
-| Digital interface | Preserve baseline over an unnecessary no-op reapply; retain declared sides/origin | 4.574 | 17,692 | 21 |
-| Dense escape | Reject a shorter link that blocks the channel and a move across a cutout; accept the legal scoped ECO | 114.228 | 115,726 | 203 |
-| Mixed isolated | Block missing safety/unsupported creepage evidence in the dependent scope; permit the independent ECO | 4.612 | 29,179 | 47 |
+| Precision analog | Reject lower ordinary-net HPWL when the transformed-pad AABB Manhattan gap regresses | 8.388 | 21,114 | 29 |
+| Switching power | Reject a compact placement with a synthetic courtyard collision | 3.794 | 19,323 | 23 |
+| Digital interface | Preserve baseline over an unnecessary no-op reapply; retain declared sides/origin | 3.404 | 17,692 | 21 |
+| Dense escape | Reject a shorter link that blocks the channel and a move across a cutout; accept the legal scoped ECO | 106.212 | 115,726 | 203 |
+| Mixed isolated | Block missing safety/unsupported creepage evidence in the dependent scope; permit the independent ECO | 5.596 | 29,179 | 47 |
 
 The dense fixture has 10 components and 200 real synthetic pad rectangles; its
 outline is concave and includes a cutout. Cold imports and machine load affect
@@ -108,3 +108,11 @@ required unknown. Edge notches, intersecting physical cutouts or another
 unsupported composed board contour are retained as raw evidence and produce
 unknown mechanical coverage; they are not silently treated as intact FR4.
 Exact coincidence of a courtyard with a physical hole also fails containment.
+
+
+Physical-hole overhang permission is intentionally conservative: when a
+courtyard overlaps a hole, one sourced allowance must contain the whole hole.
+An unrelated or partial-hole allowance cannot pass an exact-boundary coincidence.
+The current verifier does not prove clipping of the courtyard/hole intersection
+or combine several partial permissions into a whole-hole grant. Focused
+placement/P0/protocol/cutout regressions passed 104 tests after this correction.

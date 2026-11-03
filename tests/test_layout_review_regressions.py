@@ -290,3 +290,25 @@ def test_unsupported_composed_mechanical_shape_captures_as_unknown_not_intact_fr
     assert context['cutouts'] == []
     assert context['copper_snapshot']['cutouts'] == snapshot['cutouts']
     assert not core.evaluate_placement(context)['feasible']
+
+
+
+@pytest.mark.parametrize('permission,expected', [('unrelated', False), ('partial_hole', False), ('whole_hole', True)])
+def test_physical_hole_overlap_requires_a_whole_hole_sourced_allowance(tmp_path, permission, expected):
+    from test_layout_protocol import native_fixture
+    from suite_layout import context_from_snapshot
+    snapshot, models, fab = native_fixture(tmp_path)
+    snapshot['cutouts'] = [{'id': 'physical-hole', 'kind': 'board_cutout',
+        'outline': [[25, 34], [27, 34], [27, 36], [25, 36]], 'geometry_complete': True}]
+    context = context_from_snapshot(snapshot, 'synthetic-hole-allowance', models, fab, {})
+    region = {
+        'unrelated': [[11, 30], [13, 30], [13, 32], [11, 32]],
+        'partial_hole': [[25.5, 34.5], [26.5, 34.5], [26.5, 35.5], [25.5, 35.5]],
+        'whole_hole': [[24, 33], [28, 33], [28, 37], [24, 37]],
+    }[permission]
+    context['overhang_allowances'] = [{'component_id': '101',
+        'source': {'kind': 'engineering_policy', 'id': 'explicit-synthetic-mechanical-permission'},
+        'region': {'outline': region, 'holes': []}}]
+    result = core.evaluate_placement(context, moves=[{'component_id': '101', 'x_mm': 26, 'y_mm': 35}])
+    assert result['feasible'] is expected
+    assert next(c for c in result['checks'] if c['id'] == 'outline:101')['status'] == ('pass' if expected else 'fail')

@@ -311,8 +311,11 @@ def _contained(ring, region, allowances=()):
         return False
     # An enclosed hole must not disappear simply because all outer edges fit.
     for hole in region.get("holes", []):
-        if not allowances and _interior_overlap(ring, hole):
-            return False  # Coincident boundaries still enclose unsupported FR4 void.
+        if _interior_overlap(ring, hole) and not any(_contained(hole, allowance) for allowance in allowances):
+            # Boundary coincidence still encloses an FR4 void. An unrelated
+            # overhang allowance cannot authorize it. Partial-hole clipping or
+            # union of allowances is not proved: require one whole-hole grant.
+            return False
         if any(geom.point_in_ring(p, ring, boundary=False) and not any(
                 geom.point_in_region(p, allowance) for allowance in allowances) for p in hole):
             return False
