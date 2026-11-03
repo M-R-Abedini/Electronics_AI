@@ -1717,7 +1717,7 @@ End;
 { For batch-operation strings (compact key=value;...~~ encoding) the scope    }
 { is still a plain string token: active_doc / project / doc:path /            }
 { project:path. ParseScope handles both forms, JSON-object first, then the   }
-{ legacy compact form for batch-op fields.                                    }
+{ compact form used by the current batch emitter.                                    }
 {..............................................................................}
 
 Procedure ParseScope(Scope : String; Var ScopeType : String; Var ScopePath : String);
@@ -1741,7 +1741,7 @@ Begin
         Exit;
     End;
 
-    // Legacy compact form used inside batch-op strings only.
+    // Compact scope form used inside current batch-op strings.
     If Copy(Scope, 1, 4) = 'doc:' Then
     Begin
         ScopeType := 'doc';
@@ -2266,7 +2266,7 @@ Var
     SchDoc : ISch_Document;
     Board : IPCB_Board;
 Begin
-    SchDoc := SchServer.GetCurrentSchDocument;
+    ResolveGraphicTargets(SchDoc, Board);
     If SchDoc <> Nil Then
     Begin
         SchDeselectAllObjects(SchDoc);
@@ -2275,7 +2275,6 @@ Begin
         Exit;
     End;
 
-    Board := GetPCBBoardAnywhere(0);
     If Board <> Nil Then
     Begin
         ResetParameters;
@@ -2297,6 +2296,7 @@ Var
     Action, NativeAction, ServerName, Path, Ext : String;
     Workspace : IWorkspace;
     Doc : IDocument;
+    Board : IPCB_Board;
 Begin
     Action := ExtractJsonValue(Params, 'action');
     If Action = '' Then Action := 'fit';
@@ -2310,7 +2310,14 @@ Begin
     Begin Result := BuildErrorResponse(RequestId, 'NO_DOCUMENT', 'No focused design document'); Exit; End;
     Path := Doc.DM_FullPath;
     Ext := UpperCase(ExtractFileExt(Path));
-    If Ext = '.PCBDOC' Then ServerName := 'PCB'
+    If Ext = '.PCBDOC' Then Begin
+        Board := RequireTargetPCBBoard(0);
+        If Board = Nil Then Begin
+            Result := BuildErrorResponse(RequestId, 'ERR_TARGET_DOCUMENT_MISMATCH',
+                'An explicit loaded PCB target is required before viewport operations'); Exit;
+        End;
+        ServerName := 'PCB';
+    End
     Else If Ext = '.SCHDOC' Then ServerName := 'Sch'
     Else
     Begin Result := BuildErrorResponse(RequestId, 'WRONG_DOCUMENT', 'Focus a SchDoc or PcbDoc before zooming'); Exit; End;
@@ -2423,67 +2430,17 @@ End;
 {   with batch_delete / place_wires:                                         }
 {     scope=active_doc;object_type=eNetLabel;filter=Text=VBUS;set=Location.Y=6400~~... }
 {                                                                            }
-{ LEGACY format (still accepted when the payload contains no '~~'):          }
-{   pipe-separated operations, each semicolon-separated as                   }
-{   scope;object_type;filter;set                                             }
-{                                                                            }
-{ The legacy format was BROKEN for any op whose filter or set contained a    }
-{ '|', which is the documented separator INSIDE both of those fields.        }
-{ Measured on a live document: an op list of 4 eSchComponent moves followed  }
-{ by 8 eNetLabel moves reported operations_processed=4 and silently dropped  }
-{ the other 8, and a lone eNetLabel op with a two-condition filter reported  }
-{ operations_processed=0 while the identical filter matched through          }
-{ obj_query and obj_batch_delete. Cause: the top-level split on '|' tore     }
-{ each such op into fragments, and every fragment after the first had fewer  }
-{ than three ';' so it hit `Continue` and vanished without a trace. It was   }
-{ never an object-type allowlist -- eNetLabel was always accepted.           }
-{                                                                            }
-{ '~~' cannot appear in an Altium name, filter or property string (see the   }
-{ batch helper notes in Main.pas), so the new format is unambiguous.         }
-{                                                                            }
-{ Every op is now evaluated independently and reports its own matched count  }
-{ in "results", so an op that matches nothing is REPORTED rather than being  }
-{ silently counted as fine.                                                  }
-{..............................................................................}
-
-{ Split one legacy 'scope;object_type;filter;set' operation. Returns False  }
-{ when the fragment does not carry all four fields, which is how a torn      }
-{ legacy payload is detected.                                                }
-Function SplitLegacyModifyOp(OpStr : String; Var Scope : String;
-    Var ObjTypeStr : String; Var FilterStr : String; Var SetStr : String) : Boolean;
-Var
-    Rest : String;
-    SemiPos : Integer;
-Begin
-    Result := False;
-    Rest := OpStr;
-
-    SemiPos := Pos(';', Rest);
-    If SemiPos = 0 Then Exit;
-    Scope := Copy(Rest, 1, SemiPos - 1);
-    Rest := Copy(Rest, SemiPos + 1, Length(Rest));
-
-    SemiPos := Pos(';', Rest);
-    If SemiPos = 0 Then Exit;
-    ObjTypeStr := Copy(Rest, 1, SemiPos - 1);
-    Rest := Copy(Rest, SemiPos + 1, Length(Rest));
-
-    SemiPos := Pos(';', Rest);
-    If SemiPos = 0 Then Exit;
-    FilterStr := Copy(Rest, 1, SemiPos - 1);
-    SetStr := Copy(Rest, SemiPos + 1, Length(Rest));
-    Result := True;
-End;
+{ The named-field ~~ format preserves pipe separators inside filters/sets. }
+{ Every operation reports its own matched count and failures. }
 
 Function Gen_BatchModify(Params : String; RequestId : String) : String;
 Var
     Operations, OpStr, Remaining, OpResult, OpData, Note : String;
     Scope, ObjTypeStr, FilterStr, SetStr : String;
     ScopeType, ScopePath : String;
-    ObjTypeInt, PipePos : Integer;
+    ObjTypeInt : Integer;
     TotalMatched, OpCount, OpSkipped, OpMatched : Integer;
     ResultJson, ResultsJson : String;
-    UseTilde : Boolean;
 Begin
     Operations := ExtractJsonValue(Params, 'operations');
     If Operations = '' Then
@@ -2498,11 +2455,6 @@ Begin
     ResultJson := '';
     ResultsJson := '';
     Remaining := Operations;
-    { A single modern operation has no separator, but still carries
-      named fields. Python's modern emitter always starts with scope=. }
-    UseTilde := (Pos('~~', Operations) > 0) Or
-                (Copy(Operations, 1, 6) = 'scope=');
-
     { Clear the property-write diagnostics buffer so this call only       }
     { surfaces issues raised by THIS batch, not anything left over.       }
     ResetPropertyDiag(0);
@@ -2515,36 +2467,12 @@ Begin
         SetStr := '';
         Note := '';
 
-        If UseTilde Then
-        Begin
-            OpStr := NextBatchOp(Remaining);
-            If OpStr = '' Then Break;
-            Scope := GetBatchField(OpStr, 'scope');
-            ObjTypeStr := GetBatchField(OpStr, 'object_type');
-            FilterStr := GetBatchField(OpStr, 'filter');
-            SetStr := GetBatchField(OpStr, 'set');
-        End
-        Else
-        Begin
-            { Legacy '|' framing. Kept so an older Python client keeps      }
-            { working, but a fragment that lost fields to a '|' inside a    }
-            { filter or set is now COUNTED and reported instead of being    }
-            { dropped in silence.                                           }
-            PipePos := Pos('|', Remaining);
-            If PipePos = 0 Then
-            Begin
-                OpStr := Remaining;
-                Remaining := '';
-            End
-            Else
-            Begin
-                OpStr := Copy(Remaining, 1, PipePos - 1);
-                Remaining := Copy(Remaining, PipePos + 1, Length(Remaining));
-            End;
-            If OpStr = '' Then Continue;
-            If Not SplitLegacyModifyOp(OpStr, Scope, ObjTypeStr, FilterStr, SetStr) Then
-                Note := 'malformed_operation';
-        End;
+        OpStr := NextBatchOp(Remaining);
+        If OpStr = '' Then Break;
+        Scope := GetBatchField(OpStr, 'scope');
+        ObjTypeStr := GetBatchField(OpStr, 'object_type');
+        FilterStr := GetBatchField(OpStr, 'filter');
+        SetStr := GetBatchField(OpStr, 'set');
 
         If Scope = '' Then Scope := 'active_doc';
 
@@ -2700,12 +2628,9 @@ Begin
         Exit;
     End;
 
-    Board := GetPCBBoardAnywhere(0);
-    SchDoc := SchServer.GetCurrentSchDocument;
+    ResolveGraphicTargets(SchDoc, Board);
 
-    { GetPCBBoardAnywhere returns a board even when a schematic is the    }
-    { focused document, so a schematic highlight would silently paint the }
-    { PCB instead. Prefer the focused doc, or an explicit context param.  }
+    { An explicit PCB target takes precedence over cached schematic state. }
     FocusedKind := '';
     Workspace := GetWorkspace;
     If Workspace <> Nil Then
@@ -2843,8 +2768,7 @@ Var
     Obj : ISch_GraphicalObject;
     Cleared : Integer;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    SchDoc := SchServer.GetCurrentSchDocument;
+    ResolveGraphicTargets(SchDoc, Board);
     Cleared := 0;
 
     If Board <> Nil Then
@@ -3121,8 +3045,7 @@ Begin
         Exit;
     End;
 
-    Board := GetPCBBoardAnywhere(0);
-    SchDoc := SchServer.GetCurrentSchDocument;
+    ResolveGraphicTargets(SchDoc, Board);
 
     If Board <> Nil Then
     Begin
@@ -3161,7 +3084,7 @@ Begin
     Mode := ExtractJsonValue(Params, 'mode');
     If Mode = '' Then Mode := '3d';
 
-    Board := GetPCBBoardAnywhere(0);
+    Board := RequireTargetPCBBoard(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No active PCB document');
@@ -3358,8 +3281,7 @@ Var
     SchDoc : ISch_Document;
     Board : IPCB_Board;
 Begin
-    SchDoc := SchServer.GetCurrentSchDocument;
-    Board := GetPCBBoardAnywhere(0);
+    ResolveGraphicTargets(SchDoc, Board);
 
     If SchDoc <> Nil Then
     Begin
@@ -5598,8 +5520,7 @@ Var
     Data : String;
     SheetStyle, UnitStr : String;
 Begin
-    Board := GetPCBBoardAnywhere(0);
-    SchDoc := SchServer.GetCurrentSchDocument;
+    ResolveGraphicTargets(SchDoc, Board);
 
     If SchDoc <> Nil Then
     Begin
@@ -8669,24 +8590,8 @@ Begin
         End;
     End;
 
-    { --- PCB side: iterate every pad on the board, collect the ones whose }
-    { .Net matches. Each property access is in its own Try/Except and     }
-    { we use nested If (not boolean And) so a nil/raising step never      }
-    { drops an otherwise-valid pad, that was the bug that made pcb_pin_ }
-    { count come back 0 even though pcb_get_component_pads found them.    }
-    { GetCurrentPCBBoard only returns a board when a PCB tab has focus.   }
-    { crossref_net is typically called while the USER is looking at a    }
-    { schematic, so focus-based lookup silently returns nil, that's the }
-    { source of the original pcb_pin_count:0 bug. Fall back to iterating }
-    { the project's documents, find the first .PcbDoc, resolve it via   }
-    { PCBServer.GetPCBBoardByPath which doesn't care about focus.         }
-    { GetPCBBoardAnywhere already walks the project's PCB docs internally,    }
-    { its result is the single source of truth. Older code duplicated the     }
-    { iteration with a direct PCBServer.GetPCBBoardByPath call - that symbol  }
-    { is undeclared on some Altium builds and Try/Except cannot catch         }
-    { undeclared identifiers (see [[delphiscript_api_quirks]]), so the inline }
-    { fallback would crash the script instead of just returning Nil.          }
-    Board := GetPCBBoardAnywhere(0);
+    { The PCB side is resolved only from the caller's explicit loaded target. }
+    Board := RequireTargetPCBBoard(0);
 
     If Board = Nil Then
         DiagBoardNil := 1
@@ -9515,7 +9420,7 @@ Var
     LyrColor : Integer;
     LyrVisible, LyrFirst : Boolean;
 Begin
-    Board := GetPCBBoardAnywhere(0);
+    Board := RequireTargetPCBBoard(0);
     If Board = Nil Then
     Begin
         Result := BuildErrorResponse(RequestId, 'NO_PCB',

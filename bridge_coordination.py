@@ -71,7 +71,7 @@ def _launch_attempted_at():
 
 # A missing ready file alone does not prove that the native engine stopped.
 # Only a clean native shutdown of the session we actually pinged permits a
-# fast restart. Older scripts and damaged markers keep the two-probe path.
+# fast restart. Missing or damaged markers retain the conservative probe path.
 _CLEAN_STOPS = {'engine_idle_release', 'idle_timeout',
                 'coordinator_stop_file', 'command_or_external_stop'}
 
@@ -162,11 +162,11 @@ def _retire_restarted_session():
         (WORKSPACE / name).unlink(missing_ok=True)
     log_event('retired_exited_editor_session', pid=owner['pid'])
 
-def _legacy_marker():
-    return RUNTIME / 'legacy-operation.json'
+def _operation_marker():
+    return RUNTIME / 'native-operation.json'
 
-def _guard_legacy(state):
-    marker = _legacy_marker()
+def _guard_operation(state):
+    marker = _operation_marker()
     if not marker.exists():
         return
     try:
@@ -182,7 +182,7 @@ def _guard_legacy(state):
             marker.unlink(missing_ok=True)
             return
         if pending['pid'] != state['pid']:
-            raise RuntimeError('The unresolved legacy operation belongs to another running Altium editor; no script was launched.')
+            raise RuntimeError('The unresolved native operation belongs to another running Altium editor; no script was launched.')
         completion = Path(pending['completion_path'])
         if completion.exists():
             reply = json.loads(completion.read_text(encoding='utf-8-sig'))
@@ -194,12 +194,12 @@ def _guard_legacy(state):
     except TimeoutError:
         raise
     except (OSError, ValueError, KeyError, TypeError) as error:
-        raise RuntimeError('Legacy operation ownership cannot be verified; no new script was launched.') from error
-    raise RuntimeError('A legacy operation has not confirmed completion. No new script was launched. Wait for completion or stop the script manually and reset ownership.')
+        raise RuntimeError('Native operation ownership cannot be verified; no new script was launched.') from error
+    raise RuntimeError('A native operation has not confirmed completion. No new script was launched. Wait for completion or stop the script manually and reset ownership.')
 
-def begin_legacy(request_id, request_path, completion_path):
+def begin_operation(request_id, request_path, completion_path):
     state = _guard_editor()
-    marker = _legacy_marker()
+    marker = _operation_marker()
     marker.parent.mkdir(parents=True, exist_ok=True)
     temp = marker.with_suffix('.json.tmp')
     temp.write_text(json.dumps(dict(request_id=request_id, pid=state['pid'],
@@ -207,8 +207,8 @@ def begin_legacy(request_id, request_path, completion_path):
         request_path=str(request_path), completion_path=str(completion_path))), encoding='utf-8')
     temp.replace(marker)
 
-def abandon_unlaunched_legacy(request_id):
-    marker = _legacy_marker()
+def abandon_unlaunched_operation(request_id):
+    marker = _operation_marker()
     pending = json.loads(marker.read_text(encoding='utf-8'))
     if pending['request_id'] == request_id:
         marker.unlink(missing_ok=True)
@@ -273,7 +273,7 @@ def engine_lock():
     try:
         while (f := try_lock()) is None:
             if time.monotonic() > deadline:
-                raise TimeoutError('Another Altium MCP command is still running')
+                raise TimeoutError('Another Electronics AI command is still running')
             time.sleep(.1)
         yield
     finally:
@@ -312,7 +312,7 @@ async def async_engine_lock():
     try:
         while (f := try_lock()) is None:
             if time.monotonic() > deadline:
-                raise TimeoutError('Another Altium MCP command is still running')
+                raise TimeoutError('Another Electronics AI command is still running')
             await asyncio.sleep(.1)
         yield
     finally:
@@ -458,7 +458,7 @@ def _guard_editor():
         log_event('modal_blocked', pid=state['pid'])
         raise RuntimeError('Altium main window is disabled. Inspect Altium for a hidden dialog or running operation before retrying; no second script was launched.')
     _bind_editor_runtime(state)
-    _guard_legacy(state)
+    _guard_operation(state)
     return state
 
 def _handler_busy():
@@ -574,7 +574,7 @@ def _ensure(probe):
     # Consume the shutdown evidence before launch, even if the launcher fails.
     (WORKSPACE / 'bridge-stopped.json').unlink(missing_ok=True)
     (WORKSPACE / 'bridge-owner.json').unlink(missing_ok=True)
-    command = '"%s" -RScriptingSystem:RunScript(ProjectName="%s"|ProcName="Dispatcher>StartMCPServer")' % (executable, script)
+    command = '"%s" -RScriptingSystem:RunScript(ProjectName="%s"|ProcName="Dispatcher.pas>StartMCPServer")' % (executable, script)
     process = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW)
     log_event('bridge_launch', launcher_pid=process.pid, script=str(script), clean_release=released)
     deadline = time.monotonic() + 45
@@ -607,7 +607,7 @@ def ensure_eda(bridge, execute):
     # A version string can be unchanged during development. The generated
     # project's content-addressed path identifies every compiled source file.
     import os
-    expected = os.environ.get('ALTIUM_MCP_EDA_SCRIPT')
+    expected = os.environ.get('ELECTRONICS_AI_EDA_SCRIPT')
     actual = _read_marker('bridge-ready.json').get('project_path')
     if expected and actual and not isinstance(actual, str):
         raise RuntimeError('Native script project identity is invalid; no design command was queued.')
@@ -625,7 +625,7 @@ def start_eda():
 def close_project_once(params, timeout):
     """Run one targeted native close with the polling engine released.
 
-    Caller holds engine_lock. Shared legacy ownership blocks every bridge
+    Caller holds engine_lock. Shared native-operation ownership blocks every bridge
     if this one-shot operation fails to finish; a close is never replayed.
     """
     from eda_agent.bridge.exceptions import AltiumCommandError, AltiumProtocolError
@@ -638,7 +638,7 @@ def close_project_once(params, timeout):
     request = WORKSPACE / 'project-close-request.json'
     response = WORKSPACE / ('close-response_' + request_id + '.json')
     completion = WORKSPACE / ('close-completed_' + request_id + '.json')
-    begin_legacy(request_id, request, completion)
+    begin_operation(request_id, request, completion)
     temp = request.with_suffix('.json.tmp')
     launched = False
     try:
@@ -646,14 +646,14 @@ def close_project_once(params, timeout):
         temp.replace(request)
         script = SCRIPT or prepare_runtime()['eda']
         executable = EXE or altium_exe()
-        command = '"%s" -RScriptingSystem:RunScript(ProjectName="%s"|ProcName="Dispatcher>CloseMCPProject")' % (executable, script)
+        command = '"%s" -RScriptingSystem:RunScript(ProjectName="%s"|ProcName="Dispatcher.pas>CloseMCPProject")' % (executable, script)
         subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW)
         launched = True
         deadline = time.monotonic() + min(timeout, 60)
         while time.monotonic() < deadline:
             if completion.exists():
                 _guard_editor()
-                if _legacy_marker().exists():
+                if _operation_marker().exists():
                     raise AltiumProtocolError(message='Close completion did not match its native owner')
                 reply = json.loads(response.read_text(encoding='utf-8-sig'))
                 if not isinstance(reply, dict) or reply.get('id') != request_id or type(reply.get('success')) is not bool:
@@ -675,8 +675,8 @@ def close_project_once(params, timeout):
         temp.unlink(missing_ok=True)
         request.unlink(missing_ok=True)
         if not launched:
-            abandon_unlaunched_legacy(request_id)
-        if not _legacy_marker().exists():
+            abandon_unlaunched_operation(request_id)
+        if not _operation_marker().exists():
             response.unlink(missing_ok=True)
             completion.unlink(missing_ok=True)
 
@@ -685,7 +685,7 @@ def stop_eda():
     state = _guard_editor()
     WORKSPACE.mkdir(parents=True, exist_ok=True)
     if _handler_busy():
-        raise RuntimeError('An EDA handler is still running; refusing to stop it for the other bridge')
+        raise RuntimeError('An EDA handler is still running; refusing to stop it before another operation')
     if _cleanly_released(state):
         _confirm_editor_return(state)
         return
@@ -700,7 +700,7 @@ def stop_eda():
         if not _handler_busy() and _cleanly_released(state):
             _confirm_editor_return(state)
             return
-        raise TimeoutError('EDA shutdown is not confirmed; refusing legacy handover. '
+        raise TimeoutError('EDA shutdown is not confirmed; refusing engine handover. '
                            'Establish a session with the coordinated EDA bridge before retrying.') from None
     _remember_session(state)
     stop = WORKSPACE / 'stop'
@@ -731,7 +731,7 @@ def reset_after_manual_stop():
         for pattern in ('request_*.json', 'progress_*.json'):
             for path in WORKSPACE.glob(pattern):
                 path.unlink(missing_ok=True)
-        marker = _legacy_marker()
+        marker = _operation_marker()
         if marker.exists():
             # Normal dispatch fails closed on damaged ownership. Only this
             # explicit assertion that the native script stopped can retire it.
@@ -743,17 +743,15 @@ def reset_after_manual_stop():
                     raise ValueError('Request path is outside the configured runtime/workspace')
                 if request.exists() and not request.is_file():
                     raise ValueError('Request path is not a file')
-                if request.name not in {'request.json', 'unused-request.json', 'project-close-request.json'}:
-                    raise ValueError('Request path is not a legacy inbox')
+                if request.name not in {'project-close-request.json'}:
+                    raise ValueError('Request path is not the project-close inbox')
             except (ValueError, KeyError, TypeError) as error:
-                archive = marker.with_name('legacy-operation.corrupt-' + uuid.uuid4().hex + '.json')
+                archive = marker.with_name('native-operation.corrupt-' + uuid.uuid4().hex + '.json')
                 marker.replace(archive)
                 log_event('manual_ownership_archive', archive=str(archive), error=str(error))
             else:
                 request.unlink(missing_ok=True)
                 marker.unlink(missing_ok=True)
-        # The fixed legacy inbox may survive a damaged or missing marker.
-        (RUNTIME / 'legacy-exchange' / 'request.json').unlink(missing_ok=True)
         (WORKSPACE / 'project-close-request.json').unlink(missing_ok=True)
         LAUNCH_STATE.unlink(missing_ok=True)
         # This explicit assertion also retires stale polling-session evidence.

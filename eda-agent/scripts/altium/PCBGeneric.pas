@@ -228,7 +228,7 @@ Var
     Lyr : TLayer;
 Begin
     Result := False;
-    Lyr := ResolveLayerId(GetPCBBoardAnywhere(0), Value);
+    Lyr := ResolveLayerId(RequireTargetPCBBoard(0), Value);
     If Lyr <> eNoLayer Then
     Begin
         Obj.Layer := Lyr;
@@ -714,33 +714,11 @@ Var
     TotalMatched : Integer;
     JsonItems, Why, BadLayer : String;
 Begin
-    { A READ MAY WANDER; AN EDIT MAY NOT.                                   }
-    {                                                                        }
-    { GetPCBBoardAnywhere opens the first board it can find when none is     }
-    { focused, and hides the focus change afterwards. For a query that is    }
-    { the focus-independent access this project advertises. For a delete it  }
-    { is a misfire: with a library in front and two boards open, primitives  }
-    { would be removed from whichever board the project walk reached first,  }
-    { and nothing in the reply would say which.                              }
-    {                                                                        }
-    { There is no library-scoped primitive delete, so a caller working in a  }
-    { PcbLib has no correct tool here and the wrong one used to look like    }
-    { it worked.                                                             }
-    If (Mode = 'modify') Or (Mode = 'delete') Or (Mode = 'create') Then
-    Begin
-        Board := GetPCBBoardForMutation(Why);
-        If Board = Nil Then
-        Begin
-            Result := BuildErrorResponse(RequestId, 'AMBIGUOUS_TARGET', Why);
-            Exit;
-        End;
-    End
-    Else
-        Board := GetPCBBoardAnywhere(0);
-
+    Board := RequireTargetPCBBoard(0);
     If Board = Nil Then
     Begin
-        Result := BuildErrorResponse(RequestId, 'NO_PCB', 'No PCB document is active');
+        Result := BuildErrorResponse(RequestId, 'ERR_TARGET_DOCUMENT_MISMATCH',
+            'An explicit matching already-loaded target_board_path is required');
         Exit;
     End;
 

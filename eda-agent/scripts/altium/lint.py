@@ -1,3 +1,4 @@
+# Modified 2026-11-02 by M-R-Abedini; see root MODIFICATIONS.md.
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 George Saliba <george.saliba@salitronic.com>
 """DelphiScript trap linter for Altium integration scripts.
@@ -723,6 +724,16 @@ def _scan_reserved_in_var_block(path: str, lines: list[str]) -> list[Finding]:
             in_block = False
             continue
         if in_block:
+            # Altium's interpreter treats Stored as a property directive even
+            # in a comma-separated local declaration. The declaration is
+            # accepted, but its later use raises "Unknown identifier: Stored".
+            declaration = re.match(r"^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*:", line)
+            if declaration:
+                for identifier in re.finditer(r"\bStored\b", declaration.group(1), re.IGNORECASE):
+                    findings.append(Finding(
+                        file=path, line=i, col=declaration.start(1) + identifier.start() + 1,
+                        rule="altium-stored-directive-as-local", severity="error", snippet=raw,
+                        memory="delphiscript_reserved_words.md"))
             m = _RESERVED_DECL.match(line)
             if m:
                 findings.append(Finding(

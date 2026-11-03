@@ -611,7 +611,7 @@ Begin
         Try StatusForm.Top  := NewTop;  Except End;
 
         If Not StatusForm.Visible Then StatusForm.Show;
-        Try StatusForm.Caption := 'EDA Agent MCP'; Except End;
+        Try StatusForm.Caption := 'Electronics AI'; Except End;
         Try lbl_Version.Caption := 'v' + SCRIPT_VERSION; Except End;
         Try pnl_StatusDot.Color := COLOR_ACCENT_GREEN; Except End;
         Try lbl_Status.Caption := 'idle'; Except End;

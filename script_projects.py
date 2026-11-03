@@ -10,8 +10,7 @@ from pathlib import Path
 import re
 import uuid
 
-PROJECT_NAMES = {'eda': 'AltiumMCP-EDA.PrjScr', 'legacy': 'AltiumMCP-Legacy.PrjScr',
-                 'sandbox': 'Sandbox.PrjScr'}
+PROJECT_NAMES = {'eda': 'ElectronicsAI-EDA.PrjScr'}
 MARKER = 'suite-project.json'
 CATALOG = 'managed-script-projects.jsonl'
 
@@ -47,16 +46,9 @@ def register_project(project, kind, files):
         path = project.parent / name
         if path.resolve().parent != project.parent or _file_hash(path) != digest:
             raise RuntimeError(f'Generated script was changed: {path}. Preserve the edits before regenerating it.')
-    record = dict(generator='Altium-MCP-Suite', schema=1, kind=kind,
+    record = dict(generator='Electronics_AI', schema=1, kind=kind,
                   project_path=str(project), files=files)
     _write_changed(project.parent / MARKER, json.dumps(record, sort_keys=True))
-
-
-def register_sandbox_project(project):
-    project = Path(project)
-    files = {name: hashlib.sha256((project.parent / name).read_bytes()).hexdigest()
-             for name in ('Sandbox.pas', 'Sandbox.PrjScr')}
-    register_project(project, 'sandbox', files)
 
 
 def _validated_record(folder, kinds):
@@ -64,9 +56,9 @@ def _validated_record(folder, kinds):
         record = json.loads((folder / MARKER).read_text(encoding='utf-8'))
         kind = record['kind']
         project = Path(record['project_path'])
-        if (record['generator'] != 'Altium-MCP-Suite' or record['schema'] != 1 or
+        if (record['generator'] != 'Electronics_AI' or record['schema'] != 1 or
                 kind not in kinds or project.parent.resolve() != folder.resolve() or
-                project.name not in {PROJECT_NAMES[kind], 'Altium_API.PrjScr'} or
+                project.name != PROJECT_NAMES[kind] or
                 not project.is_file() or not record['files'] or project.name not in record['files']):
             return None
         for name, digest in record['files'].items():
@@ -80,50 +72,18 @@ def _validated_record(folder, kinds):
         return None
 
 
-def _adopt_original_snapshot(folder, runtime, kind):
-    """Recognize pre-marker snapshots only when their original digest matches."""
-    if (folder / MARKER).exists() or not (folder / 'Altium_API.PrjScr').is_file():
-        return
-    files = sorted(p for p in folder.iterdir() if p.suffix.lower() in {'.pas', '.dfm', '.prjscr'})
-    digest = hashlib.sha256(str(runtime / 'legacy-exchange').encode())
-    hashes = {}
-    for path in files:
-        if path.resolve().parent != folder.resolve():
-            return
-        data = path.read_bytes()
-        hashes[path.name] = hashlib.sha256(data).hexdigest()
-        if kind == 'legacy' and path.name == 'Altium_API.pas':
-            literal = (str(runtime / 'legacy-exchange') + '\\').replace("'", "''")
-            text = data.decode('utf-8')
-            if text.count(literal) != 1:
-                return
-            data = text.replace(literal, '__ALTIUM_MCP_EXCHANGE_DIR__').encode('utf-8')
-        digest.update(path.name.encode())
-        digest.update(data)
-    if folder.name == kind + '-' + digest.hexdigest()[:16]:
-        register_project(folder / 'Altium_API.PrjScr', kind, hashes)
-
-
 def refresh_catalog(runtime):
     """Publish only intact, owned snapshots. Retain source files for rollback."""
     runtime = Path(runtime).resolve()
     projects = set()
     for folder in (runtime / 'scripts').glob('*'):
-        match = re.fullmatch(r'(eda|legacy)-[0-9a-f]{16}', folder.name)
+        match = re.fullmatch(r'(eda)-[0-9a-f]{16}', folder.name)
         if not match or folder.resolve().parent != (runtime / 'scripts').resolve():
             continue
         try:
-            _adopt_original_snapshot(folder, runtime, match[1])
             project = _validated_record(folder, {match[1]})
         except (OSError, ValueError):
             project = None
-        if project is not None:
-            projects.add(project)
-    sandbox = runtime / 'legacy-exchange' / 'sandbox'
-    for folder in sandbox.glob('*'):
-        if not re.fullmatch(r'[0-9a-f]{32}', folder.name) or folder.resolve().parent != sandbox.resolve():
-            continue
-        project = _validated_record(folder, {'sandbox'})
         if project is not None:
             projects.add(project)
     entries = []

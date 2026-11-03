@@ -14,10 +14,10 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.01.field-fixes1';
-    SUITE_SCRIPT_PROJECT = '__ALTIUM_MCP_SCRIPT_PROJECT__';
-    SUITE_SCRIPT_CATALOG = '__ALTIUM_MCP_SCRIPT_CATALOG__';
-    SUITE_SCRIPT_WORKSPACE = '__ALTIUM_MCP_WORKSPACE__';
+    SCRIPT_VERSION = '2026.11.03.electronics-ai-p0';
+    SUITE_SCRIPT_PROJECT = '__ELECTRONICS_AI_SCRIPT_PROJECT__';
+    SUITE_SCRIPT_CATALOG = '__ELECTRONICS_AI_SCRIPT_CATALOG__';
+    SUITE_SCRIPT_WORKSPACE = '__ELECTRONICS_AI_WORKSPACE__';
 
     // How far up the mechanical layers a pair tidy looks. Altium allows 1024,
     // and checking every combination of those is a million probes for a stack
@@ -66,6 +66,8 @@ Var
     Running : Boolean;
     StopReason : String;
     ExternalCloseOnce : Boolean;
+    TargetBoardMismatch : Boolean;
+    TargetBoardPath : String;
 
     { Polling tunables, defaults below, overridden by mcp_config.json at      }
     { startup via LoadMCPConfig. Single source of truth: the config file.     }
@@ -400,9 +402,6 @@ Begin
 End;
 
 {..............................................................................}
-{ GetPCBBoardAnywhere - Focus-independent PCB board lookup.                    }
-{..............................................................................}
-
 { Focus-only accessor: never opens a document or chooses another PCB. }
 Function GetFocusedPCBBoard(Dummy : Integer): IPCB_Board;
 Var
@@ -418,203 +417,75 @@ Begin
     Result := PCBServer.GetCurrentPCBBoard;
 End;
 
-Function GetPCBBoardAnywhere(Dummy : Integer): IPCB_Board;
+{ Resolve only an already-loaded explicit PCB. Never open, save or wander. }
+Function ResolveTargetBoard(TargetBoardPath : String) : IPCB_Board;
 Var
-    Workspace : IWorkspace;
-    Project : IProject;
-    Doc : IDocument;
     ServerDoc : IServerDocument;
-    PrevView : IServerDocumentView;
-    Path : String;
-    I, P : Integer;
+    AbsolutePath : Boolean;
 Begin
     Result := Nil;
-
-    Workspace := GetWorkspace;
-    If Workspace = Nil Then Exit;
-
-    { Fast path: a PCB tab is focused, so the PCB editor server is loaded    }
-    { and PCBServer.GetCurrentPCBBoard resolves. Gate on the focused doc's   }
-    { kind, read through the DM layer (which never loads a server). If no    }
-    { PcbDoc has been opened this session the PCB server module is not       }
-    { registered, and merely REFERENCING PCBServer.GetCurrentPCBBoard raises }
-    { an uncatchable "Undeclared identifier" modal (late-bound against the   }
-    { absent server) that Try/Except cannot swallow and that hangs the       }
-    { polling loop. So only touch PCBServer when a PCB is actually focused.  }
-    Doc := Workspace.DM_FocusedDocument;
-    If (Doc <> Nil) And (UpperCase(Doc.DM_DocumentKind) = 'PCB') Then
-    Begin
-        Result := PCBServer.GetCurrentPCBBoard;
-        If Result <> Nil Then Exit;
+    If TargetBoardPath = '' Then Begin
+        TargetBoardMismatch := True; Exit;
     End;
-
-    { Fallback: no PCB tab is focused (the user is on a schematic, a library }
-    { or the script project). Walk EVERY project open in the workspace - not }
-    { just the focused one, which is often the script project with no PcbDoc }
-    { - find the first PcbDoc, and open it. Opening the document loads the   }
-    { PCB server and moves focus to it; a non-nil ServerDoc from            }
-    { OpenDocument('PCB', ...) proves the server is now registered, so the   }
-    { GetCurrentPCBBoard read below is safe. The IPCB_Board pointer stays    }
-    { valid after we restore the user's previous view.                       }
-    PrevView := Nil;
-    Try
-        If (Client <> Nil) Then PrevView := Client.GetCurrentView;
-    Except End;
-
-    For P := 0 To Workspace.DM_ProjectCount - 1 Do
-    Begin
-        Project := Workspace.DM_Projects(P);
-        If Project = Nil Then Continue;
-
-        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
-        Begin
-            Doc := Project.DM_LogicalDocuments(I);
-            If Doc = Nil Then Continue;
-            Path := '';
-            Try Path := Doc.DM_FullPath; Except End;
-            If Path = '' Then Continue;
-            If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
-               (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
-
-            ServerDoc := Nil;
-            Try ServerDoc := Client.OpenDocument('PCB', Path); Except End;
-            If ServerDoc = Nil Then Continue;
-
-            Try Client.ShowDocument(ServerDoc); Except End;
-            Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-            If Result <> Nil Then Break;
-        End;
-
-        If Result <> Nil Then Break;
+    AbsolutePath := (Copy(TargetBoardPath, 2, 2) = ':\') Or (Copy(TargetBoardPath, 2, 2) = ':/')
+        Or (Copy(TargetBoardPath, 1, 2) = '\\') Or (Copy(TargetBoardPath, 1, 2) = '//');
+    If Not AbsolutePath Then Begin TargetBoardMismatch := True; Exit; End;
+    TargetBoardPath := ExpandFileName(TargetBoardPath);
+    ServerDoc := Client.GetDocumentByPath(TargetBoardPath);
+    If ServerDoc = Nil Then Begin TargetBoardMismatch := True; Exit; End;
+    Client.ShowDocument(ServerDoc);
+    Result := GetFocusedPCBBoard(0);
+    If Result = Nil Then Begin TargetBoardMismatch := True; Exit; End;
+    If UpperCase(ExpandFileName(Result.FileName)) <> UpperCase(ExpandFileName(TargetBoardPath)) Then Begin
+        Result := Nil; TargetBoardMismatch := True;
     End;
-
-    { Restore the user's prior view so the focus blink is invisible. }
-    If (PrevView <> Nil) And (Client <> Nil) Then
-        Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
 End;
 
-{..............................................................................}
-{ ResolvePCBBoard - get a SPECIFIC board by path when several PcbDocs are     }
-{ open. GetPCBBoardAnywhere returns the focused/current board, which is the   }
-{ WRONG one when the caller meant a different (e.g. newly created) board.     }
-{ PCBServer.GetPCBBoardByPath is undeclared on this build, so we open + show  }
-{ the target (which focuses it) and then read GetCurrentPCBBoard. Empty path  }
-{ falls back to GetPCBBoardAnywhere.                                          }
-{..............................................................................}
+{ Every physical PCB operation uses the request's explicit loaded target. }
+Function RequireTargetPCBBoard(Dummy : Integer): IPCB_Board;
+Begin
+    Result := ResolveTargetBoard(TargetBoardPath);
+End;
 
 Function ResolvePCBBoard(Path : String) : IPCB_Board;
-Var
-    ServerDoc : IServerDocument;
 Begin
     Result := Nil;
-    If Path = '' Then
-    Begin
-        Result := GetPCBBoardAnywhere(0);
-        Exit;
+    If (Path <> '') And (TargetBoardPath <> '') And
+        (UpperCase(ExpandFileName(Path)) <> UpperCase(ExpandFileName(TargetBoardPath))) Then Begin
+        TargetBoardMismatch := True; Exit;
     End;
-    ServerDoc := Nil;
-    Try ServerDoc := Client.OpenDocument('PCB', Path); Except End;
-    If ServerDoc = Nil Then
-    Begin
-        { Path didn't resolve to a loadable PcbDoc; fall back rather than    }
-        { silently returning Nil and erroring the whole call.                }
-        Result := GetPCBBoardAnywhere(0);
-        Exit;
-    End;
-    Try Client.ShowDocument(ServerDoc); Except End;
-    Try Result := PCBServer.GetCurrentPCBBoard; Except End;
-    If Result = Nil Then Result := GetPCBBoardAnywhere(0);
+    If Path = '' Then Path := TargetBoardPath;
+    Result := ResolveTargetBoard(Path);
 End;
 
-{..............................................................................}
-{ GetPCBBoardForMutation - the board an EDIT is allowed to touch.              }
-{                                                                              }
-{ GetPCBBoardAnywhere WANDERS, and that is correct for a read. When no PcbDoc  }
-{ is focused it walks every open project, opens the first board it finds,      }
-{ reads it, and restores the previous view so the focus change is invisible.   }
-{ For a query that is a convenience. For a DELETE it is a misfire: with a      }
-{ library focused and two boards open, obj_delete would remove primitives from }
-{ whichever board the walk reached first, and hide the fact that it had        }
-{ switched documents to do it.                                                 }
-{                                                                              }
-{ So an edit gets a board only when the target is UNAMBIGUOUS: a PcbDoc is     }
-{ focused, or exactly one is open anywhere. Two open and none focused is       }
-{ refused, and the refusal names them, because picking one is a guess the      }
-{ caller has to make rather than one this should make silently.                }
-{                                                                              }
-{ Why carries the reason when the Result is Nil.                               }
-{..............................................................................}
-
 Function GetPCBBoardForMutation(Var Why : String) : IPCB_Board;
+Begin
+    Why := '';
+    Result := RequireTargetPCBBoard(0);
+    If Result = Nil Then
+        Why := 'ERR_TARGET_DOCUMENT_MISMATCH: explicit loaded target_board_path required';
+End;
+
+{ Shared schematic/PCB UI helpers honor an explicit PCB target; otherwise
+  they may use only the actually focused schematic, never a cached board. }
+Procedure ResolveGraphicTargets(Var SchDoc : ISch_Document; Var Board : IPCB_Board);
 Var
     Workspace : IWorkspace;
-    Project : IProject;
-    Doc : IDocument;
-    Path, Candidates, OnePath : String;
-    I, P, Found : Integer;
+    FocusDoc : IDocument;
 Begin
-    Result := Nil;
-    Why := '';
-
+    SchDoc := Nil; Board := Nil;
+    If TargetBoardPath <> '' Then Begin
+        Board := RequireTargetPCBBoard(0); Exit;
+    End;
     Workspace := GetWorkspace;
-    If Workspace = Nil Then
-    Begin
-        Why := 'No workspace is open.';
-        Exit;
+    If Workspace <> Nil Then Begin
+        FocusDoc := Workspace.DM_FocusedDocument;
+        If FocusDoc <> Nil Then
+            If UpperCase(FocusDoc.DM_DocumentKind) = 'SCH' Then Begin
+                SchDoc := SchServer.GetCurrentSchDocument; Exit;
+            End;
     End;
-
-    { A focused PcbDoc is unambiguous, whatever else is open. }
-    Doc := Workspace.DM_FocusedDocument;
-    If (Doc <> Nil) And (UpperCase(Doc.DM_DocumentKind) = 'PCB') Then
-    Begin
-        Result := PCBServer.GetCurrentPCBBoard;
-        If Result <> Nil Then Exit;
-    End;
-
-    Found := 0;
-    Candidates := '';
-    OnePath := '';
-    For P := 0 To Workspace.DM_ProjectCount - 1 Do
-    Begin
-        Project := Workspace.DM_Projects(P);
-        If Project = Nil Then Continue;
-        For I := 0 To Project.DM_LogicalDocumentCount - 1 Do
-        Begin
-            Doc := Project.DM_LogicalDocuments(I);
-            If Doc = Nil Then Continue;
-            Path := '';
-            Try Path := Doc.DM_FullPath; Except End;
-            If Path = '' Then Continue;
-            If (UpperCase(Doc.DM_DocumentKind) <> 'PCB') And
-               (Pos('.PCBDOC', UpperCase(Path)) <= 0) Then Continue;
-            Found := Found + 1;
-            OnePath := Path;
-            If Candidates <> '' Then Candidates := Candidates + ', ';
-            Candidates := Candidates + Path;
-        End;
-    End;
-
-    If Found = 0 Then
-    Begin
-        Why := 'No PCB document is open, so there is nothing to edit.';
-        Exit;
-    End;
-
-    If Found > 1 Then
-    Begin
-        Why := 'This edits a board, and ' + IntToStr(Found)
-            + ' are open with none of them focused: ' + Candidates
-            + '. Refusing rather than picking one. Focus the board you '
-            + 'mean, or name it with board_path. A library being in front '
-            + 'does NOT make this edit apply to the library.';
-        Exit;
-    End;
-
-    { Exactly one board open. Opening it is safe because there is no other }
-    { one it could have meant.                                             }
-    Result := ResolvePCBBoard(OnePath);
-    If Result = Nil Then
-        Why := 'The only open board, ' + OnePath + ', could not be opened.';
+    Board := RequireTargetPCBBoard(0);
 End;
 
 { Save every modified IServerDocument the workspace knows about, both     }
@@ -1026,7 +897,7 @@ Var
     Line : String;
 Begin
     { Generated suite scripts never depend on the shared ProgramData pointer. }
-    If (SUITE_SCRIPT_WORKSPACE <> '') And (Pos('__ALTIUM_MCP_', SUITE_SCRIPT_WORKSPACE) <> 1) Then
+    If (SUITE_SCRIPT_WORKSPACE <> '') And (Pos('__ELECTRONICS_AI_', SUITE_SCRIPT_WORKSPACE) <> 1) Then
     Begin
         Line := SUITE_SCRIPT_WORKSPACE;
         If Copy(Line, Length(Line), 1) <> '\' Then Line := Line + '\';
@@ -1490,8 +1361,7 @@ End;
 
 Function BuildSuccessResponse(RequestId : String; Data : String) : String;
 Begin
-    If Data = '' Then
-        Data := 'null';
+    If Data = '' Then Data := 'null';
     Result := '{"protocol_version":' + IntToStr(PROTOCOL_VERSION) +
               ',"id":"' + RequestId + '","success":true,"data":' +
               Data + ',"error":null}';

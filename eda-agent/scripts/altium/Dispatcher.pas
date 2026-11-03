@@ -16,8 +16,9 @@ Var
 
 Function ProcessCommand(Command : String; Params : String; RequestId : String) : String;
 Var
-    Category, Action : String;
+    Category, Action, OtherPath : String;
     DotPos : Integer;
+    ExplicitBoard : IPCB_Board;
 Begin
     DotPos := Pos('.', Command);
     If DotPos > 0 Then
@@ -31,6 +32,22 @@ Begin
         Action := '';
     End;
 
+    TargetBoardMismatch := False;
+    TargetBoardPath := ExtractJsonValue(Params, 'target_board_path');
+    OtherPath := ExtractJsonValue(Params, 'board_path');
+    If TargetBoardPath = '' Then TargetBoardPath := OtherPath
+    Else If (OtherPath <> '') And (UpperCase(ExpandFileName(OtherPath)) <> UpperCase(ExpandFileName(TargetBoardPath))) Then
+        TargetBoardMismatch := True;
+    Try
+    If (Category = 'pcb') Or (TargetBoardPath <> '') Then Begin
+        ExplicitBoard := ResolveTargetBoard(TargetBoardPath);
+        If ExplicitBoard = Nil Then TargetBoardMismatch := True;
+    End;
+    If TargetBoardMismatch Then Begin
+        Result := BuildErrorResponse(RequestId, 'ERR_TARGET_DOCUMENT_MISMATCH',
+            'An absolute matching already-loaded target_board_path is required; no fallback or mutation');
+        Exit;
+    End;
     Case Category Of
         'application': Result := HandleApplicationCommand(Action, Params, RequestId);
         'project':     Result := HandleProjectCommand(Action, Params, RequestId);
@@ -38,15 +55,17 @@ Begin
         'generic':     Result := HandleGenericCommand(Action, Params, RequestId);
         'pcb':         Result := HandlePCBCommand(Action, Params, RequestId);
         'audit':       Result := HandleAuditCommand(Action, Params, RequestId);
-        'legacy':      Begin
-                           If Action = 'run_altium_script' Then Result := LegacySandboxExecute(Params, RequestId)
-                           Else Result := HandleLegacyCommand(Action, Params, RequestId);
-                       End;
     Else
         Result := BuildErrorResponse(RequestId, 'UNKNOWN_COMMAND',
             'Unknown command category: ' + Category +
             '. Use generic.* for object operations, pcb.* for PCB-specific ' +
             'commands, or audit.* for design-lint checks.');
+    End;
+    If TargetBoardMismatch Then
+        Result := BuildErrorResponse(RequestId, 'ERR_TARGET_DOCUMENT_MISMATCH',
+            'An absolute matching already-loaded target_board_path is required; no fallback or mutation');
+    Finally
+        TargetBoardPath := '';
     End;
 End;
 
@@ -355,6 +374,8 @@ Var
     IdleDisplayMs  : Cardinal;
     NowMs          : Cardinal;
     HadRequest     : Boolean;
+    FirstRequestSeen : Boolean;
+    StartupGraceMs : Cardinal;
     I              : Integer;
     ActiveTickCount : Integer;
     SessionId      : String;
@@ -386,8 +407,10 @@ Begin
     CurrentSleep := PollIntervalActiveMs;
     LastActivityMs := GetTickCount;
     LastWorkMs := LastActivityMs;
+    StartupGraceMs := 45000;
+    FirstRequestSeen := False;
     IdleDisplayMs := AutoShutdownMs;
-    If EngineIdleReleaseMs > 0 Then IdleDisplayMs := EngineIdleReleaseMs;
+    If EngineIdleReleaseMs > 0 Then IdleDisplayMs := StartupGraceMs;
     ActiveTickCount := 0;
 
     StatusStartTick := GetTickCount;
@@ -448,7 +471,7 @@ Begin
             End;
 
             // Auto-shutdown after prolonged inactivity. Paused sessions
-            // suppress the legacy timer; engine-idle release still frees the UI.
+            // suppress the inactivity timer; engine-idle release still frees the UI.
             If PausedFlag Then
                 LastActivityMs := GetTickCount;
             { Health traffic must not keep the script engine permanently
@@ -457,8 +480,10 @@ Begin
             If EngineIdleReleaseMs > 0 Then
             Begin
                 NowMs := GetTickCount;
+                If FirstRequestSeen Then IdleDisplayMs := EngineIdleReleaseMs
+                Else IdleDisplayMs := StartupGraceMs;
                 If NowMs >= LastWorkMs Then
-                    If (NowMs - LastWorkMs) >= EngineIdleReleaseMs Then
+                    If (NowMs - LastWorkMs) >= IdleDisplayMs Then
                     Begin
                         StopReason := 'engine_idle_release';
                         Running := False;
@@ -497,6 +522,11 @@ Begin
 
             If HadRequest Then
             Begin
+                If Not FirstRequestSeen Then Begin
+                    FirstRequestSeen := True;
+                    LastWorkMs := GetTickCount;
+                    If EngineIdleReleaseMs > 0 Then IdleDisplayMs := EngineIdleReleaseMs;
+                End;
                 IdleCount := 0;
                 CurrentSleep := PollIntervalActiveMs;
                 LastActivityMs := GetTickCount;
