@@ -13229,6 +13229,72 @@ Begin
     Result := Item;
 End;
 
+Function Copper_PadLayerGeometry(Pad : IPCB_Pad; LayerId : TLayer) : String;
+Var
+    Pad2 : IPCB_Pad2;
+    Bounds : TCoordRect;
+    W, H : TCoord;
+    ShapeId : Integer;
+    ShapeName : String;
+    Radius : Double;
+    Supported : Boolean;
+Begin
+    Try
+        W := Pad.XSizeOnLayer[LayerId]; H := Pad.YSizeOnLayer[LayerId];
+        ShapeId := Pad.ShapeOnLayer[LayerId];
+        ShapeName := 'unknown'; Radius := 0;
+        If ShapeId = eRounded Then Begin
+            ShapeName := 'round'; If W <> H Then ShapeName := 'oval';
+        End
+        Else If ShapeId = eRectangular Then ShapeName := 'rectangle'
+        Else If ShapeId = eRoundedRectangular Then Begin
+            ShapeName := 'rounded_rectangle'; Pad2 := Pad;
+            Radius := CoordToMM(Pad2.GetState_CornerRadiusOnLayer(LayerId));
+        End;
+        Supported := (W > 0) And (H > 0) And (ShapeName <> 'unknown');
+        If (Radius < 0) Or (Radius * 2 > CoordToMM(W)) Or (Radius * 2 > CoordToMM(H)) Then Supported := False;
+        Bounds := Pad.BoundingRectangleOnLayer(LayerId);
+        Result := '{' + JsonStr('layer', GetLayerString(LayerId))
+            + ',' + JsonFloat('width_mm', CoordToMM(W)) + ',' + JsonFloat('height_mm', CoordToMM(H))
+            + ',' + JsonStr('shape', ShapeName) + ',' + JsonInt('shape_id', ShapeId)
+            + ',' + JsonFloat('corner_radius_mm', Radius)
+            + ',' + JsonFloat('rotation_deg', Pad.Rotation)
+            + ',' + JsonFloat('x_mm', (CoordToMM(Bounds.Left) + CoordToMM(Bounds.Right)) / 2)
+            + ',' + JsonFloat('y_mm', (CoordToMM(Bounds.Top) + CoordToMM(Bounds.Bottom)) / 2)
+            + ',"center_source":"symmetric_copper_BoundingRectangleOnLayer"'
+            + ',"bbox_mm":[' + FloatToJsonStr(CoordToMM(Bounds.Left)) + ','
+            + FloatToJsonStr(CoordToMM(Bounds.Bottom)) + ',' + FloatToJsonStr(CoordToMM(Bounds.Right))
+            + ',' + FloatToJsonStr(CoordToMM(Bounds.Top)) + ']'
+            + ',' + JsonBool('geometry_complete', Supported) + '}';
+    Except
+        Result := '{' + JsonStr('layer', GetLayerString(LayerId))
+            + ',"geometry_complete":false,"reason":"per-layer pad accessor unavailable"}';
+    End;
+End;
+
+Function Copper_PadHoleGeometry(Pad : IPCB_Pad) : String;
+Var
+    ShapeName : String;
+Begin
+    ShapeName := 'unknown';
+    If Pad.HoleType = eRoundHole Then ShapeName := 'circle'
+    Else If Pad.HoleType = eSquareHole Then ShapeName := 'square'
+    Else If Pad.HoleType = eSlotHole Then ShapeName := 'capsule';
+    Result := '{' + JsonStr('shape', ShapeName) + ',' + JsonFloat('x_mm', CoordToMM(Pad.X))
+        + ',' + JsonFloat('y_mm', CoordToMM(Pad.Y))
+        + ',' + JsonFloat('diameter_mm', CoordToMM(Pad.HoleSize))
+        + ',' + JsonFloat('slot_length_mm', CoordToMM(Pad.HoleWidth))
+        + ',' + JsonFloat('rotation_within_pad_deg', Pad.HoleRotation)
+        + ',' + JsonFloat('pad_rotation_deg', Pad.Rotation)
+        + ',"representation":"native_analytic_parameters","polygon_approximation_used":false}';
+End;
+
+Function Copper_SectionCoverage(TypesWithGaps : TStringList; ObjectType : Integer) : String;
+Begin
+    Result := 'complete';
+    If (TypesWithGaps.IndexOf('*') >= 0) Or (TypesWithGaps.IndexOf(IntToStr(ObjectType)) >= 0) Then Result := 'partial';
+End;
+
 { One native handler captures the loaded, unsaved board in absolute mm.
   Unsupported SDK members are declared as missing evidence. In particular a
   polygon outline and a bounding rectangle never stand in for poured copper. }
@@ -13256,12 +13322,12 @@ Var
     CompBounds : TCoordRect;
     Layers, Tracks, Arcs, Vias, Pads, Regions, Keepouts, Holes, Cutouts : TStringList;
     Components, Nets, Missing, NetTies, Seen, PolygonChildren : TStringList;
-    MissingCounts, ProfileKeys, ProfileCalls, ProfileMillis, Diagnostics : TStringList;
+    MissingCounts, ProfileKeys, ProfileCalls, ProfileMillis, Diagnostics, TypesWithGaps : TStringList;
     Path, Item, Common, NetName, LayerName, Kind, Outline, Shape, Owner, Identity, HoleJson, CoverageState, LayerGeometries : String;
     Count, I, Order, LayerId, HoleCount, ExcludedNonCopper, StackVisited, CopperCount, DielectricCount : Integer;
-    Started, LastProgress, ObjectTick, AccessTick, ObjectType, MissingTotal : Integer;
+    Started, LastProgress, ObjectTick, AccessTick, ObjectType, MissingTotal, ObjectMissingBefore : Integer;
     Stage, ProfileJson, MissingCountsJson, ProofPath : String;
-    SideStr, BoundsJson, RuleJson, RuleValuesJson, DirtyJson : String;
+    SideStr, BoundsJson, RuleJson, RuleValuesJson, DirtyJson, StackCoverage, OutlineCoverage, PadLayerItem : String;
     Er, Thickness, PadRadius : Double;
     IsKeepout, Curved, SkipPrimitive : Boolean;
 Begin
@@ -13288,6 +13354,7 @@ Begin
     MissingCounts := TStringList.Create; ProfileKeys := TStringList.Create;
     ProfileCalls := TStringList.Create; ProfileMillis := TStringList.Create;
     Diagnostics := TStringList.Create;
+    TypesWithGaps := TStringList.Create;
     Started := GetTickCount; LastProgress := 0; MissingTotal := 0;
     Copper_Progress(RequestId, 'layer_stack', Started, 0, 0, LastProgress);
     Try
@@ -13366,6 +13433,7 @@ Begin
             If (CopperCount < 2) Or (DielectricCount < CopperCount - 1) Then
                 Copper_Missing(Missing, MissingCounts, '"interlayer dielectric stackup unavailable or incomplete"', MissingTotal);
         End;
+        StackCoverage := 'complete'; If MissingTotal <> 0 Then StackCoverage := 'partial';
         Iter := Board.BoardIterator_Create;
         Try
             Iter.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eViaObject, ePadObject,
@@ -13380,12 +13448,14 @@ Begin
             Begin
                 If Count >= 100000 Then
                 Begin
+                    TypesWithGaps.Add('*');
                     Copper_Missing(Missing, MissingCounts, '"primitive limit exceeded"', MissingTotal); Break;
                 End;
                 Inc(Count);
                 ObjectTick := GetTickCount;
                 AccessTick := ObjectTick;
                 ObjectType := Obj.ObjectId;
+                ObjectMissingBefore := MissingTotal;
                 Stage := 'layer';
                 Try
                   Try
@@ -13514,6 +13584,20 @@ Begin
                                     Raise('Invalid rounded pad corner radius');
                             End;
                             If Pad.HoleType <> eRoundHole Then Copper_Missing(Missing, MissingCounts, '"slotted/square pad hole outline unavailable"', MissingTotal);
+                            LayerGeometries := '';
+                            If (Pad.Layer = eMultiLayer) And (Stack <> Nil) Then Begin
+                                LayerObj := Stack.FirstLayer; Order := 0;
+                                While LayerObj <> Nil Do Begin
+                                    PadLayerItem := Copper_PadLayerGeometry(Pad, LayerObj.LayerID);
+                                    If ExtractJsonValue(PadLayerItem, 'geometry_complete') <> 'true' Then
+                                        Copper_Missing(Missing, MissingCounts, '"per-layer pad geometry unsupported"', MissingTotal);
+                                    If LayerGeometries <> '' Then LayerGeometries := LayerGeometries + ',';
+                                    LayerGeometries := LayerGeometries + PadLayerItem;
+                                    Inc(Order); If Order > 256 Then Raise('Pad stack layer limit exceeded');
+                                    LayerObj := Stack.NextLayer(LayerObj);
+                                End;
+                            End
+                            Else LayerGeometries := Copper_PadLayerGeometry(Pad, Pad.Layer);
                             Item := '{' + Common + ',' + JsonStr('component', Owner)
                                 + ',' + JsonStr('pad_name', Pad.Name)
                                 + ',' + JsonFloat('x_mm', CoordToMM(Pad.X))
@@ -13530,6 +13614,8 @@ Begin
                                 + ',' + JsonInt('hole_type', Pad.HoleType)
                                 + ',' + JsonFloat('hole_width_mm', CoordToMM(Pad.HoleWidth))
                                 + ',' + JsonFloat('hole_rotation_deg', Pad.HoleRotation)
+                                + ',"layer_geometries":[' + LayerGeometries + ']'
+                                + ',"hole_geometry":' + Copper_PadHoleGeometry(Pad)
                                 + ',' + JsonBool('is_plated', Pad.Plated) + '}';
                             Copper_Push(Pads, Item);
                             If Pad.HoleSize > 0 Then
@@ -13537,6 +13623,7 @@ Begin
                                     + ',' + JsonFloat('x_mm', CoordToMM(Pad.X))
                                     + ',' + JsonFloat('y_mm', CoordToMM(Pad.Y))
                                     + ',' + JsonFloat('diameter_mm', CoordToMM(Pad.HoleSize))
+                                    + ',"hole_geometry":' + Copper_PadHoleGeometry(Pad)
                                     + ',' + JsonBool('is_plated', Pad.Plated) + '}');
                         End
                     Else If Obj.ObjectId = eRegionObject Then Begin
@@ -13652,6 +13739,10 @@ Begin
                     Copper_Profile(ProfileKeys, ProfileCalls, ProfileMillis,
                         IntToStr(ObjectType) + ':total', GetTickCount - ObjectTick);
                 End;
+                If MissingTotal <> ObjectMissingBefore Then Begin
+                    TypesWithGaps.Add(IntToStr(ObjectType));
+                    If ObjectType = eEmbeddedBoardObject Then TypesWithGaps.Add('*');
+                End;
                 Obj := Iter.NextPCBObject;
             End;
         Finally Board.BoardIterator_Destroy(Iter); End;
@@ -13659,7 +13750,7 @@ Begin
         For I := 0 To PolygonChildren.Count - 1 Do
             If Seen.IndexOf(PolygonChildren[I]) < 0 Then
                 Copper_Missing(Missing, MissingCounts, '"poured polygon child not exposed by board iterator"', MissingTotal);
-        Outline := ''; Curved := False;
+        Outline := ''; Curved := False; ObjectMissingBefore := MissingTotal;
         Try
             If Board.BoardOutline.PointCount < 3 Then Copper_Missing(Missing, MissingCounts, '"board outline has fewer than three vertices"', MissingTotal);
             For I := 0 To Board.BoardOutline.PointCount - 1 Do
@@ -13671,6 +13762,7 @@ Begin
             If Curved Then
             Begin Outline := ''; Copper_Missing(Missing, MissingCounts, '"curved board outline unavailable"', MissingTotal); End;
         Except Outline := ''; Copper_Missing(Missing, MissingCounts, '"board outline unavailable"', MissingTotal); End;
+        OutlineCoverage := 'complete'; If MissingTotal <> ObjectMissingBefore Then OutlineCoverage := 'partial';
         CoverageState := 'partial';
         If Missing.Count = 0 Then CoverageState := 'complete';
         For I := 0 To Missing.Count - 1 Do
@@ -13691,11 +13783,15 @@ Begin
             + ',"native_rules":' + RuleJson + ',"native_rule_values":' + RuleValuesJson
             + ',"native_rule_coverage":{"metadata":"supported","all_constraint_properties":"partial"}'
             + ',"provenance":{"reader":"pcb.get_copper_snapshot","live":true,"consistency":"single_native_handler"}'
-            + ',"coverage":{' + JsonStr('tracks', CoverageState) + ',' + JsonStr('arcs', CoverageState)
-            + ',' + JsonStr('vias', CoverageState) + ',' + JsonStr('pads', CoverageState)
-            + ',' + JsonStr('regions', CoverageState) + ',' + JsonStr('layers', CoverageState)
+            + ',"coverage":{' + JsonStr('board_outline', OutlineCoverage)
+            + ',' + JsonStr('cutouts', Copper_SectionCoverage(TypesWithGaps, eRegionObject))
+            + ',' + JsonStr('tracks', Copper_SectionCoverage(TypesWithGaps, eTrackObject))
+            + ',' + JsonStr('arcs', Copper_SectionCoverage(TypesWithGaps, eArcObject))
+            + ',' + JsonStr('vias', Copper_SectionCoverage(TypesWithGaps, eViaObject))
+            + ',' + JsonStr('pads', Copper_SectionCoverage(TypesWithGaps, ePadObject))
+            + ',' + JsonStr('regions', CoverageState) + ',' + JsonStr('layers', StackCoverage)
             + ',' + JsonStr('keepouts', CoverageState) + ',' + JsonStr('net_ties', CoverageState)
-            + ',' + JsonStr('stackup', CoverageState) + '}'
+            + ',' + JsonStr('stackup', StackCoverage) + '}'
             + ',' + JsonInt('excluded_non_copper_primitives', ExcludedNonCopper)
             + ',' + JsonInt('missing_evidence_events', MissingTotal)
             + ',"missing_counts":' + MissingCountsJson
@@ -13724,7 +13820,7 @@ Begin
         Layers.Free; Tracks.Free; Arcs.Free; Vias.Free; Pads.Free; Regions.Free;
         Keepouts.Free; Holes.Free; Cutouts.Free; Components.Free; Nets.Free; Missing.Free;
         NetTies.Free; Seen.Free; PolygonChildren.Free;
-        MissingCounts.Free; ProfileKeys.Free; ProfileCalls.Free; ProfileMillis.Free; Diagnostics.Free;
+        MissingCounts.Free; ProfileKeys.Free; ProfileCalls.Free; ProfileMillis.Free; Diagnostics.Free; TypesWithGaps.Free;
         If PrevView <> Nil Then Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
     End;
 End;

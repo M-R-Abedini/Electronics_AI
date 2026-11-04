@@ -837,9 +837,16 @@ def read_board_copper(path, *, max_stream_bytes=64 * 1024 * 1024,
                     result['coverage']['pads'] = 'partial'
                 if item.get('per_layer_sizes'):
                     row['per_layer_sizes_mm'] = item['per_layer_sizes']
+                    row['per_layer_shapes'] = item.get('per_layer_shapes', [])
+                    row['per_layer_corner_radius_percent'] = item.get('per_layer_corner_radii', [])
+                    row['per_layer_offsets_mm'] = item.get('per_layer_offsets', [])
                 if item.get('hole_shape'):
                     row.update(hole_shape=item['hole_shape'], hole_slot_length_mm=item.get('hole_slot_length'),
                                hole_rotation_deg=item.get('hole_rotation'))
+                    row['hole_geometry'] = dict(shape=item['hole_shape'], x_mm=item['x'], y_mm=item['y'],
+                        diameter_mm=item['hole_size'], slot_length_mm=item.get('hole_slot_length'),
+                        rotation_within_pad_deg=item.get('hole_rotation'), pad_rotation_deg=item['rotation'],
+                        representation='native_analytic_parameters', polygon_approximation_used=False)
                     row['geometry_complete'] = False
                     missing.append(row['id'] + ' non-round hole contour unsupported')
                     result['coverage']['pads'] = 'partial'

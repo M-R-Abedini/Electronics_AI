@@ -16,6 +16,14 @@ fabrication limit. The evaluator independently requires a qualified
 
 The P0 comparison order is fixed:
 
+For explicitly supplied local PcbLibs, `scripts/extract_package_geometry.py`
+can read a private native capture and emit `package_geometry` for the existing
+`layout__capture_context` input. It requires a declared CourtyardTop layer,
+one closed supported contour and matching live pad identities/geometry. It
+does not infer courtyards from pad/overlay bounds, supply a fabrication
+profile, edit a library or qualify unsupported pad stacks. Keep the detailed
+source/mismatch report private. This helper does not execute placement.
+
 - Tier 0: hard feasibility, including qualified courtyard and complete relevant
   pad/outline coverage. Missing required evidence remains unknown.
 - Tier 1: transformed pad AABB Manhattan gaps for critical paths and each

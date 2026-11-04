@@ -870,6 +870,11 @@ def main():
     parser.add_argument("--no-cloud", action="store_true", help="Do not load the optional cloud library module")
     parser.add_argument("--no-product", action="store_true", help="Disable product adapters/checkpoints for isolated transport diagnostics")
     options = parser.parse_args()
+    if not options.no_product:
+        # Load the numerical C extension before the stdio reader/event loop.
+        # Its first import during a cold layout RPC stalled on Windows, on
+        # both the calculation worker and the running event-loop thread.
+        import numpy  # noqa: F401
     asyncio.run(serve(options))
 
 

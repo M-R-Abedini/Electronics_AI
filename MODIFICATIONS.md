@@ -1,5 +1,18 @@
 # Local changes
 
+## Experimental P1 input/transport follow-up — 2026-11-03
+
+- Original MIT board-contour subtraction and sourced library courtyard helpers;
+  conservative omissions remain explicit and no fabrication profile is invented.
+- `PCB.pas` additionally reads per-layer pad copper and analytic hole parameters,
+  with section-specific outline/cutout coverage; no placement policy change.
+- Session hints are excluded from physical freshness, large response ID lists
+  are bounded without truncating stored evidence, and NumPy loads before stdio
+  startup to avoid the measured Windows cold-import stall.
+- Product/native version identifiers and the P0-v4 decision modules remain
+  unchanged. This work is on the P1 review branch, without a main merge or
+  replacement of the user's stable plugin installation.
+
 ## Added 2026-11-02
 
 - Field regression fixes for `0.5.1`: independent fractional differential-pair

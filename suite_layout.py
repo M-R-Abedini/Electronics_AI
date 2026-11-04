@@ -19,6 +19,13 @@ from suite_checkpoints import _atomic, digest
 
 POLICY_VERSION = 'placement-evidence-p0-v4'
 
+# Bridge/session diagnostics have no physical meaning. Keep this allowlist
+# explicit: rules, lock state, dirty state and unknown fields still bind plans.
+CAPTURE_TRANSPORT_FIELDS = frozenset({
+    'native_snapshot_token', 'native_snapshot_json', 'capture_metrics',
+    'provenance', '_hint_detach',
+})
+
 
 def bounded_checks(value):
     """Keep full immutable evidence on disk and bound routine MCP responses.
@@ -30,7 +37,16 @@ def bounded_checks(value):
         return [bounded_checks(item) for item in value]
     if not isinstance(value, dict):
         return value
-    result = {key: bounded_checks(item) for key, item in value.items() if key != 'checks'}
+    identifiers = {'blockers', 'required_checks', 'unresolved_blockers'}
+    result = {key: bounded_checks(item) for key, item in value.items() if key not in identifiers | {'checks'}}
+    for key in identifiers & value.keys():
+        items = value[key]
+        if isinstance(items, list):
+            result[key] = [bounded_checks(item) for item in items[:64]]
+            result[key + '_total'] = len(items)
+            result[key + '_truncated'] = len(items) > 64
+        else:
+            result[key] = bounded_checks(items)
     if isinstance(value.get('checks'), list):
         checks = value['checks']
         important = [c for c in checks if c.get('status') != 'pass']
@@ -43,8 +59,7 @@ def bounded_checks(value):
 
 def capture_digest(snapshot):
     """Bind live rules, locks and geometry; exclude only capture transport data."""
-    return digest({k: v for k, v in snapshot.items() if k not in {
-        'native_snapshot_token', 'native_snapshot_json', 'capture_metrics', 'provenance'}})
+    return digest({k: v for k, v in snapshot.items() if k not in CAPTURE_TRANSPORT_FIELDS})
 
 
 def unexpected_post_changes(before, after, context, moves):
@@ -107,7 +122,7 @@ def unexpected_post_changes(before, after, context, moves):
         hole.update(x_mm=point[0], y_mm=point[1])
         if str(hole['id']) in actual_holes:
             normalise_position(actual_holes[str(hole['id'])], hole, 'hole:'+str(hole['id']))
-    ignored = {'native_snapshot_token', 'native_snapshot_json', 'capture_metrics', 'provenance', 'document_modified'}
+    ignored = CAPTURE_TRANSPORT_FIELDS | {'document_modified'}
     for key in set(expected) | set(observed):
         if key not in ignored and digest(expected.get(key)) != digest(observed.get(key)):
             errors.append('dependency:'+key)
@@ -186,16 +201,20 @@ def context_from_snapshot(snapshot, snapshot_id, models, fabrication, assembly):
     outline = copy.deepcopy(snapshot.get('board_outline') or None)
     geometry_diagnostics = []
     if outline is not None and not mechanical_region_valid(outline, cutouts):
-        # A board cutout may form an edge notch, overlap another physical
-        # cutout or lie outside the outline. This contract supports validated
-        # polygon-with-holes only; it must not silently model that difference
-        # as intact FR4 or reject the whole read-only capture as malformed.
-        geometry_diagnostics.append(dict(section='physical_board_shape', status='unknown',
-            reason='Combined board outline/cutouts require unsupported contour subtraction; raw evidence retained'))
-        cutouts_complete = False
-        cutouts = []
-        if not mechanical_region_valid(outline):
-            outline = None
+        from suite_board_geometry import subtract_rectilinear_cutouts
+        try:
+            composed = subtract_rectilinear_cutouts(outline, cutouts)
+        except ValueError as error:
+            geometry_diagnostics.append(dict(section='physical_board_shape', status='unknown',
+                reason=str(error) + '; raw evidence retained'))
+            cutouts_complete = False
+            cutouts = []
+            if not mechanical_region_valid(outline):
+                outline = None
+        else:
+            outline, cutouts = composed['outline'], composed['holes']
+            geometry_diagnostics.append(dict(section='physical_board_shape', status='resolved',
+                method='exact_rational_rectilinear_subtraction', raw_evidence_retained=True))
     outline_complete = outline is not None and complete('board_outline') and cutouts_complete
     pads_complete = complete('pads') and not unknown_ownership
     result = dict(schema=1, units='mm', board_path=snapshot['board_path'],

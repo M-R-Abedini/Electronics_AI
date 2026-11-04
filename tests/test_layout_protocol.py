@@ -7,6 +7,48 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+def test_cold_gateway_imports_native_numeric_extension_on_event_loop_thread(tmp_path):
+    """A cold real stdio process must plan without hanging or contacting CAD."""
+    import subprocess
+    import sys
+    script = r'''import asyncio,json,os,sys
+from datetime import timedelta
+from pathlib import Path
+from mcp import ClientSession,StdioServerParameters
+from mcp.client.stdio import stdio_client
+from eda_agent.design.placement_evidence import example_board_context
+root=Path.cwd(); data=Path(sys.argv[1]); data.mkdir()
+config=data/'synthetic-backends.json'
+config.write_text(json.dumps({'backends':{
+ 'eda':{'command':sys.executable,'args':['-c','raise AssertionError("CAD worker must stay disabled")'],'enabled':False},
+ 'libraries':{'command':sys.executable,'enabled':False}}}),encoding='utf-8')
+async def run():
+    p=StdioServerParameters(command=sys.executable,args=['-B',str(root/'suite_stdio.py'),'--backend-config',str(config),'--no-cloud'],
+         cwd=str(root),env=dict(os.environ,ELECTRONICS_AI_PLUGIN_DATA=str(data)))
+    async with stdio_client(p) as streams:
+        async with ClientSession(*streams,read_timeout_seconds=timedelta(seconds=12)) as client:
+            await client.initialize()
+            await client.list_tools()
+            async def invoke(name,args):
+                r=await client.call_tool('suite_invoke',{'name':name,'arguments':args})
+                assert not r.isError,r
+                return r.structuredContent
+            context=example_board_context();context['board_path']=str(data/'synthetic.PcbDoc')
+            c=await invoke('layout__capture_context',{'board_context':context})
+            r=await invoke('layout__plan_placement',{'context_id':c['context_id'],'options':{'candidates':[]}})
+            assert not r['native_edits'] and r['policy_version']=='placement-evidence-p0-v4'
+            status=await client.call_tool('suite_status',{})
+            assert not status.structuredContent['backends']['eda']['running']
+asyncio.run(run())
+print('cold stdio planning passed without CAD')
+'''
+    result = subprocess.run([sys.executable, '-c', script, str(tmp_path / 'synthetic-data')],
+                            cwd=Path(__file__).resolve().parents[1],
+                            capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'cold stdio planning passed without CAD' in result.stdout
+
+
 from suite_layout import LayoutService, capture_digest, context_from_snapshot, list_tools
 from suite_layout_policy import native_effects
 from eda_agent.design import placement_evidence as core
@@ -126,6 +168,38 @@ def test_missing_critical_evidence_cannot_be_passed_by_caller_journal(tmp_path):
             await service.apply_plan(plan['plan_id'], gate['validation_id'], 'fake_stage_ok')
         assert not calls
     asyncio.run(run())
+
+
+def test_one_time_bridge_hint_does_not_invalidate_physical_capture(tmp_path):
+    """Synthetic transport regression; never a live Apply acceptance result."""
+    async def run():
+        service, data, models, fab, calls, backups = service_fixture(tmp_path)
+        _, plan, _ = await preview(service, data, models, fab)
+        original_digest = capture_digest(data)
+        data['_hint_detach'] = 'One-time session advisory, not a board mutation'
+        assert capture_digest(data) == original_digest
+        assert (await service.validate_plan(plan['plan_id']))['passed']
+        del data['_hint_detach']
+        assert (await service.validate_plan(plan['plan_id']))['passed']
+        data['native_rule_values'].append({'width_mm': .23})
+        with pytest.raises(ValueError, match='STALE_PLACEMENT'):
+            await service.validate_plan(plan['plan_id'])
+        assert calls == backups == []
+    asyncio.run(run())
+
+
+def test_post_capture_ignores_only_known_transport_hint(tmp_path):
+    from suite_layout import unexpected_post_changes
+    service, data, models, fab, _, _ = service_fixture(tmp_path)
+    context = context_from_snapshot(data, 'synthetic', models, fab, {})
+    after = copy.deepcopy(data)
+    after['_hint_detach'] = 'Session advisory'
+    assert unexpected_post_changes(data, after, context, []) == []
+    after['components'][0]['locked'] = True
+    assert 'dependency:components' in unexpected_post_changes(data, after, context, [])
+    after = copy.deepcopy(data)
+    after['_unrecognized_field'] = 'Do not silently ignore unknown dependencies'
+    assert capture_digest(after) != capture_digest(data)
 
 
 @pytest.mark.parametrize('lie', [True, False])

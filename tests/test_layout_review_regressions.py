@@ -268,7 +268,7 @@ def test_unsupported_physical_cutout_contour_is_not_promoted(tmp_path):
 
 
 @pytest.mark.parametrize('case', ['edge_notch', 'overlapping_physical_holes', 'outside_cutout', 'invalid_outer'])
-def test_unsupported_composed_mechanical_shape_captures_as_unknown_not_intact_fr4(tmp_path, case):
+def test_composed_mechanical_shape_is_subtracted_or_remains_unknown(tmp_path, case):
     from test_layout_protocol import native_fixture
     from suite_layout import context_from_snapshot
     snapshot, models, fab = native_fixture(tmp_path)
@@ -285,11 +285,20 @@ def test_unsupported_composed_mechanical_shape_captures_as_unknown_not_intact_fr
     snapshot['cutouts'] = [{'id': f'physical-{i}', 'kind': 'board_cutout',
                            'outline': contour, 'geometry_complete': True} for i, contour in enumerate(contours)]
     context = core.validate_board_context(context_from_snapshot(snapshot, 'unsupported-mechanical-difference', models, fab, {}))
-    assert context['coverage']['outline'] == context['coverage']['physical_cutouts'] == 'unknown'
     assert context['geometry_diagnostics'][0]['section'] == 'physical_board_shape'
-    assert context['cutouts'] == []
     assert context['copper_snapshot']['cutouts'] == snapshot['cutouts']
-    assert not core.evaluate_placement(context)['feasible']
+    if case == 'invalid_outer':
+        assert context['coverage']['outline'] == context['coverage']['physical_cutouts'] == 'unknown'
+        assert context['cutouts'] == []
+        assert not core.evaluate_placement(context)['feasible']
+    else:
+        assert context['coverage']['outline'] == context['coverage']['physical_cutouts'] == 'complete'
+        assert context['geometry_diagnostics'][0]['method'] == 'exact_rational_rectilinear_subtraction'
+        assert core.evaluate_placement(context)['feasible']
+        if case == 'edge_notch':
+            assert not core.geom.point_in_region((29, 30), context['outline'])
+        elif case == 'overlapping_physical_holes':
+            assert not core.geom.point_in_region((23, 33), context['outline'])
 
 
 

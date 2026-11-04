@@ -1,13 +1,11 @@
-# فهرست skipهای واقعی پیش‌بررسی P1
+# فهرست skipهای واقعی P1
 
-منبع: JUnit خروجی اجرای کامل روی Windows و Python 3.12؛ بدون تغییر marker یا حذف/غیرفعال‌کردن تست. این فهرست با skipهای CI لینوکس یا ماشین بدون کتابخانهٔ KiCad یکی نیست.
+این فهرست از JUnit اجرای نهایی اصلاحات مستقل در Windows و Python 3.12 تولید شده است؛ هیچ تست حذف، غیرفعال یا برای عبور skip نشده است. دادهٔ synthetic در آزمون واحد، پذیرش برد واقعی شمرده نمی‌شود.
 
-- `root`: {"passed": 749}؛ 250.019 ثانیه.
-- `eda-agent`: {"passed": 4746, "skipped": 115}؛ 1249.996 ثانیه.
+- ریشه: ۷۷۸ pass، صفر fail/error، صفر skip.
+- eda-agent: ۴۷۴۶ pass، صفر fail/error، ۱۱۵ skip موجود.
 
-## خلاصهٔ دلیل‌ها
-
-| تعداد | دلیل ثبت‌شده توسط pytest |
+| تعداد | دلیل دقیق pytest |
 | --- | --- |
 | 9 | live-Altium test: set EDA_AGENT_INTEGRATION=1 to run. Skipped without contacting the bridge, so a running Altium session is left untouched. |
 | 1 | needs the local-only binary fixture EDAAgentTest_ICs.SchLib |
@@ -21,9 +19,7 @@
 | 6 | needs local-only binary fixture main.SchDoc |
 | 2 | Free Pascal Compiler (fpc) not on PATH |
 
-## تک‌تک تست‌های skipشده
-
-| مجموعه | تست | دلیل |
+| مجموعه | نام تست | دلیل |
 | --- | --- | --- |
 | eda-agent | `tests.integration.test_round_trip.TestProtocolContract::test_ping_returns_protocol_version` | live-Altium test: set EDA_AGENT_INTEGRATION=1 to run. Skipped without contacting the bridge, so a running Altium session is left untouched. |
 | eda-agent | `tests.integration.test_round_trip.TestProtocolContract::test_ping_returns_script_version` | live-Altium test: set EDA_AGENT_INTEGRATION=1 to run. Skipped without contacting the bridge, so a running Altium session is left untouched. |
@@ -140,5 +136,3 @@
 | eda-agent | `tests.test_review_cli::test_review_json_mode` | needs a local-only binary Altium fixture not committed to the repo (main.SchDoc, EDAAgentTest.PcbDoc, EDAAgentTest_ICs.SchLib, EDAAgentTest_Export.OutJob) |
 | eda-agent | `tests.test_review_cli::test_fail_on_threshold` | needs a local-only binary Altium fixture not committed to the repo (main.SchDoc, EDAAgentTest.PcbDoc, EDAAgentTest_ICs.SchLib, EDAAgentTest_Export.OutJob) |
 | eda-agent | `tests.test_review_cli::test_review_subcommand_registered` | needs a local-only binary Altium fixture not committed to the repo (main.SchDoc, EDAAgentTest.PcbDoc, EDAAgentTest_ICs.SchLib, EDAAgentTest_Export.OutJob) |
-
-Integrationهای opt-in طبق guard موجود و بدون تماس با bridge کنار گذاشته شدند؛ اجراکردن آن‌ها روی fixture اصلی خارج از دامنهٔ این آزمون بود. هیچ skip تازه‌ای افزوده نشد. آزمون زندهٔ Acceptance جداگانه در گزارش مرحله ثبت شده و جای این skipها را به PASS تبدیل نمی‌کند.
