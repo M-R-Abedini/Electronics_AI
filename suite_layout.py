@@ -273,7 +273,7 @@ def context_from_snapshot(snapshot, snapshot_id, models, fabrication, assembly, 
                 method='exact_rational_rectilinear_subtraction', raw_evidence_retained=True))
             if composed.get('warnings'):
                 geometry_diagnostics.extend(composed['warnings'])
-                geometry_diagnostics.append({'ignored_full_board_cutout_contours':composed['ignored_full_board_cutout_contours'],
+                geometry_diagnostics.append({'ignored_full_board_cutouts':composed['ignored_full_board_cutouts'],
                     'qualification':'placement_policy_override_only; physical_board_manufacturing_not_certified'})
     outline_complete = outline is not None and complete('board_outline') and cutouts_complete
     pads_complete = complete('pads') and not unknown_ownership

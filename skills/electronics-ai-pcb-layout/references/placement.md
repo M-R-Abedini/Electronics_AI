@@ -103,3 +103,10 @@ Crossing airwires may be routed around obstacles on one layer; they do not prove
 that a via is required. Filtering global rails from a signal-attraction metric
 does not remove local PDN, decoupling, current or return obligations. Do not
 discard every high-fanout net without its functional context.
+
+For an explicitly authorized placement-only spike, `assembly_profile.placement_spike`
+can bind `scope` (exact board path), `source.kind=user_intent`,
+`critical_allowance_mm`, `target_proximity_mm` and `placement_only=true`.
+These are declared engineering allowances for that board, not measured
+quantization or defaults for other boards. Unrouted decoupling-return evidence
+stays unknown/diagnostic; placement qualification is not routing qualification.

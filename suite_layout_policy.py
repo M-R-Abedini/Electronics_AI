@@ -16,7 +16,10 @@ def native_effects(backend, name, arguments, *, depth=0):
             except ValueError: return {'opaque'}
         return native_effects(backend, str(arguments.get('name', '')), nested, depth=depth + 1)
     if name in {'_suite_copper_snapshot', '_suite_copper_focus', 'app_ping', 'app_context',
-                'app_list_open_dialogs', 'pcb_run_drc'}:
+                'app_list_open_dialogs', 'pcb_run_drc',
+                'obj_select', 'obj_deselect_all', 'obj_zoom'}:
+        # These exact handlers change selection/viewport only. Generic modify
+        # and process dispatch remain opaque even if a caller claims to focus.
         return set()
     if name == 'app_press_dialog_button':
         return {'opaque'}  # Only the gateway's freshly validated recovery path is exempt.

@@ -3,16 +3,18 @@
   "catalog_total": 519,
   "native_editor_verified_by_generator": false,
   "provenance": {
-    "audit_baseline_commit": "6d317949633777bc5709bfa42fe332878b8ae446",
-    "checkout_plugin_version": "0.8.0",
+    "audit_baseline_commit": "22942ad",
+    "checkout_plugin_version": "0.8.1",
     "declared_native_script_version": "2026.11.04.electronics-ai-p1",
     "kind": "source_schema_export",
-    "method": "Isolated source gateway initialize and complete paginated catalog; no CAD calls",
+    "method": "Unchanged 0.8.0 catalog schemas; 0.8.1 implementation source hashes refreshed; no native editor calls by generator",
     "native_editor_probed": false,
     "source_file_sha256": {
-      "eda-agent/src/eda_agent/design/cluster_placement.py": "98c35de4b6a17effa92d8b8a434e82b473a4f8098ebb8464d2a3eecc1189b4c1",
-      "eda-agent/src/eda_agent/design/placement_p1.py": "0f439c041d4c0f43d09c4224de84b069326f9fba871fa786ea15d01ea5b3d4b9",
-      "suite_layout.py": "40dcde210bc43982b766316fd0ad6c3365e38cddc9840956ebfb2b5f1e6d8654"
+      "eda-agent/src/eda_agent/design/cluster_placement.py": "e9d9a59a69c64b2b1b8e8bc25d2bbcf6a60598da63709e4257eb9f118bc5054b",
+      "eda-agent/src/eda_agent/design/placement_evidence.py": "4e226bc8ec462edd8a6076930504b8bc26de0689051eb422f478329e8b5010a6",
+      "eda-agent/src/eda_agent/design/placement_p1.py": "8ca52562a50a639c50718318b4503054a3807e2b0215419b5e2aaf0f615c541e",
+      "suite_layout.py": "a81bd68c3dedb75fe005c2b82ac270e5c5882376f7d5aed85a6441a882804990",
+      "suite_layout_policy.py": "eab8e80884128c5b6b9708297b24df1473dce8fd830ed434ccd663397b2c2b11"
     }
   },
   "schema_version": 1,

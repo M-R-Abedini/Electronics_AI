@@ -18,6 +18,25 @@ P0_VERSION = 'placement-evidence-p0-v4'
 SUPPORTED_POLICIES = (P0_VERSION, POLICY_VERSION)
 
 
+def spike_policy(context):
+    """Explicit user engineering allowances bound to one board, not defaults."""
+    from .placement_evidence import _qualified, _number
+    profile=(context.get('assembly_profile') or {}).get('placement_spike')
+    if profile is None:return {}
+    if not isinstance(profile,dict) or profile.get('scope')!=context.get('board_path'):
+        raise ValueError('Placement spike policy must name this exact board')
+    source=profile.get('source')
+    if not _qualified(source) or source.get('kind')!='user_intent':
+        raise ValueError('Placement spike allowances require explicit user intent')
+    allowance=_number(profile.get('critical_allowance_mm',0),'spike critical allowance',minimum=0)
+    target=profile.get('target_proximity_mm')
+    if target is not None:target=_number(target,'spike target proximity',positive=True)
+    if not isinstance(profile.get('placement_only',False),bool):
+        raise ValueError('placement_only must be boolean')
+    return dict(critical_allowance_mm=allowance,target_proximity_mm=target,
+                placement_only=profile.get('placement_only',False),source=copy.deepcopy(source),scope=profile['scope'])
+
+
 def quantization_budget(context, acceptance=None):
     """No grid origin/proven native measurement => no positive allowance.
 
@@ -287,7 +306,7 @@ def prepare_context(context):
             xs, ys = zip(*points)
             x0,x1,y0,y1 = min(xs)-margin,max(xs)+margin,min(ys)-margin,max(ys)+margin
             ring = [[x0,y0],[x1,y0],[x1,y1],[x0,y1]]
-            c.update(courtyard_local=ring, envelope_source='derived_pad_and_body_envelope',
+            c.update(courtyard_local=ring, envelope_source='derived_pad_body_margin',
                      ipc_courtyard_margin_mm=margin,
                      courtyard_source={'kind':'engineering_policy', 'id':'p1-tiered-envelope:'+digest(ring),
                        'revision':POLICY_VERSION, 'margin_source':'user_authorized_default',

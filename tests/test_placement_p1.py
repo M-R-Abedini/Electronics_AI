@@ -131,7 +131,7 @@ def test_cutout_override_is_explicit_strict_threshold_and_raw_evidence_kept(rati
     outline=[[0,0],[10,0],[10,10],[0,10]]
     cut=[[0,0],[10*ratio,0],[10*ratio,10],[0,10]]
     result=subtract_rectilinear_cutouts(outline,[cut],ignore_full_board_artifacts=True)
-    assert result['ignored_full_board_cutout_contours']==ignored
+    assert result['ignored_full_board_cutouts']==ignored
     if ignored:
         assert result['outline']==outline
         assert result['warnings'][0]['raw_contour']==cut
@@ -185,3 +185,35 @@ def test_repairing_moved_collision_precedes_ordinary_hpwl_but_remote_defects_are
     assert repaired['evaluations'][1]['metrics']['signal_hpwl']['value']>repaired['evaluations'][0]['metrics']['signal_hpwl']['value']
     pointless=core.compare_placement_candidates(c,candidates=[dict(id='away',moves=[dict(component_id='b',x_mm=26)])])
     assert pointless['selection_status']=='blocked' and not pointless['plan']['apply_eligible']
+
+
+def test_spike_allowance_is_explicit_board_scoped_and_not_measured_quantization():
+    c=core.example_board_context();c['policy_version']=p1.POLICY_VERSION;c['coverage']['pads']='complete'
+    intent={'critical_paths':[{'id':'leg','pad_ids':['a.1','b.1']}]}
+    candidate={'id':'small-regression','moves':[{'component_id':'b','x_mm':24.01}]}
+    ordinary=core.compare_placement_candidates(c,intent,candidates=[candidate])
+    assert ordinary['tradeoffs'][1]['critical_regressions']
+    c['assembly_profile']={'placement_spike':dict(scope=c['board_path'],critical_allowance_mm=.02,
+        target_proximity_mm=2.5,placement_only=True,source={'kind':'user_intent','id':'synthetic-spike'})}
+    scoped=core.compare_placement_candidates(c,intent,candidates=[candidate])
+    assert not scoped['tradeoffs'][1]['critical_regressions']
+    assert scoped['epsilon_quant_mm']==0 and scoped['critical_allowance_mm']==.02
+    assert not scoped['plan']['moves'], 'An allowance does not reward a worse layout'
+    c['board_path']='different.PcbDoc'
+    with pytest.raises(ValueError,match='exact board'):core.compare_placement_candidates(c,intent)
+
+
+def test_unrouted_return_stays_unknown_diagnostic_only_for_authorized_spike():
+    c=core.example_board_context();c['policy_version']=p1.POLICY_VERSION;c['coverage']['pads']='complete'
+    for p in c['pads']:p['net_name']='VCC'
+    for p in list(c['pads']):
+        q=copy.deepcopy(p);q.update(id=p['id']+'g',net_name='GND',local_xy_mm=[0,1]);c['pads'].append(q)
+    binding=dict(id='cap',ic_power_pad='a.1',cap_power_pad='b.1',ic_return_pad='a.1g',cap_return_pad='b.1g',
+                 power_net='VCC',return_net='GND',source={'kind':'user_intent','id':'synthetic-pin-map'})
+    intent={'decoupling_connections':[binding]}
+    before=next(r for r in core.evaluate_placement(c,intent)['checks'] if r['id']=='decoupling_physical_return:cap')
+    assert before['required'] and before['status']=='unknown'
+    c['assembly_profile']={'placement_spike':dict(scope=c['board_path'],critical_allowance_mm=.02,
+        placement_only=True,source={'kind':'user_intent','id':'synthetic-spike'})}
+    after=next(r for r in core.evaluate_placement(c,intent)['checks'] if r['id']=='decoupling_physical_return:cap')
+    assert not after['required'] and after['status']=='unknown' and after['kind']=='diagnostic'

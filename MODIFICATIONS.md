@@ -228,3 +228,11 @@ Added synthetic regressions and isolated cancellation tests from the real FIFO
 admission service without weakening cancellation or lock ownership assertions.
 Real disposable-board Apply/readback/stale/Locked/Restore evidence is private;
 the Persian P1 report separates it from blocked whole-board solver proposals.
+
+
+## 2026-11-04 — 0.8.1 scoped placement spike
+
+Added explicit per-board user-intent placement allowances and placement-stage
+handling of still-unknown routed decoupling evidence; default P1 remains strict.
+Aligned envelope/cutout evidence field names with the requested spike contract.
+Only focused placement regressions were used for this patch.

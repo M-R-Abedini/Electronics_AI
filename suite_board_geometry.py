@@ -118,6 +118,6 @@ def subtract_rectilinear_cutouts(outline, cutouts, *, max_cells=65536,
     if not region_geometry_valid(result):
         raise ValueError('Subtracted board is unsupported by the placement contract')
     if ignore_full_board_artifacts:
-        result.update(ignored_full_board_cutout_contours=len(ignored), warnings=ignored,
+        result.update(ignored_full_board_cutouts=len(ignored), warnings=ignored,
                       interpretation_policy='placement-evidence-p1-v1')
     return result

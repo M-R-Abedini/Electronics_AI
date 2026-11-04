@@ -468,6 +468,10 @@ def _decoupling_physical_checks(context, intent, pads, snapshot):
     """
     from .copper_audit import CopperGraph
     result, graphs = [], {}
+    placement_only=False
+    if context.get('policy_version')=='placement-evidence-p1-v1':
+        from .placement_p1 import spike_policy
+        placement_only=spike_policy(context).get('placement_only',False)
     physical = copy.deepcopy(context.get('copper_snapshot'))
     if physical is not None:
         for pad in physical.get('pads', []):
@@ -498,6 +502,7 @@ def _decoupling_physical_checks(context, intent, pads, snapshot):
                 status = 'pass'
         measured = sum(p['length_mm'] for p in paths) if len(paths) == 2 else None
         result.append(_check('decoupling_physical_return:'+binding['id'], status, snapshot,
+            required=not placement_only,kind='diagnostic' if placement_only else 'hard',
             scope={'pads': ids}, measured=measured, unit='mm', geometry={'routed_paths': paths},
             verification='routed_copper_graph', source=binding.get('source'),
             reason='Both explicit IC/cap power and return connections need proven copper paths; proximity alone cannot pass'))
@@ -1003,9 +1008,13 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
     critical = [key for key, metric in baseline["metrics"].items() if metric.get("critical")]
     tolerance = policy.get("critical_nonregression_mm", {})
     epsilon = 0.0
+    quant_epsilon=0.0
+    explicit_spike={}
     if version == 'placement-evidence-p1-v1':
-        from .placement_p1 import quantization_budget
-        epsilon = quantization_budget(context, context.get('native_apply_acceptance'))['epsilon_quant_mm']
+        from .placement_p1 import quantization_budget,spike_policy
+        quant_epsilon = quantization_budget(context, context.get('native_apply_acceptance'))['epsilon_quant_mm']
+        explicit_spike=spike_policy(context)
+        epsilon=max(quant_epsilon,explicit_spike.get('critical_allowance_mm',0))
     if not isinstance(tolerance, dict) or any(k not in critical for k in tolerance):
         raise ValueError("Critical tolerances must reference actual reported critical metrics")
     for key, value in tolerance.items():
@@ -1076,7 +1085,8 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
             "apply_eligible": bool(eligible) and winner["feasible"]}
     plan["plan_digest"] = digest(plan)
     return {"schema": 1, "policy_version": version, "input_digest": baseline["input_digest"],
-            "epsilon_quant_mm":epsilon,
+            "epsilon_quant_mm":quant_epsilon,"critical_allowance_mm":epsilon,
+            "explicit_spike_policy":explicit_spike,
             "baseline_id": "baseline", "selected_candidate_id": winner["candidate_id"],
             "selection_status": status, "evaluations": evaluations, "tradeoffs": tradeoffs,
             "profiles": select_profiles(intent), "plan": plan}

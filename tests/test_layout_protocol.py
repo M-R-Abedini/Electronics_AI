@@ -259,6 +259,18 @@ def test_managed_scope_guards_nested_alias_and_opaque_effects(tmp_path):
     assert native_effects('eda', 'tool_invoke', {'name': 'pcb_get_pads', 'arguments': {}}) == set()
 
 
+def test_managed_scope_allows_exact_view_handlers_but_not_generic_modify(tmp_path):
+    service = LayoutService(tmp_path)
+    service._scope('b'*64, dict(active=True, context_id='b'*64))
+    for name, args in [('obj_select', {'object_type':'ComponentObject','filter':'Name=U5'}),
+                       ('obj_deselect_all', {}), ('obj_zoom', {'action':'selection'})]:
+        service.guard_native_effect('eda', name, args)
+        assert native_effects('eda', 'tool_invoke', {'name':name,'arguments':args}) == set()
+    with pytest.raises(ValueError, match='MANAGED_PLACEMENT_SCOPE'):
+        service.guard_native_effect('eda', 'obj_modify_objects',
+                                    {'properties':{'Selected':True,'X':9}})
+
+
 def test_contracts_and_registered_api_are_json_schema_valid():
     assert len(list_tools()) == 8
     for tool in list_tools(): Draft202012Validator.check_schema(tool['inputSchema'])
