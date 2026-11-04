@@ -236,3 +236,16 @@ Added explicit per-board user-intent placement allowances and placement-stage
 handling of still-unknown routed decoupling evidence; default P1 remains strict.
 Aligned envelope/cutout evidence field names with the requested spike contract.
 Only focused placement regressions were used for this patch.
+
+
+## 2026-11-04 — 0.9.0 copper-aware cluster operations
+
+Added freshness-bound, idempotent in-memory placement compensation through the
+same Delphi actor. Added exact/bounded per-layer pad clearance against tracks,
+arcs, vias and poured copper, explicit routed-attachment reporting and a bounded
+joint passive search. Added the targeted copper-loop audit over existing SI/PI
+modules, native polygon-child net bindings, section-specific region coverage and
+an exact hole spatial index. Incomplete routing stays unproven; detaching routes
+is blocked unless an explicit board-scoped placement-only trial permits it.
+Old gate revisions cannot authorize edits under the new copper checks.
+Only short focused regressions and disposable-board live checks were run.

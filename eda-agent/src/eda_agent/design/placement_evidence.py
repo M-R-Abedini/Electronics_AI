@@ -472,6 +472,12 @@ def _decoupling_physical_checks(context, intent, pads, snapshot):
     if context.get('policy_version')=='placement-evidence-p1-v1':
         from .placement_p1 import spike_policy
         placement_only=spike_policy(context).get('placement_only',False)
+    if placement_only:
+        return [_check('decoupling_physical_return:'+b['id'],'unknown',snapshot,
+            required=False,kind='diagnostic',verification='deferred_routed_copper_graph',
+            geometry={'routed_paths':[]},source=b.get('source'),
+            reason='Placement-only search; run si_pi__audit_copper_loops once after the chosen placement, not for every proposal')
+            for b in intent.get('decoupling_connections',[])]
     physical = copy.deepcopy(context.get('copper_snapshot'))
     if physical is not None:
         for pad in physical.get('pads', []):
@@ -796,6 +802,11 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
                       'individual_failure_and_unknown_checks_retained':True}))
     pads = transformed_pads(context, poses)
     checks += _manufacturing_checks(context, pads, snapshot)
+    affected_routed_nets=[]
+    if version == 'placement-evidence-p1-v1':
+        from .placement_copper import audit_placement_copper
+        copper_checks,affected_routed_nets=audit_placement_copper(context,pads,snapshot)
+        checks += copper_checks
     checks += _profile_checks(context, intent, snapshot, constraints)
     checks += _decoupling_checks(intent, pads, snapshot, scoped)
     checks += _decoupling_physical_checks(context, intent, pads, snapshot)
@@ -838,6 +849,7 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
         "metrics": metrics, "final_poses": poses, "moves": canonical, "reservations": reservations,
         "profiles": select_profiles(intent),
         "unchanged_baseline_defects": unchanged_baseline,
+        "affected_routed_nets": affected_routed_nets,
         "coverage": {"electrical_routing": "not_verified", "courtyards": "complete" if all(rings[c] is not None for c in scoped) else "unknown",
                      "renderer": "not_evaluated", "physics": "not_simulated"}}
     report["evidence_id"] = digest(report)
@@ -902,6 +914,24 @@ def _metrics(context, intent, poses, pads):
         for name, leg, pair in [('vcc',legs[0],ids[:2]),('gnd',legs[1],ids[2:])]:
             result['critical_decap:'+binding['id']+':'+name] = {**result['critical_decap:'+binding['id']],
                 'value':leg, 'pad_ids':pair}
+        if context.get('policy_version') == 'placement-evidence-p1-v1' and context.get('copper_snapshot'):
+            from .placement_copper import nearest_via_access,section_complete
+            via_total=0.
+            for name,pid in [('vcc',ids[1]),('gnd',ids[3])]:
+                distance,via_id=nearest_via_access(context['copper_snapshot'],pads[pid])
+                complete=section_complete(context['copper_snapshot'],'vias') and section_complete(context['copper_snapshot'],'layers')
+                result['critical_decap:'+binding['id']+':via:'+name]={
+                    'value':distance,'via_id':via_id,'pad_ids':[pid],'unit':'mm',
+                    'method':'nearest_same_net_same_layer_via_edge_distance','route_verified':False,
+                    'coverage':'complete' if complete else 'unknown',
+                    'status':'measured' if distance is not None else 'no_eligible_via' if complete else 'unknown',
+                    'critical':False,'selection_contribution':'included in the critical combined loop metric'}
+                if distance is not None:via_total+=distance
+            result['critical_decap:'+binding['id']+':loop_with_via_access']={
+                **result['critical_decap:'+binding['id']],
+                'value':value+via_total if value is not None and complete else None,
+                'method':'pad_pair_lower_bounds_plus_available_same_net_via_access',
+                'not_a_routed_loop_length':True}
     return result
 
 
@@ -1083,6 +1113,8 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
             "search": {"method": "existing_planner_proposals", "candidate_count": len(evaluations),
                        "seeds": [candidate.get("seed") for candidate in candidates]},
             "apply_eligible": bool(eligible) and winner["feasible"]}
+    plan['affected_routed_nets']=winner.get('affected_routed_nets',[])
+    plan['routing_repair_required']=bool(plan['affected_routed_nets'])
     plan["plan_digest"] = digest(plan)
     return {"schema": 1, "policy_version": version, "input_digest": baseline["input_digest"],
             "epsilon_quant_mm":quant_epsilon,"critical_allowance_mm":epsilon,

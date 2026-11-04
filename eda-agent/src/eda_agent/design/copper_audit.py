@@ -19,7 +19,7 @@ from eda_agent.design.copper_geometry import (
     merge_intervals, pad_outline, parallel_coupling, point_in_region,
     point_in_ring, point_segment_distance, polygon_area, project, ring_edges,
     segment_distance, segment_intersection_parameters, segment_region_intervals, uncovered_intervals, xy,
-    region_geometry_valid,
+    region_geometry_valid, indexed_region,
 )
 
 DEFAULT_POLICY = {
@@ -87,7 +87,7 @@ def _segments(snapshot, report=None, error=0.002):
 
 
 def _regions(snapshot):
-    return [r for r in snapshot.get("regions", []) if r.get("poured") is True
+    return [indexed_region(r) for r in snapshot.get("regions", []) if r.get("poured") is True
             and r.get("geometry_complete", True) is True
             and len(r.get("outline", [])) >= 3 and r.get("kind", "copper") not in {"cutout", "keepout", "polygon_definition"}
             and region_geometry_valid(r)]
@@ -142,7 +142,7 @@ def _reference_check(snapshot, intent, segments, report, policy):
     cutouts += [r for r in snapshot.get("cutouts", []) + snapshot.get("holes", []) if r.get("outline")]
     for seg in segments:
         net = seg.get("net_name", "")
-        if not (_tags(intent, net) & FAST):
+        if not (_tags(intent, net) & (FAST | {'SENSITIVE_ANALOG'})):
             continue
         c = intent.get("constraints", {}).get(net, {})
         c = {**c, **c.get("layer_widths", {}).get(seg.get("layer"), {})}
@@ -180,7 +180,7 @@ def _reference_check(snapshot, intent, segments, report, policy):
                         # Localize a hole violation to its projection range.
                         ts = [project(xy(p), a, b)[1] for p in hole]
                         gaps.append((min(ts), max(ts)))
-            gaps = merge_intervals(gaps)
+            gaps = [(lo,hi) for lo,hi in merge_intervals(gaps) if hi-lo>EPS]
             if gaps:
                 lo, hi = max(gaps, key=lambda interval: interval[1] - interval[0])
                 _violation(report, "split_reference", seg, round(sum(hi_ - lo_ for lo_, hi_ in gaps) * length, 8), 0.0,
@@ -393,10 +393,17 @@ class CopperGraph:
             if not ring or pad.get("width_mm", 0) <= 0 or pad.get("height_mm", 0) <= 0:
                 self.unknowns.append(f"{pid}: pad contour unavailable"); continue
             layers = pad.get("layers") or [pad.get("layer")]
-            if layers == ["Multi-Layer"] or layers == ["multi_layer"]:
-                layers = [l["name"] for l in self.layers]
+            if str(pad.get('layer','')).replace('-','').replace('_','').lower() == 'multilayer':
+                if not pad.get('layer_geometries'):
+                    self.unknowns.append(f'{pid}: multilayer copper shapes unavailable');continue
+                layers=[r['layer'] for r in pad['layer_geometries']]
             ns = []
             for layer in layers:
+                layer_shape=next((r for r in pad.get('layer_geometries',[]) if r.get('layer')==layer),None)
+                if layer_shape is not None:
+                    if layer_shape.get('geometry_complete') is False:
+                        self.unknowns.append(f'{pid}: incomplete layer shape {layer}');continue
+                    ring=pad_outline({**pad,**layer_shape})
                 center = self.node(xy(pad), layer); ns.append(center)
                 box = (min(p[0] for p in ring), min(p[1] for p in ring), max(p[0] for p in ring), max(p[1] for p in ring))
                 for j in indexes[layer].query(box):
@@ -436,31 +443,31 @@ class CopperGraph:
             self.via_nodes[vid] = ns
         # A via placed on a pad can touch its copper away from the pad centre;
         # that access must work without a synthetic connecting track.
-        pad_index = SpatialIndex()
+        pad_index = defaultdict(SpatialIndex)
         contours = {}
-        for pad in self.snapshot.get("pads", []):
-            pid = _pad_key(pad)
-            if pid not in self.pad_nodes:
-                continue
-            try:
-                contour = pad_outline(pad)
-            except ValueError:
-                continue
-            contours[pid] = contour
-            pad_index.insert(pid, (min(x for x, y in contour), min(y for x, y in contour), max(x for x, y in contour), max(y for x, y in contour)))
-        for via in self.snapshot.get("vias", []):
-            vid = str(via.get("id"))
-            if vid not in self.via_nodes:
-                continue
-            center, radius = xy(via), via.get("diameter_mm", 0) / 2
-            for pid in pad_index.query(bbox_segment(center, center, radius)):
-                contour = contours[pid]
-                if point_in_ring(center, contour) or min(point_segment_distance(center, a, b) for a, b in ring_edges(contour)) <= radius + EPS:
-                    contact = center if point_in_ring(center, contour) else min((project(center, a, b)[0] for a, b in ring_edges(contour)), key=lambda p: distance(p, center))
-                    for a in self.via_nodes[vid]:
+        def physical_pad_rows(pad):
+            if pad.get('layer_geometries'):
+                return [{**pad,**r} for r in pad['layer_geometries'] if r.get('geometry_complete') is not False]
+            return [{**pad,'layer':layer} for layer in (pad.get('layers') or [pad.get('layer')])]
+        for raw in self.snapshot.get('pads', []):
+            pid = _pad_key(raw)
+            if pid not in self.pad_nodes:continue
+            for pad in physical_pad_rows(raw):
+                try:contour=pad_outline(pad)
+                except ValueError:continue
+                key=(pid,pad['layer']);contours[key]=contour
+                pad_index[pad['layer']].insert(key,(min(x for x,y in contour),min(y for x,y in contour),max(x for x,y in contour),max(y for x,y in contour)))
+        for via in self.snapshot.get('vias', []):
+            vid=str(via.get('id'))
+            if vid not in self.via_nodes:continue
+            center,radius=xy(via),via.get('diameter_mm',0)/2
+            for a in self.via_nodes[vid]:
+                for key in pad_index[a[2]].query(bbox_segment(center,center,radius)):
+                    pid,layer=key;contour=contours[key]
+                    if point_in_ring(center,contour) or min(point_segment_distance(center,p,q) for p,q in ring_edges(contour))<=radius+EPS:
+                        contact=center if point_in_ring(center,contour) else min((project(center,p,q)[0] for p,q in ring_edges(contour)),key=lambda p:distance(p,center))
                         for b in self.pad_nodes[pid]:
-                            if a[2] == b[2]:
-                                self.edge(a, b, distance(a[:2], contact) + distance(contact, b[:2]), via_id=vid, pad_id=pid, pad_contact_point=contact)
+                            if b[2]==layer:self.edge(a,b,distance(a[:2],contact)+distance(contact,b[:2]),via_id=vid,pad_id=pid,pad_contact_point=contact)
         for s, points in zip(self.segments, cuts):
             points.sort(key=lambda p: p[0])
             for (t, a), (u, b) in zip(points, points[1:]):
@@ -468,7 +475,7 @@ class CopperGraph:
                 self.edge(a, b, length, track_id=s["id"], arc_error_mm=s.get("arc_error_mm", 0))
         # Pad-to-pad contact is necessary for pad-side net ties and common
         # exposed-pad geometries. It is evaluated on rotated contours.
-        pads = [p for p in self.snapshot.get("pads", []) if p.get("net_name") == self.net_name]
+        pads = [row for p in self.snapshot.get("pads", []) if p.get("net_name") == self.net_name for row in physical_pad_rows(p)]
         pindex, outlines = SpatialIndex(), {}
         for i, p in enumerate(pads):
             try:
@@ -481,6 +488,7 @@ class CopperGraph:
             for j in pindex.query(pindex.boxes[i]):
                 if j <= i:
                     continue
+                if pads[i].get("layer") != pads[j].get("layer"):continue
                 other = outlines[j]
                 touching = point_in_ring(r[0], other) or point_in_ring(other[0], r) or any(
                     segment_intersection_parameters(a, b, c, d) for a, b in ring_edges(r) for c, d in ring_edges(other))
@@ -489,7 +497,7 @@ class CopperGraph:
                     idb = str(pads[j].get("id", f"{pads[j].get('component')}.{pads[j].get('pad_name', j)}"))
                     for a in self.pad_nodes.get(ida, []):
                         for b in self.pad_nodes.get(idb, []):
-                            if a[2] == b[2]:
+                            if a[2] == b[2] == pads[i].get("layer"):
                                 contacts = [p for p in r if point_in_ring(p, other)] + [p for p in other if point_in_ring(p, r)]
                                 for p, q in ring_edges(r):
                                     for u, v in ring_edges(other):
@@ -1072,3 +1080,51 @@ def audit_board_copper(snapshot: dict, intent: dict | None = None, *, policy: di
 
 
 __all__ = ["audit_board_copper", "net_connectivity", "classify_copper_intent", "CopperGraph", "DEFAULT_POLICY"]
+
+def decoupling_loop_measurements(snapshot,intent):
+    """Real graph lengths or explicit unknowns; never pad-gap stand-ins."""
+    graphs={};measurements=[]
+    motifs=[m for m in intent.get('motifs',[]) if m.get('kind')=='decoupling' and m.get('intent_verified') is True]
+    if not motifs:return []
+    from .placement_copper import CopperObstacleIndex,copper_distance
+    from .placement_p1 import expand_layers,analytic_bounds,analytic_distance
+    obstacles=CopperObstacleIndex(snapshot)
+    pad_rows=[];contact_unknowns=[]
+    for p in snapshot.get('pads',[]):
+        pid=_pad_key(p)
+        try:pad_rows.extend(expand_layers({pid:dict(p,id=pid)}))
+        except (ValueError,KeyError,TypeError):contact_unknowns.append('Unsupported local pad contact: '+pid)
+    indices=defaultdict(SpatialIndex)
+    for i,p in enumerate(pad_rows):indices[p['layer']].insert(i,analytic_bounds(p))
+    def has_contact(pad):
+        try:rows=expand_layers({_pad_key(pad):dict(pad,id=_pad_key(pad))})
+        except (ValueError,KeyError,TypeError):return True
+        for row in rows:
+            if any(r['net_name']==row.get('net_name') and copper_distance(row,r)<=EPS for r in obstacles.query(row)):
+                return True
+            for i in indices[row['layer']].query(analytic_bounds(row)):
+                other=pad_rows[i]
+                if other['id']!=_pad_key(pad) and other.get('net_name')==row.get('net_name') and analytic_distance(row,other)<=EPS:return True
+        return False
+    for m in motifs:
+        source=_find_pad(snapshot,m.get('source_component'),m.get('source_pin'))
+        cap=_find_pad(snapshot,m.get('component'),m.get('cap_power_pin'))
+        ground=_find_pad(snapshot,m.get('component'),m.get('cap_ground_pin'))
+        if not source or not cap or not ground:continue
+        def graph(net):
+            if net not in graphs:graphs[net]=CopperGraph(snapshot,net)
+            return graphs[net]
+        power_graph=graph(cap['net_name']) if has_contact(cap) else None
+        ground_graph=graph(ground['net_name']) if has_contact(ground) else None
+        power=power_graph.shortest(power_graph.pad_nodes.get(_pad_key(cap),[]),power_graph.pad_nodes.get(_pad_key(source),[])) if power_graph else None
+        via_nodes=[n for nodes in ground_graph.via_nodes.values() for n in nodes] if ground_graph else []
+        ret=ground_graph.shortest(ground_graph.pad_nodes.get(_pad_key(ground),[]),via_nodes) if ground_graph else None
+        measurements.append(dict(component=m['component'],source_component=m['source_component'],
+            x_mm=cap['x_mm'],y_mm=cap['y_mm'],layer=cap.get('layer'),net_name=cap['net_name'],
+            measured_value=power['length_mm']+ret['length_mm'] if power and ret else None,
+            power_path_mm=power['length_mm'] if power else None,ground_to_via_mm=ret['length_mm'] if ret else None,
+            ground_via_ids=ret['via_ids'] if ret else [],unit='mm',status='measured' if power and ret else 'unrouted_or_unproven',
+            reference_continuity_verified=False,
+            fix_action='Route and verify the missing supply/return connection' if not power or not ret else 'Compare against the sourced loop budget',
+            geometry_unknowns=sorted(set(contact_unknowns+[x for gr in (power_graph,ground_graph) if gr for x in gr.unknowns]))))
+    return measurements

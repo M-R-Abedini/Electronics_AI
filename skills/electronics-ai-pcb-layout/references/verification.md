@@ -29,9 +29,14 @@ to ordinary editing must retain that change of qualification in the report.
 - Existing automatic checkpoints preserve saved disk bytes. They do not
   capture every unsaved Altium object, force a save, or guarantee native Undo
   and transactional rollback. Do not claim recovery beyond the receipt.
-- Restore currently requires Altium to be closed. Respect that condition;
+- Disk checkpoint restore requires Altium to be closed. Respect that condition;
   neither a quiet queue nor a timeout authorizes restoring an open document or
   terminating the user's application.
+- `layout__revert_in_memory` restores only the exact changed poses of an applied
+  plan, through the same native actor, while Altium stays open. It refuses
+  intervening geometry/rule/lock changes and verifies the full post-state.
+  Repeating it returns evidence, never replays an uncertain operation. This is
+  placement compensation, not general undo of arbitrary unsaved edits.
 - A `design_session_log` event is a journal statement. It is not independent
   check evidence. Require the implemented server gate and fresh evidence for
   the scope before mutation; do not use a raw or nested alias to bypass it.

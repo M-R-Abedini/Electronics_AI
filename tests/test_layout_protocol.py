@@ -272,10 +272,37 @@ def test_managed_scope_allows_exact_view_handlers_but_not_generic_modify(tmp_pat
 
 
 def test_contracts_and_registered_api_are_json_schema_valid():
-    assert len(list_tools()) == 8
+    assert len(list_tools()) == 9
     for tool in list_tools(): Draft202012Validator.check_schema(tool['inputSchema'])
     for name, schema in core.contract_schemas().items():
         if isinstance(schema, dict): Draft202012Validator.check_schema(schema)
+
+
+def test_memory_revert_restores_only_original_poses_and_is_idempotent(tmp_path):
+    async def run():
+        service,data,models,fab,calls,_=service_fixture(tmp_path)
+        _,plan,gate=await preview(service,data,models,fab)
+        before=copy.deepcopy(data['components'])
+        applied=await service.apply_plan(plan['plan_id'],gate['validation_id'],'p2_apply')
+        assert applied['qualified_placement']
+        result=await service.revert_in_memory(plan['plan_id'])
+        assert result['reverted'] and not result['saved'] and not result['altium_closed']
+        assert data['components']==before and len(calls)==2
+        assert (await service.revert_in_memory())['receipt_reused']
+        assert len(calls)==2
+    asyncio.run(run())
+
+
+def test_memory_revert_refuses_intervening_edit(tmp_path):
+    async def run():
+        service,data,models,fab,calls,_=service_fixture(tmp_path)
+        _,plan,gate=await preview(service,data,models,fab)
+        await service.apply_plan(plan['plan_id'],gate['validation_id'],'p2_stale')
+        data['pads'][0]['net_name']='edited by engineer'
+        with pytest.raises(ValueError,match='STALE_PLACEMENT'):
+            await service.revert_in_memory(plan['plan_id'])
+        assert len(calls)==1
+    asyncio.run(run())
 
 def test_live_eco_capture_preserves_explicit_scope_in_post_validation(tmp_path, monkeypatch):
     async def run():
@@ -335,4 +362,15 @@ def test_generic_pcb_input_gate_reads_real_directory_before_any_native_call(tmp_
         assert result['context_id'] is None and not result['suitable_as_native_precondition']
         assert set(result['input_gate']['blockers'])=={'blocked_missing_board_artifact','blocked_missing_safety_input'}
         assert calls==backups==[] and list(project.iterdir())==[]
+    asyncio.run(run())
+
+def test_old_gate_revision_cannot_authorize_new_native_apply(tmp_path):
+    async def run():
+        service,data,models,fab,calls,_=service_fixture(tmp_path)
+        _,plan,gate=await preview(service,data,models,fab)
+        old=service._load('validations',gate['validation_id']);old.pop('gate_revision')
+        old_id=service._save('validations',old)
+        with pytest.raises(ValueError,match='passing server-generated validation'):
+            await service.apply_plan(plan['plan_id'],old_id,'old_gate')
+        assert not calls
     asyncio.run(run())

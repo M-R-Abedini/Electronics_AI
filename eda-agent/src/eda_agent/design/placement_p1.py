@@ -33,7 +33,10 @@ def spike_policy(context):
     if target is not None:target=_number(target,'spike target proximity',positive=True)
     if not isinstance(profile.get('placement_only',False),bool):
         raise ValueError('placement_only must be boolean')
+    if not isinstance(profile.get('allow_routing_detach',False),bool):
+        raise ValueError('allow_routing_detach must be boolean')
     return dict(critical_allowance_mm=allowance,target_proximity_mm=target,
+                allow_routing_detach=profile.get('allow_routing_detach',False),
                 placement_only=profile.get('placement_only',False),source=copy.deepcopy(source),scope=profile['scope'])
 
 

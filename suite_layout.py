@@ -21,6 +21,7 @@ P0_POLICY_VERSION = 'placement-evidence-p0-v4'
 P1_POLICY_VERSION = 'placement-evidence-p1-v1'
 POLICY_VERSION = P1_POLICY_VERSION
 SUPPORTED_POLICIES = (P0_POLICY_VERSION, P1_POLICY_VERSION)
+GATE_REVISION = 'placement-copper-p2-v1'
 
 # Bridge/session diagnostics have no physical meaning. Keep this allowlist
 # explicit: rules, lock state, dirty state and unknown fields still bind plans.
@@ -288,7 +289,8 @@ def context_from_snapshot(snapshot, snapshot_id, models, fabrication, assembly, 
         coverage={'outline': 'complete' if outline_complete else 'unknown',
                   'physical_cutouts': 'complete' if cutouts_complete else 'unknown',
                   'pads': 'complete' if pads_complete else 'unknown',
-                  'routing_obstacles': 'complete' if snapshot.get('complete') else 'partial'},
+                  'routing_obstacles': 'complete' if all(complete(s) for s in
+                      ('tracks','arcs','vias','regions','layers')) else 'partial'},
         native_rules=copy.deepcopy(snapshot.get('native_rules')),
         copper_snapshot=copy.deepcopy(snapshot),
         renderer_coverage={'courtyard': 'unavailable', 'pours': 'unavailable',
@@ -324,6 +326,8 @@ def list_tools():
              dict(plan_id=string), ['plan_id']),
         tool('apply_plan', 'Apply the exact validated plan once, with checkpoint, native freshness and readback; never rerun the optimizer.',
              dict(plan_id=string, validation_id=string, operation_id=string), ['plan_id', 'validation_id', 'operation_id']),
+        tool('revert_in_memory', 'Compensate the latest exact applied placement with its captured original poses, without saving or closing Altium. Refuses intervening physical edits; not general undo.',
+             dict(plan_id=string)),
         tool('get_evidence', 'Read an integrity-checked server-created context, plan, gate or receipt. Does not certify its current freshness.',
              dict(evidence_id=string, kind={'enum': ['contexts', 'plans', 'validations', 'receipts']}), ['evidence_id', 'kind']),
         tool('end_managed_scope', 'Abandon a managed placement scope without marking any gate passed. Enables ordinary unqualified editing again.',
@@ -353,14 +357,15 @@ class LayoutService(SiPiService):
                 'properties':{'context':schemas['BoardContext'],'capture_digest':{'type':['string','null']},
                               'snapshot':{'type':['object','null']}},'additionalProperties':True,
                 'description':'Lossless immutable adapter of one capture record; unknown fields retained'}
-            return dict(policy_version=POLICY_VERSION, schemas=schemas,
+            return dict(policy_version=POLICY_VERSION, gate_revision=GATE_REVISION, schemas=schemas,
                         supported_policy_versions=list(SUPPORTED_POLICIES),
-                        search_modes=['refine','construct','hierarchical'],
+                        search_modes=['refine','construct','hierarchical','cluster_scoped'],
                         p1_assumptions={'derived_envelope_margins':'user-authorized engineering defaults; not IPC certification',
                             'large_cutout':'explicit reported area heuristic; no native contour removal',
                             'board_rule_clearance':'design constraint; fabricator capability remains unverified'},
                         native_apply={'side_changes': False, 'transactional_rollback': False,
-                                      'recovery': 'saved_disk_bytes_and_original_pose_evidence'})
+                                      'revert_in_memory':True,
+                                      'recovery': 'disk_checkpoint_or_freshness_bound_original_pose_compensation'})
         if name == 'get_evidence':
             return await asyncio.to_thread(self._load, arguments['kind'], arguments['evidence_id'])
         method = getattr(self, name, None)
@@ -487,6 +492,11 @@ class LayoutService(SiPiService):
         hierarchy = None
         if 'candidates' in options:
             candidates = copy.deepcopy(options['candidates'])
+        elif options.get('mode') == 'cluster_scoped':
+            from eda_agent.design.cluster_placement import UnifiedBoardModel,ScopedCopperClusterRefiner
+            hierarchy=await asyncio.to_thread(ScopedCopperClusterRefiner().propose,
+                UnifiedBoardModel.from_capture(record),intent,options)
+            candidates=hierarchy['candidates']
         elif options.get('mode') == 'hierarchical':
             if context.get('policy_version') != P1_POLICY_VERSION:
                 raise ValueError('Hierarchical proposals require an explicitly captured P1 context')
@@ -533,7 +543,7 @@ class LayoutService(SiPiService):
         return raw['snapshot']
 
     async def validate_plan(self, plan_id):
-        from eda_agent.design.placement_evidence import evaluate_placement
+        from eda_agent.design.placement_evidence import evaluate_placement,compare_placement_candidates
         plan = self._load('plans', plan_id)
         if plan.get('policy_version') not in SUPPORTED_POLICIES:
             raise ValueError('STALE_PLACEMENT_POLICY: generate a new plan under the current server policy')
@@ -545,6 +555,11 @@ class LayoutService(SiPiService):
         report = await asyncio.to_thread(evaluate_placement, context_record['context'], plan['intent'],
             plan['constraints'], selected['moves'], candidate_id=selected['candidate_id'])
         blockers = list(report['blockers'])
+        if selected['moves']:
+            comparison=await asyncio.to_thread(compare_placement_candidates,context_record['context'],
+                plan['intent'],plan['constraints'],[dict(id='gate-exact-moves',moves=selected['moves'])],
+                plan['options'].get('selection_policy'))
+            if comparison['selection_status']!='selected':blockers.append('current_tier_1_selection')
         if not selected.get('apply_eligible'):
             blockers.append('candidate_selection_blocked')
         if not context_record['trusted_live']:
@@ -564,7 +579,7 @@ class LayoutService(SiPiService):
         if any(m.get('side') != next(c['side'] for c in context_record['context']['components']
                    if c['id'] == m['component_id']) for m in selected['moves']):
             blockers.append('native_side_change_unsupported')
-        gate = dict(policy_version=plan['policy_version'], plan_id=plan_id, context_id=plan['context_id'],
+        gate = dict(policy_version=plan['policy_version'], gate_revision=GATE_REVISION, plan_id=plan_id, context_id=plan['context_id'],
             report=report, required_checks=report['required_checks'], unresolved_blockers=sorted(set(blockers)),
             passed=report['feasible'] and not blockers, evidence_ids=[report['evidence_id']],
             source_capture_digest=context_record.get('capture_digest'),
@@ -594,7 +609,8 @@ class LayoutService(SiPiService):
         if plan.get('policy_version') not in SUPPORTED_POLICIES:
             raise ValueError('STALE_PLACEMENT_POLICY: old policy cannot authorize a native edit')
         gate = self._load('validations', validation_id)
-        if gate['plan_id'] != plan_id or gate['policy_version'] != plan['policy_version'] or not gate['passed']:
+        if (gate.get('gate_revision') != GATE_REVISION or gate['plan_id'] != plan_id
+                or gate['policy_version'] != plan['policy_version'] or not gate['passed']):
             raise ValueError('A passing server-generated validation for this exact plan is required')
         record = self._load('contexts', plan['context_id'])
         if record['context'].get('policy_version', POLICY_VERSION) != plan['policy_version']:
@@ -645,6 +661,8 @@ class LayoutService(SiPiService):
                     policy_version=plan['policy_version'],
                     qualification_scope='placement under recorded policy assumptions; not manufacturing/3D/routing certification',
                     possible_partial_native_edit=native.get('possible_partial_native_edit') is True)
+                receipt.update(affected_routed_nets=selected.get('affected_routed_nets',[]),
+                    routing_repair_required=selected.get('routing_repair_required',False))
                 receipt.update(target_board_path=record['context']['board_path'],
                     board_revision_digest=record['capture_digest'], exact_moves=selected['moves'],
                     applied_objects=native.get('applied_ids', []), skipped_locked_objects=native.get('skipped_locked_objects', []),
@@ -696,6 +714,70 @@ class LayoutService(SiPiService):
                 # Keep dispatching evidence. Cancellation/errors cannot release
                 # this operation identity for blind repetition.
                 raise
+
+    async def revert_in_memory(self, plan_id=None):
+        scopes = [s for s in self.active_scopes() if s.get('phase') in {'applied','reverted'}
+                  and (plan_id is None or s.get('plan_id') == plan_id)]
+        if plan_id is None and scopes:
+            scopes=[max(scopes,key=lambda s:self._scope_path(s['context_id']).stat().st_mtime_ns)]
+        if len(scopes) != 1:
+            raise ValueError('Name exactly one applied plan; no unambiguous active placement to revert')
+        scope = scopes[0]
+        receipt = self._load('receipts', scope['receipt_id'])
+        if scope['phase'] == 'reverted':
+            return dict(receipt, receipt_id=scope['receipt_id'], receipt_reused=True,
+                        current_freshness_verified=False)
+        if not receipt.get('applied') or not receipt.get('post_capture_digest'):
+            raise ValueError('A completed applied receipt with post-state evidence is required')
+        plan_id = scope['plan_id']
+        plan = self._load('plans', plan_id)
+        record = self._load('contexts', plan['context_id'])
+        original = {c['id']:c for c in record['context']['components']}
+        moves = [dict(component_id=m['component_id'],designator=original[m['component_id']]['reference'],
+                      **{k:original[m['component_id']][k] for k in ('x_mm','y_mm','rotation_deg','side')})
+                 for m in receipt['exact_moves']]
+        operation_id = 'revert_' + scope['receipt_id'][:40]
+        operation = self.data_dir / 'operations' / (operation_id + '.json')
+        async with self.native_sequence():
+            if operation.exists():
+                op=json.loads(operation.read_bytes())
+                if op.get('receipt_id'):
+                    return dict(self._load('receipts',op['receipt_id']),receipt_id=op['receipt_id'],
+                                receipt_reused=True,current_freshness_verified=False)
+                raise ValueError('REVERT_OUTCOME_UNKNOWN: inspect native receipt; never replay automatically')
+            _, before = await self._snapshot(board_path=record['context']['board_path'],source='live')
+            if capture_digest(before['snapshot']) != receipt['post_capture_digest']:
+                raise ValueError('STALE_PLACEMENT: intervening edit or editor reload; revert refused')
+            from suite_checkpoints import _atomic
+            operation.parent.mkdir(parents=True,exist_ok=True)
+            claim=operation.with_name(operation.name+'.'+os.urandom(12).hex()+'.tmp')
+            try:
+                _atomic(claim,_json(dict(plan_id=plan_id,status='dispatching',kind='in_memory_compensation')))
+                try: os.link(claim,operation)
+                except FileExistsError as exc: raise ValueError('Concurrent revert already claimed') from exc
+            finally: claim.unlink(missing_ok=True)
+            args=dict(board_path=record['context']['board_path'],board_identity=before['snapshot']['board_identity'],
+                      expected_native_snapshot_token=before['snapshot']['native_snapshot_token'],
+                      moves=moves,operation_id=operation_id)
+            ticket=self._native_ticket.set((asyncio.current_task(),digest(args)))
+            try: native=await self._native('_suite_layout_apply_plan',args)
+            finally: self._native_ticket.reset(ticket)
+            result=dict(plan_id=plan_id,operation_id=operation_id,reverted=False,applied=False,
+                        exact_moves=moves,readback_coords=native.get('readback',[]),native=native,
+                        saved=False,altium_closed=False,automatic_retry=False,
+                        qualification_scope='original placement poses only; not a full unsaved-buffer undo')
+            if native.get('success') is True:
+                _, after=await self._snapshot(board_path=record['context']['board_path'],source='live')
+                current=context_from_snapshot(before['snapshot'],'before-revert',record.get('models',{}),
+                    record.get('fabrication',{}),record.get('assembly',{}),plan['policy_version'])
+                errors=unexpected_post_changes(before['snapshot'],after['snapshot'],current,moves)
+                result.update(unexpected_post_changes=errors,post_capture_digest=capture_digest(after['snapshot']))
+                result['reverted']=not errors
+            rid=self._save('receipts',result)
+            _atomic(operation,_json(dict(plan_id=plan_id,status='completed',receipt_id=rid)))
+            self._scope(plan['context_id'],dict(scope,phase='reverted' if result['reverted'] else 'inspect',
+                       gate_passed=False,receipt_id=rid))
+            return dict(result,receipt_id=rid)
 
     def native_apply_authorized(self, arguments):
         ticket = self._native_ticket.get()

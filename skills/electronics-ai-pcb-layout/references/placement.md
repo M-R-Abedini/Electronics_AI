@@ -110,3 +110,14 @@ can bind `scope` (exact board path), `source.kind=user_intent`,
 These are declared engineering allowances for that board, not measured
 quantization or defaults for other boards. Unrouted decoupling-return evidence
 stays unknown/diagnostic; placement qualification is not routing qualification.
+
+Use `mode=cluster_scoped` for a bounded joint passive search with explicit
+decoupling pad bindings. Per-layer pad clearance against actual tracks, bounded
+arcs, via annuli and poured polygons is a hard check; definitions are not pours.
+`affected_routed_nets` identifies attachments requiring rerouting. Such moves
+are blocked by default. An explicitly authorized disposable-board placement
+trial may set board-scoped `allow_routing_detach=true` alongside
+`placement_only=true`; the receipt must retain `routing_repair_required=true`.
+No copper is silently ripped up. Via access contributes to the critical combined
+loop proxy; it is not routed length. Run `si_pi__audit_copper_loops` once after
+selection to measure real copper paths and inspect reference/crosstalk findings.

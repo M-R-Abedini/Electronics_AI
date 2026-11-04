@@ -13321,13 +13321,13 @@ Var
     LayerObj : IPCB_LayerObject_V7;
     CompBounds : TCoordRect;
     Layers, Tracks, Arcs, Vias, Pads, Regions, Keepouts, Holes, Cutouts : TStringList;
-    Components, Nets, Missing, NetTies, Seen, PolygonChildren : TStringList;
+    Components, Nets, Missing, NetTies, Seen, PolygonChildren, PolygonBindings : TStringList;
     MissingCounts, ProfileKeys, ProfileCalls, ProfileMillis, Diagnostics, TypesWithGaps : TStringList;
     Path, Item, Common, NetName, LayerName, Kind, Outline, Shape, Owner, Identity, HoleJson, CoverageState, LayerGeometries : String;
     Count, I, Order, LayerId, HoleCount, ExcludedNonCopper, StackVisited, CopperCount, DielectricCount : Integer;
     Started, LastProgress, ObjectTick, AccessTick, ObjectType, MissingTotal, ObjectMissingBefore : Integer;
     Stage, ProfileJson, MissingCountsJson, ProofPath : String;
-    SideStr, BoundsJson, RuleJson, RuleValuesJson, DirtyJson, StackCoverage, OutlineCoverage, PadLayerItem : String;
+    SideStr, BoundsJson, RuleJson, RuleValuesJson, DirtyJson, StackCoverage, OutlineCoverage, PadLayerItem, RegionCoverage : String;
     Er, Thickness, PadRadius : Double;
     IsKeepout, Curved, SkipPrimitive : Boolean;
 Begin
@@ -13351,6 +13351,7 @@ Begin
     Keepouts := TStringList.Create; Holes := TStringList.Create; Cutouts := TStringList.Create;
     Components := TStringList.Create; Nets := TStringList.Create; Missing := TStringList.Create;
     NetTies := TStringList.Create; Seen := TStringList.Create; PolygonChildren := TStringList.Create;
+    PolygonBindings := TStringList.Create;
     MissingCounts := TStringList.Create; ProfileKeys := TStringList.Create;
     ProfileCalls := TStringList.Create; ProfileMillis := TStringList.Create;
     Diagnostics := TStringList.Create;
@@ -13668,6 +13669,9 @@ Begin
                                 While Child <> Nil Do
                                 Begin
                                     PolygonChildren.Add(IntToStr(Child.I_ObjectAddress));
+                                    Copper_Push(PolygonBindings, '{' + JsonStr('child_id', IntToStr(Child.I_ObjectAddress))
+                                        + ',' + JsonStr('polygon_id', IntToStr(Polygon.I_ObjectAddress))
+                                        + ',' + JsonStr('net_name', NetName) + '}');
                                     If PolygonChildren.Count > 100000 Then
                                         Raise('Polygon child limit exceeded');
                                     Child := ChildIter.NextPCBObject;
@@ -13748,8 +13752,13 @@ Begin
         Finally Board.BoardIterator_Destroy(Iter); End;
         Seen.Sort; Seen.Sorted := True;
         For I := 0 To PolygonChildren.Count - 1 Do
-            If Seen.IndexOf(PolygonChildren[I]) < 0 Then
+            If Seen.IndexOf(PolygonChildren[I]) < 0 Then Begin
                 Copper_Missing(Missing, MissingCounts, '"poured polygon child not exposed by board iterator"', MissingTotal);
+                TypesWithGaps.Add(IntToStr(ePolyObject));
+            End;
+        RegionCoverage := Copper_SectionCoverage(TypesWithGaps, eRegionObject);
+        If Copper_SectionCoverage(TypesWithGaps, ePolyObject) <> 'complete' Then RegionCoverage := 'partial';
+        If Copper_SectionCoverage(TypesWithGaps, eFillObject) <> 'complete' Then RegionCoverage := 'partial';
         Outline := ''; Curved := False; ObjectMissingBefore := MissingTotal;
         Try
             If Board.BoardOutline.PointCount < 3 Then Copper_Missing(Missing, MissingCounts, '"board outline has fewer than three vertices"', MissingTotal);
@@ -13789,7 +13798,7 @@ Begin
             + ',' + JsonStr('arcs', Copper_SectionCoverage(TypesWithGaps, eArcObject))
             + ',' + JsonStr('vias', Copper_SectionCoverage(TypesWithGaps, eViaObject))
             + ',' + JsonStr('pads', Copper_SectionCoverage(TypesWithGaps, ePadObject))
-            + ',' + JsonStr('regions', CoverageState) + ',' + JsonStr('layers', StackCoverage)
+            + ',' + JsonStr('regions', RegionCoverage) + ',' + JsonStr('layers', StackCoverage)
             + ',' + JsonStr('keepouts', CoverageState) + ',' + JsonStr('net_ties', CoverageState)
             + ',' + JsonStr('stackup', StackCoverage) + '}'
             + ',' + JsonInt('excluded_non_copper_primitives', ExcludedNonCopper)
@@ -13798,6 +13807,7 @@ Begin
             + ',"layers":' + Copper_Array(Layers) + ',"tracks":' + Copper_Array(Tracks)
             + ',"arcs":' + Copper_Array(Arcs) + ',"vias":' + Copper_Array(Vias)
             + ',"pads":' + Copper_Array(Pads) + ',"regions":' + Copper_Array(Regions)
+            + ',"polygon_bindings":' + Copper_Array(PolygonBindings)
             + ',"keepouts":' + Copper_Array(Keepouts) + ',"holes":' + Copper_Array(Holes)
             + ',"cutouts":' + Copper_Array(Cutouts) + ',"components":' + Copper_Array(Components)
             + ',"nets":' + Copper_Array(Nets) + ',"net_ties":' + Copper_Array(NetTies) + ',"board_outline":[' + Outline + ']'
@@ -13819,7 +13829,7 @@ Begin
     Finally
         Layers.Free; Tracks.Free; Arcs.Free; Vias.Free; Pads.Free; Regions.Free;
         Keepouts.Free; Holes.Free; Cutouts.Free; Components.Free; Nets.Free; Missing.Free;
-        NetTies.Free; Seen.Free; PolygonChildren.Free;
+        NetTies.Free; Seen.Free; PolygonChildren.Free; PolygonBindings.Free;
         MissingCounts.Free; ProfileKeys.Free; ProfileCalls.Free; ProfileMillis.Free; Diagnostics.Free; TypesWithGaps.Free;
         If PrevView <> Nil Then Try Client.ShowDocument(PrevView.OwnerDocument); Except End;
     End;

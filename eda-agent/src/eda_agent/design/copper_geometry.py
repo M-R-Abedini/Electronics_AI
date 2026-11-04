@@ -88,14 +88,32 @@ def point_in_ring(point, ring, boundary=True):
 
 
 def point_in_region(point, region):
+    holes=region.get('holes',[])
+    index=region.get('_hole_index')
+    if isinstance(index,SpatialIndex):
+        holes=[holes[i] for i in index.query((point[0]-EPS,point[1]-EPS,point[0]+EPS,point[1]+EPS))]
     return point_in_ring(point, region.get("outline", [])) and not any(
-        point_in_ring(point, hole, boundary=False) for hole in region.get("holes", []))
+        point_in_ring(point, hole, boundary=False) for hole in holes)
+
+
+def indexed_region(region):
+    """Ephemeral exact broad phase; never serialized into snapshot evidence."""
+    if not region.get('holes'):return region
+    index=SpatialIndex()
+    for i,ring in enumerate(region['holes']):
+        points=[xy(p) for p in ring]
+        index.insert(i,(min(x for x,y in points),min(y for x,y in points),max(x for x,y in points),max(y for x,y in points)))
+    return dict(region,_hole_index=index)
 
 
 def segment_region_intervals(a, b, region):
     """Exact centreline parameter intervals inside a polygon with holes."""
     ts = [0.0, 1.0]
-    for ring in [region.get("outline", [])] + region.get("holes", []):
+    holes=region.get('holes',[])
+    index=region.get('_hole_index')
+    if isinstance(index,SpatialIndex):
+        holes=[holes[i] for i in index.query((min(a[0],b[0])-EPS,min(a[1],b[1])-EPS,max(a[0],b[0])+EPS,max(a[1],b[1])+EPS))]
+    for ring in [region.get("outline", [])] + holes:
         for c, d in ring_edges(ring):
             ts.extend(segment_intersection_parameters(a, b, c, d))
     ts = sorted(set(round(t, 12) for t in ts))

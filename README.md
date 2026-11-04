@@ -133,7 +133,7 @@ These documents distinguish working public/offline features from API access
 requirements and unfinished native exchange; SES generation does not establish
 Altium import or a DRC-clean board. Collection is disabled by default.
 
-The current 0.8.1 package uses independent Python library codecs and one EDA
+The current 0.9.0 package uses independent Python library codecs and one EDA
 native transport. Retired compatibility namespaces, setup commands and old
 plugin identifiers are removed. Historical release tags retain their original
 contents and licenses.

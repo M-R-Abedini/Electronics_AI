@@ -295,6 +295,48 @@ class SiPiService:
         return {'ok': True, 'report_id': report_id, 'snapshot_id': identity, **audit,
                 'source': record['snapshot']['source'], 'board_modified': False}
 
+    async def audit_copper_loops(self, board_path=None, *, snapshot=None, plan=None,
+                               topology=None, net_constraints=None, source='auto', policy=None):
+        """Targeted operational view over the existing physical copper auditor."""
+        from eda_agent.design.copper_audit import audit_board_copper,decoupling_loop_measurements
+        identity,record=await self._snapshot(board_path,snapshot,source)
+        intent=await self._intent(record['snapshot'],plan,topology,net_constraints)
+        analysis_snapshot=copy.deepcopy(record['snapshot'])
+        references={}
+        for r in analysis_snapshot.get('regions',[]):
+            if r.get('poured') is True and 'GROUND' in intent.get('net_classes',{}).get(r.get('net_name'),[]):
+                references.setdefault(r['layer'],set()).add(r['net_name'])
+        for layer in analysis_snapshot['layers']:
+            nets=references.get(layer['name'],set())
+            if len(nets)==1:
+                layer.setdefault('reference_net',next(iter(nets)))
+                layer['reference_net_source']='captured_actual_poured_copper_net_binding'
+        policy={'minimum_coupled_length_mm':5.,'general_spacing_widths':3.,
+                'sensitive_spacing_widths':3.,'return_via_radius_mm':1.5,**(policy or {})}
+        ignored=[]
+        if policy.get('ignore_full_board_cutout_artifacts') is True:
+            from suite_board_geometry import subtract_rectilinear_cutouts
+            physical_cutouts=[r for r in analysis_snapshot.get('cutouts',[]) if r.get('kind')=='board_cutout']
+            contour=subtract_rectilinear_cutouts(analysis_snapshot['board_outline'],
+                [r['outline'] for r in physical_cutouts],ignore_full_board_artifacts=True)
+            ignored=[r['id'] for r in physical_cutouts if any(r['outline']==w['raw_contour'] for w in contour.get('warnings',[]))]
+            analysis_snapshot['cutouts']=[r for r in analysis_snapshot.get('cutouts',[]) if r.get('id') not in ignored]
+        audit=await asyncio.to_thread(audit_board_copper,analysis_snapshot,intent,policy=policy)
+        audit['engineering_assumptions']={'ignored_full_board_cutout_ids':ignored,
+            'raw_snapshot_preserved':True,'interpretation':'explicit P1 area heuristic, not proof of intended mechanical outline'}
+        wanted={'split_reference','parallel_coupling','return_via','decoupling_path_length',
+                'decoupling_via_between','decoupling_ground_return'}
+        audit['violations']=[v for v in audit['violations'] if v['check'] in wanted and
+            (v['check']!='parallel_coupling' or v['layer']==v['evidence']['aggressor_layer'] and
+             v['evidence']['coupled_length_mm']>policy['minimum_coupled_length_mm']+1e-9)]
+        audit['loop_measurements']=await asyncio.to_thread(decoupling_loop_measurements,analysis_snapshot,intent)
+        audit['status']='violations' if audit['violations'] else 'unknown' if audit['unknowns'] else 'clean'
+        report=dict(snapshot_id=identity,board_path=record['snapshot']['board_path'],fingerprint=record['fingerprint'],
+                    classification=intent,audit=audit,created_at=time.time())
+        rid=await asyncio.to_thread(self._save,'reports',report)
+        return dict(ok=True,report_id=rid,snapshot_id=identity,source=record['snapshot']['source'],
+                    board_modified=False,**audit)
+
     async def synthesize_and_apply_rules(self, board_path=None, *, snapshot=None,
             plan=None, topology=None, net_constraints=None, source='auto', options=None,
             apply=False, expected_snapshot_id=None, expected_preview_id=None, allow_partial=False, dsn_path=None):
@@ -440,6 +482,7 @@ def list_tools():
     definitions = [
         ('classify_and_partition', 'Classify physical net intent using existing motifs and mixed-signal/HSD modules; unresolved roles remain unknown.', {}, False),
         ('audit_copper', 'Audit real 2D PCB copper, return physical violation coordinates and explicit coverage gaps. File mode analyzes saved bytes, not unsaved edits.', {'policy': {'type': 'object'}, 'options': {'type': 'object'}}, False),
+        ('audit_copper_loops', 'Audit actual split-reference crossings, same-layer 3W parallel runs longer than 5 mm, return vias within 1.5 mm and routed decoupling lengths; unavailable evidence stays unknown.', {'policy': {'type':'object'}}, False),
         ('synthesize_and_apply_rules', 'Preview stackup/current-aware rules or explicitly apply them after a fresh live preview. Missing qualified physics data remains unsupported.', {
             'options': {'type': 'object'}, 'apply': {'type': 'boolean', 'default': False},
             'expected_snapshot_id': {'type': 'string'}, 'allow_partial': {'type': 'boolean', 'default': False},

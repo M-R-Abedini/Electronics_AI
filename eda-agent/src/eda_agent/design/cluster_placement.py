@@ -266,3 +266,78 @@ class HierarchicalClusterPlacer:
             local_obstacles='intersecting envelope bounds in computational neighborhood; full-model final audit',
             native_edits=False,grid_qualification='computational search pitch; native on-grid status unproven',
             via_transition_cost={'kind':'soft_proxy','return_path_verified':False})
+
+class ScopedCopperClusterRefiner:
+    """Bounded joint passive proposals; all final moves use the existing judge.
+
+    Coordinate descent uses real pad roles and existing geometry, not a fixed
+    project template. Other parts stay fixed. Every proposal is still audited
+    against the complete immutable capture, including routed attachments.
+    """
+    def propose(self,model,intent,options):
+        from .placement_evidence import _pose,_component_ring,_bbox,transformed_pads
+        from . import placement_p1 as p1,copper_geometry as g
+        from .placement_copper import CopperObstacleIndex,nearest_via_access
+        c=model.context;components={r['id']:r for r in c['components']};scope=set(c['scope_component_ids'])
+        pitch=options.get('search_grid_mm',.127);radius=options.get('restart_radius_mm',3.048)
+        if any(type(v) not in (int,float) or not math.isfinite(v) or v<=0 for v in (pitch,radius)) or radius/pitch>80:
+            raise ValueError('Scoped search requires positive bounded radius/pitch <= 80')
+        if len(scope)>16:raise ValueError('Scoped copper refinement budget is 16 movable components')
+        bindings=intent.get('decoupling_connections',[])
+        if not bindings:raise ValueError('Scoped copper refinement needs explicit sourced decoupling pad bindings')
+        pads={p['id']:p for p in c['pads']};physical=c.get('copper_snapshot',{});copper=CopperObstacleIndex(physical)
+        if copper.unknowns:raise ValueError('Copper obstacle coverage is incomplete: '+'; '.join(copper.unknowns))
+        clearance=c['fabrication_profile']['minimum_pad_clearance_mm'];allow=p1.spike_policy(c).get('critical_allowance_mm',0)
+        target=p1.spike_policy(c).get('target_proximity_mm');poses={cid:_pose(x) for cid,x in components.items()}
+        rings={cid:_component_ring(x,poses[cid]) for cid,x in components.items()}
+        if any(r is None for r in rings.values()):raise ValueError('Scoped refinement needs captured component envelopes')
+        moves={};searched=0
+        for binding in bindings:
+            cap_id=pads[binding['cap_power_pad']]['component_id']
+            if cap_id not in scope:continue
+            cap=components[cap_id]
+            if cap.get('fixed') or cap.get('locked'):continue
+            ic_id=pads[binding['ic_power_pad']]['component_id'];ic=components[ic_id]
+            selected=[p for p in c['pads'] if p['component_id'] in {cap_id,ic_id}]
+            small=dict(c,components=[cap,ic],pads=selected);initial={i:_pose(components[i]) for i in (cap_id,ic_id)}
+            before=transformed_pads(small,initial)
+            pairs=[(binding['ic_power_pad'],binding['cap_power_pad']),(binding['ic_return_pad'],binding['cap_return_pad'])]
+            limits=[p1.transformed_pad_aabb_manhattan_mm(before[a],before[b]) for a,b in pairs]
+            via_limits={pid:nearest_via_access(physical,before[pid])[0] for _,pid in pairs}
+            board_index=g.SpatialIndex()
+            for cid,ring in rings.items():
+                if cid!=cap_id and components[cid]['side']==cap['side']:board_index.insert(cid,_bbox(ring))
+            best=None;steps=int(radius/pitch)
+            for rot in cap.get('allowed_rotations_deg',[0,90,180,270]):
+                p=dict(_pose(cap),rotation_deg=rot);initial[cap_id]=p
+                transformed=transformed_pads(small,initial);envelope=_bbox(_component_ring(cap,p))
+                cap_rows=p1.expand_layers({k:v for k,v in transformed.items() if v['component_id']==cap_id})
+                cap_bounds={pid:p1.analytic_bounds(transformed[pid]) for _,pid in pairs}
+                ic_bounds={pid:p1.analytic_bounds(transformed[pid]) for pid,_ in pairs}
+                for ix in range(-steps,steps+1):
+                    x=ic['x_mm']+ix*pitch;dx=x-cap['x_mm']
+                    for iy in range(-steps,steps+1):
+                        searched+=1;y=ic['y_mm']+iy*pitch;dy=y-cap['y_mm']
+                        box=(envelope[0]+dx,envelope[1]+dy,envelope[2]+dx,envelope[3]+dy)
+                        if any(min(box[2],board_index.boxes[k][2])-max(box[0],board_index.boxes[k][0])>g.EPS and
+                               min(box[3],board_index.boxes[k][3])-max(box[1],board_index.boxes[k][1])>g.EPS for k in board_index.query(box)):continue
+                        legs=[]
+                        for a,b in pairs:
+                            aa,bb=ic_bounds[a],cap_bounds[b];bb=(bb[0]+dx,bb[1]+dy,bb[2]+dx,bb[3]+dy)
+                            legs.append(max(0,aa[0]-bb[2],bb[0]-aa[2])+max(0,aa[1]-bb[3],bb[1]-aa[3]))
+                        if any(v is None or v>limit+allow or target is not None and v>target for v,limit in zip(legs,limits)):continue
+                        positioned=[dict(row,x_mm=row['x_mm']+dx,y_mm=row['y_mm']+dy) for row in cap_rows]
+                        if not all(copper.clear(row,clearance) for row in positioned):continue
+                        via_sum=0.
+                        for _,pid in pairs:
+                            pad=dict(transformed[pid],x_mm=transformed[pid]['x_mm']+dx,y_mm=transformed[pid]['y_mm']+dy)
+                            d,_=nearest_via_access(physical,pad);old=via_limits[pid]
+                            if d is not None:via_sum+=d
+                        if sum(legs)+via_sum>sum(limits)+sum(v for v in via_limits.values() if v is not None)+allow:continue
+                        score=(sum(legs)+via_sum,sum(legs),math.hypot(dx,dy))
+                        if best is None or score<best[0]:best=(score,dict(component_id=cap_id,x_mm=x,y_mm=y,rotation_deg=rot,side=cap['side']))
+            if best:
+                moves[cap_id]=best[1];poses[cap_id]=best[1];rings[cap_id]=_component_ring(cap,best[1])
+        return dict(candidates=[dict(id='scoped-copper-joint',moves=list(moves.values()))] if moves else [],
+                    searched_poses=searched,movable_component_count=len(scope),proposed_component_count=len(moves),
+                    native_edits=False,method='bounded pad/via-aware coordinate descent; full-board final gate')

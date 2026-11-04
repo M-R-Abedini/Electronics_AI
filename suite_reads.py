@@ -155,6 +155,7 @@ async def capture_copper_snapshot(board_path, native_reader=None, prefer_live=Tr
                 payload = payload['result']
             if isinstance(payload, dict) and isinstance(payload.get('data'), dict):
                 payload = payload['data']
+            payload = resolve_polygon_bindings(payload)
             validate_snapshot(payload, expected_board_path=target or None)
             if payload.get('source') != 'live':
                 raise ValueError('Native reader did not return live copper evidence')
@@ -178,3 +179,22 @@ async def capture_copper_snapshot(board_path, native_reader=None, prefer_live=Tr
         return payload
     except Exception as exc:
         return empty_snapshot(target, missing=errors + ['saved-file snapshot unavailable: ' + str(exc)])
+
+def resolve_polygon_bindings(payload):
+    """Use actual native group membership, never a polygon outline/net guess."""
+    import copy
+    result=copy.deepcopy(payload)
+    bindings={}
+    for b in result.get('polygon_bindings',[]):
+        cid=str(b['child_id']);net=b.get('net_name','')
+        if cid in bindings and bindings[cid].get('net_name')!=net:
+            raise ValueError('Conflicting native polygon child net bindings')
+        bindings[cid]=b
+    for section in ('tracks','arcs','vias','regions'):
+        for row in result.get(section,[]):
+            b=bindings.get(str(row.get('id')))
+            if not b or not b.get('net_name'):continue
+            if row.get('net_name') and row['net_name']!=b['net_name']:
+                raise ValueError('Native polygon net disagrees with child copper')
+            row.update(net_name=b['net_name'],polygon_id=b['polygon_id'],net_binding_source='native_polygon_group_iterator')
+    return result

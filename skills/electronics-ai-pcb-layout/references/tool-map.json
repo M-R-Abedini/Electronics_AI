@@ -1,24 +1,30 @@
 {
-  "catalog_sha256": "2d2f54c29404879503b9d2204876c6c1188c3162d0e54bd2e4aeb28b1f1ab077",
-  "catalog_total": 519,
+  "catalog_sha256": "a43ca80757853ff4b0edd18956891cd590300f61a9307c54c94e41f1df708fa3",
+  "catalog_total": 521,
   "native_editor_verified_by_generator": false,
   "provenance": {
-    "audit_baseline_commit": "22942ad",
-    "checkout_plugin_version": "0.8.1",
-    "declared_native_script_version": "2026.11.04.electronics-ai-p1",
+    "audit_baseline_commit": "b23227d8dc96b45e841356c0c171382d9a0d038b",
+    "checkout_plugin_version": "0.9.0",
+    "declared_native_script_version": "2026.11.04.electronics-ai-p2",
     "kind": "source_schema_export",
-    "method": "Unchanged 0.8.0 catalog schemas; 0.8.1 implementation source hashes refreshed; no native editor calls by generator",
+    "method": "Unchanged 0.8.0 EDA/cloud/library schemas plus current 0.9.0 layout/SI-PI source schemas; no CAD calls by generator",
     "native_editor_probed": false,
     "source_file_sha256": {
-      "eda-agent/src/eda_agent/design/cluster_placement.py": "e9d9a59a69c64b2b1b8e8bc25d2bbcf6a60598da63709e4257eb9f118bc5054b",
-      "eda-agent/src/eda_agent/design/placement_evidence.py": "4e226bc8ec462edd8a6076930504b8bc26de0689051eb422f478329e8b5010a6",
-      "eda-agent/src/eda_agent/design/placement_p1.py": "8ca52562a50a639c50718318b4503054a3807e2b0215419b5e2aaf0f615c541e",
-      "suite_layout.py": "a81bd68c3dedb75fe005c2b82ac270e5c5882376f7d5aed85a6441a882804990",
-      "suite_layout_policy.py": "eab8e80884128c5b6b9708297b24df1473dce8fd830ed434ccd663397b2c2b11"
+      "eda-agent/scripts/altium/PCB.pas": "84287c2199a159ad193993ee172c0314d93817783a776f292e32eb77fdcbc763",
+      "eda-agent/src/eda_agent/design/cluster_placement.py": "eee16b6693fd8a9445b49642f07d252d16a1f9d5a1b09f2ea98bf942e8fb83bf",
+      "eda-agent/src/eda_agent/design/copper_audit.py": "f5665855ee46cf3b704403be203b28b7248bb11355f77cedce51a34638699fd3",
+      "eda-agent/src/eda_agent/design/copper_geometry.py": "61ea31b6f2d5a84ad57d638567b3ecfb87ae8e58e0b8a0ec7350296d0922f1fb",
+      "eda-agent/src/eda_agent/design/placement_copper.py": "31bc9f5ea685a02b34720cd8b7169e1c632bd9593620624a5a03249af79a5ed3",
+      "eda-agent/src/eda_agent/design/placement_evidence.py": "06a42d7bf7214d1c6bfd5d8bd7e70c430a37404873d53a2b75ccb391d5043387",
+      "eda-agent/src/eda_agent/design/placement_p1.py": "444a25245ba6667f78f91127ac715fb55ecfc509ff5dfd0a3f02def140b7ad74",
+      "suite_layout.py": "66c53ea57de4cc606846cecf88fe414cbba3c9c147297c49397c7d5a21bf5f69",
+      "suite_layout_policy.py": "eab8e80884128c5b6b9708297b24df1473dce8fd830ed434ccd663397b2c2b11",
+      "suite_reads.py": "1d03fa375adc250b35fc3168d76bc563734b196b00b9ab118c84c3b9be554dce",
+      "suite_si_pi.py": "fea877ba5a5683dad70e424ee0fc86d70079af01b2dcd6b2dc83a7bc75aaa844"
     }
   },
   "schema_version": 1,
-  "selected_tool_count": 31,
+  "selected_tool_count": 33,
   "tools": [
     {
       "description": "Decide the single next action for an autonomous design run.\n\n        Reads the session journal and returns the next 13-stage pipeline step\n        server-side, so a client need not memorize the workflow: loop\n        \"call design_next_action -> do what it says -> design_session_log the\n        result\" until ``status`` is ``complete`` or ``blocked``.\n\n        Returns a dict with ``status`` (proceed | retry | blocked | complete),\n        the ``stage``, its ``goal``, ``suggested_tools`` (exact tool names),\n        the ``exit_gate`` that marks it done, and, on ``blocked``, the\n        ``open_question`` to put to the user. Bounded retries: a stage that\n        fails repeatedly escalates to ``blocked`` instead of looping forever.\n        ",
@@ -1110,6 +1116,20 @@
       "name": "layout__plan_placement"
     },
     {
+      "description": "Compensate the latest exact applied placement with its captured original poses, without saving or closing Altium. Refuses intervening physical edits; not general undo.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "layout__revert_in_memory"
+    },
+    {
       "description": "Re-evaluate the exact stored moves against fresh live geometry and recovery policy; caller stage results cannot pass this gate.",
       "inputSchema": {
         "additionalProperties": false,
@@ -1180,6 +1200,59 @@
         "type": "object"
       },
       "name": "si_pi__audit_copper"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Audit actual split-reference crossings, same-layer 3W parallel runs longer than 5 mm, return vias within 1.5 mm and routed decoupling lengths; unavailable evidence stays unknown.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "board_path"
+            ]
+          },
+          {
+            "required": [
+              "snapshot"
+            ]
+          }
+        ],
+        "properties": {
+          "board_path": {
+            "type": "string"
+          },
+          "net_constraints": {
+            "type": "object"
+          },
+          "plan": {
+            "type": "object"
+          },
+          "policy": {
+            "type": "object"
+          },
+          "snapshot": {
+            "type": "object"
+          },
+          "source": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "file",
+              "live"
+            ],
+            "type": "string"
+          },
+          "topology": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "name": "si_pi__audit_copper_loops"
     },
     {
       "annotations": {
