@@ -141,3 +141,25 @@ def audit_placement_copper(context,pads,snapshot_id):
         geometry={'obstacle_count':len(rows),'scope':'same-layer pad to actual tracks, bounded arcs, via annuli and poured copper'},
         reason='Unpoured polygon definitions are excluded from conductive geometry'))
     return checks,sorted(affected)
+
+class ViaAccessIndex:
+    """Exact circle-to-rounded-convex-pad access with precomputed layer spans."""
+    def __init__(self,snapshot):
+        self.layers=defaultdict(list)
+        for v in snapshot.get('vias',[]):
+            for layer in via_layers(snapshot,v):self.layers[layer].append(v)
+
+    def nearest(self,pad):
+        best=(None,None)
+        for row in p1.expand_layers({str(pad['id']):pad}):
+            _,radius=p1.analytic_shape(row)
+            hx,hy=row['width_mm']/2-radius,row['height_mm']/2-radius
+            ca,sa=math.cos(math.radians(row.get('rotation_deg',0))),math.sin(math.radians(row.get('rotation_deg',0)))
+            for v in self.layers[row['layer']]:
+                if not row.get('net_name') or v.get('net_name')!=row['net_name']:continue
+                dx,dy=v['x_mm']-row['x_mm'],v['y_mm']-row['y_mm']
+                x,y=dx*ca+dy*sa,-dx*sa+dy*ca
+                d=max(0.,math.hypot(max(0.,abs(x)-hx),max(0.,abs(y)-hy))-radius-v['diameter_mm']/2)
+                key=(d,str(v['id']))
+                if best[0] is None or key<best:best=key
+        return best

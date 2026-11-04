@@ -33,10 +33,16 @@ to ordinary editing must retain that change of qualification in the report.
   neither a quiet queue nor a timeout authorizes restoring an open document or
   terminating the user's application.
 - `layout__revert_in_memory` restores only the exact changed poses of an applied
-  plan, through the same native actor, while Altium stays open. It refuses
-  intervening geometry/rule/lock changes and verifies the full post-state.
+  plan, through the same native actor, while Altium stays open. The fast path
+  checks document/object identity, expected target poses, sides and locks;
+  it reads back only those targets and preserves unrelated edits. It does not
+  rescan or requalify the complete board; recapture/revalidate dependent evidence.
   Repeating it returns evidence, never replays an uncertain operation. This is
   placement compensation, not general undo of arbitrary unsaved edits.
+- A successful managed Apply keeps the native loop prepared for up to 30 idle
+  seconds so an immediate Revert includes neither full extraction nor script
+  startup. Revert restores the ordinary two-second idle handover. Report cold
+  bridge preparation separately from a prepared-session timing measurement.
 - A `design_session_log` event is a journal statement. It is not independent
   check evidence. Require the implemented server gate and fresh evidence for
   the scope before mutation; do not use a raw or nested alias to bypass it.

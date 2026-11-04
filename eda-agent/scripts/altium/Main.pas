@@ -14,7 +14,7 @@ Const
     // returns, mismatch means Altium is running a stale compiled script
     // (DelphiScript caches compiled units until the script project is
     // reopened or Altium is restarted).
-    SCRIPT_VERSION = '2026.11.04.electronics-ai-p2';
+    SCRIPT_VERSION = '2026.11.04.electronics-ai-p3';
     SUITE_SCRIPT_PROJECT = '__ELECTRONICS_AI_SCRIPT_PROJECT__';
     SUITE_SCRIPT_CATALOG = '__ELECTRONICS_AI_SCRIPT_CATALOG__';
     SUITE_SCRIPT_WORKSPACE = '__ELECTRONICS_AI_WORKSPACE__';

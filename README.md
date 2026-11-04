@@ -36,7 +36,7 @@
 - Native batch edits can leave partial changes after a failure; undo grouping does not guarantee rollback. Save a copy before bulk edits.
 
 - Experimental. Some operations can crash Altium's DelphiScript engine and stop the polling loop — back up your design before letting the AI edit it.
-- Native save and script-backed UI commands can wait during a handler. The loop releases the engine after about two idle seconds; background pings do not extend that deadline. The next coordinated tool call restarts it automatically.
+- Native save and script-backed UI commands can wait during a handler. Ordinary sessions release the engine after about two idle seconds. A managed placement keeps a bounded 30-second interactive lease for immediate compensation; reverting restores the two-second idle handover. Background pings do not extend the deadline. Cold startup is separate from prepared-session revert latency.
 - EDA JSON parameters above U+00FF (Ω, Chinese text) are rejected before dispatch to prevent silent `?` substitution. Full Unicode transport is not implemented.
 - The EDA transport preserves UNC paths; access to the share depends on Windows permissions.
 - `proj_sync_pcb` requires `allow_modal=True`; the schematic→PCB ECO still opens an interactive dialog.
@@ -133,7 +133,7 @@ These documents distinguish working public/offline features from API access
 requirements and unfinished native exchange; SES generation does not establish
 Altium import or a DRC-clean board. Collection is disabled by default.
 
-The current 0.9.0 package uses independent Python library codecs and one EDA
+The current 1.0.0 package uses independent Python library codecs and one EDA
 native transport. Retired compatibility namespaces, setup commands and old
 plugin identifiers are removed. Historical release tags retain their original
 contents and licenses.

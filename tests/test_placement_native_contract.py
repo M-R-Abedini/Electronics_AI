@@ -6,6 +6,7 @@ Actual SDK moves require scratch-board acceptance, never a production board.
 """
 import ast
 import asyncio
+import copy
 from pathlib import Path
 
 import pytest
@@ -71,12 +72,12 @@ def test_unknown_move_fields_cannot_request_unlocking_or_flips():
         prepare_layout_native_batch(**args)
 
 
-def shipping_private_wrapper():
+def shipping_private_wrapper(name='_suite_layout_apply_plan'):
     # Importing eda_stdio starts a configured server/installs coordination.
     # Bind only its exact shipping function AST to a capturing decorator.
     source = (ROOT / 'eda_stdio.py').read_text(encoding='utf-8')
     node = next(node for node in ast.parse(source).body
-                if isinstance(node, ast.AsyncFunctionDef) and node.name == '_suite_layout_apply_plan')
+                if isinstance(node, ast.AsyncFunctionDef) and node.name == name)
     class Mcp:
         def tool(self):
             return lambda fn: fn
@@ -152,3 +153,20 @@ def test_native_proof_records_separate_drc_participation_with_unknown_fallback()
     assert 'BoolToJsonStr(Rule.DRCEnabled)' in builder
     assert "DrcEnabledJson := 'null'" in builder
     assert "'\"drc_enabled\":' + DrcEnabledJson" in builder
+
+def test_fast_private_packet_keeps_expected_pose_local_and_rejects_invalid_tail(monkeypatch):
+    from eda_agent import bridge
+    calls=[]
+    class FakeBridge:
+        async def send_command_async(self,command,params,timeout):
+            calls.append((command,params,timeout));return {'success':True}
+    monkeypatch.setattr(bridge,'get_bridge',lambda:FakeBridge())
+    wrapper=shipping_private_wrapper('_suite_layout_fast_pose')
+    args=arguments();args.pop('expected_native_snapshot_token');args['expected_poses']=copy.deepcopy(args['moves'])
+    args['expected_poses'][0]['x_mm']+=.127
+    assert asyncio.run(wrapper(**args))['success']
+    assert calls[0][1]['move_0']['expected_x_mm']!=calls[0][1]['move_0']['x_mm']
+    assert 'expected_pose_0' not in calls[0][1] and calls[0][0]=='pcb.apply_placement_plan'
+    args['moves'][0]['x_mm']=float('nan')
+    with pytest.raises(ValueError):asyncio.run(wrapper(**args))
+    assert len(calls)==1

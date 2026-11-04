@@ -197,4 +197,15 @@ def resolve_polygon_bindings(payload):
             if row.get('net_name') and row['net_name']!=b['net_name']:
                 raise ValueError('Native polygon net disagrees with child copper')
             row.update(net_name=b['net_name'],polygon_id=b['polygon_id'],net_binding_source='native_polygon_group_iterator')
+    owners={}
+    for b in result.get('component_bindings',[]):
+        child,owner=str(b['child_id']),str(b['component_id'])
+        if child in owners and owners[child]!=owner:
+            raise ValueError('Conflicting native component primitive ownership')
+        owners[child]=owner
+    for section in ('cutouts','keepouts','tracks','arcs','regions'):
+        for row in result.get(section,[]):
+            owner=owners.get(str(row.get('id')))
+            if owner:
+                row.update(owner_component_id=owner,ownership_source='native_component_group_iterator')
     return result

@@ -14,7 +14,7 @@ script; the helper does not open, create, save or edit a design.
 Run using the Python 3.12 interpreter from the current plugin data directory:
 
 ```powershell
-$plugin = "$env:USERPROFILE\.codex\plugins\cache\electronics-ai\mcp-electronics-ai\0.9.0"
+$plugin = "$env:USERPROFILE\.codex\plugins\cache\electronics-ai\mcp-electronics-ai\1.0.0"
 $data = "$env:USERPROFILE\.codex\plugins\data\mcp-electronics-ai"
 $python = (Get-Content -Raw -LiteralPath "$data\state.json" | ConvertFrom-Json).python
 $report = Join-Path $env:TEMP ("electronics-ai-acceptance-" + [guid]::NewGuid() + ".json")

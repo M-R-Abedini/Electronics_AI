@@ -485,6 +485,10 @@ class Suite:
                                      progress_callback=progress_callback, checkpoint_files=checkpoint_files,
                                      target_board_path=target_board_path or arguments.get('target_board_path'))
         if backend == 'eda':
+            if original=='pcb_plan_placement' and arguments.get('engine')=='systematic':
+                # Pure captured-context calculation; do not reserve the live
+                # editor or checkpoint it while the preview computes.
+                return await self._invoke_worker(backend, original, arguments, meta, progress_callback, checkpoint_files)
             async with self._native_sequence():
                 return await self._invoke_worker(backend, original, arguments, meta, progress_callback, checkpoint_files)
         return await worker.request('call_tool', name=original, arguments=arguments,
@@ -573,7 +577,7 @@ class Suite:
             if 'eda' not in self.workers or not self.workers['eda'].spec.enabled:
                 raise ValueError('The unified EDA backend is disabled')
             layout = self.components.get('layout')
-            layout_apply = name == '_suite_layout_apply_plan'
+            layout_apply = name in {'_suite_layout_apply_plan','_suite_layout_fast_pose'}
             if layout_apply:
                 if layout is None or not layout.native_apply_authorized(arguments):
                     raise ValueError('Native placement requires a validated server plan and its checkpoint')

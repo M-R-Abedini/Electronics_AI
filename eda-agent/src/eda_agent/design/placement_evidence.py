@@ -811,6 +811,9 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
     checks += _decoupling_checks(intent, pads, snapshot, scoped)
     checks += _decoupling_physical_checks(context, intent, pads, snapshot)
     checks += _constraint_checks(context, intent, constraints, poses, pads, snapshot)
+    if intent.get('systematic_placement'):
+        from .systematic_placement import escape_checks
+        checks += escape_checks(context,intent,pads,snapshot,{m['component_id'] for m in canonical} if canonical else None)
     channel_checks, reservations = evaluate_channels(context, intent, poses, pads)
     checks += channel_checks
     if intent.get('copper_intent') is not None:
@@ -932,6 +935,21 @@ def _metrics(context, intent, poses, pads):
                 'value':value+via_total if value is not None and complete else None,
                 'method':'pad_pair_lower_bounds_plus_available_same_net_via_access',
                 'not_a_routed_loop_length':True}
+    if intent.get('systematic_placement'):
+        from .systematic_placement import scoped_metrics
+        hpwl,crossings,banking=scoped_metrics(context,intent,pads,poses)
+        result['signal_hpwl'].update(value=hpwl,scope='all endpoints of selected-cluster incident signal nets',net_names=intent['metric_net_names'])
+        result['ratsnest_crossings'].update(value=crossings,scope='same selected signal net set; existing MST diagnostic')
+        origin=intent['grid_origin_mm'];pitch=intent['grid_mm']
+        grid_ids=intent.get('metric_component_ids',context['scope_component_ids'])
+        grid=sum(all(abs((poses[cid][axis]-origin[i])/pitch-round((poses[cid][axis]-origin[i])/pitch))<1e-7 for i,axis in enumerate(('x_mm','y_mm'))) for cid in grid_ids)/max(1,len(grid_ids))
+        result['alignment_penalty'].update(value=1-(banking+grid)/2,aligned_ratio=banking,grid_aligned_ratio=grid,
+            method='same-angle uniform-pitch banks plus explicit computational grid; native grid origin not certified')
+        result['routability_cost']={'value':None if crossings is None else hpwl+intent['crossing_penalty_mm']*crossings,
+            'unit':'weighted_mm','critical':False,'method':'signal HPWL plus declared ratsnest crossing penalty; not routed length'}
+        primary=[v for k,v in result.items() if k.startswith('critical_path:') or k.endswith(':loop_with_via_access')]
+        total=sum(v['value'] for v in primary) if primary and all(v['value'] is not None for v in primary) else None
+        result={'critical_total':dict(value=total,unit='mm',critical=any(v.get('critical') for v in primary),method='sum of explicit critical paths and pad/via loop lower bounds'),**result}
     return result
 
 
@@ -1053,7 +1071,7 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
             if version == 'placement-evidence-p0-v4':
                 raise ValueError('P0 Tier 1 permits no positive nonregression allowance')
             raise ValueError('Tier 1 allowance exceeds the proven native quantization budget')
-    metric_order = critical + ['signal_hpwl', 'ratsnest_crossings']
+    metric_order = critical + (['routability_cost'] if intent.get('systematic_placement') else []) + ['signal_hpwl', 'ratsnest_crossings']
     if version == 'placement-evidence-p1-v1' and baseline['metrics']['ratsnest_crossings']['value'] is None:
         metric_order.remove('ratsnest_crossings')  # Bounded optional proxy, never a critical metric.
     if version == 'placement-evidence-p1-v1':
@@ -1314,6 +1332,17 @@ def contract_schemas():
         "profiles": {"type": "array", "items": {"enum": list(PROFILE_INPUTS)}}, "source": source, "requirements": {"type": "object"}}}},
         "critical_paths": {"type": "array", "items": {"type": "object", "required": ["id", "pad_ids"],
         "properties": {"id": {"type": "string", "minLength": 1}, "pad_ids": {"type": "array", "minItems": 2, "items": {"type": "string"}}}}}}}
+    intent['properties'].update(
+        anchor_component_ids={'type':'array','items':{'type':'string'},'uniqueItems':True},
+        escape_anchor_component_ids={'type':'array','items':{'type':'string'},'uniqueItems':True},
+        placement_roles={'type':'object','additionalProperties':{'type':'object',
+            'required':['role','target_pad_ids','source'],'properties':{
+                'role':{'enum':['decoupling','series_resistor','pull_resistor','feedback','crystal','oscillator','inductor','diode','passive']},
+                'target_pad_ids':{'type':'array','minItems':1,'items':{'type':'string'}},
+                'source':source,'preserve_target_distance':{'type':'boolean'}}}},
+        grid_mm={'type':'number','exclusiveMinimum':0},grid_origin_mm=point,
+        crossing_penalty_mm={'type':'number','minimum':0},
+        signal_net_weights={'type':'object','additionalProperties':{'type':'number','minimum':0}})
     constraint = {**base, "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1},
         "kind": {"enum": ["hard", "soft"]}, "source": source, "applicability": {"type": ["boolean", "null"]},
         "check": {"type": "string"}, "scope": {"type": "object"}, "limit_mm": {"type": ["number", "null"], "minimum": 0},

@@ -1369,6 +1369,9 @@ def register_pcb_tools(mcp):
         engine: str = "refine",
         restarts: int = 1,
         render_png: Optional[str] = None,
+        board_context: Optional[dict] = None,
+        design_intent: Optional[dict] = None,
+        placement_options: Optional[dict] = None,
     ) -> dict[str, Any]:
         """Connectivity-driven auto-placement: shorten wirelength, keep
         components legal. **Dry-run by default** -- returns a proposed
@@ -1380,7 +1383,14 @@ def register_pcb_tools(mcp):
         wirelength (HPWL) while keeping components inside the board
         outline and free of same-layer overlaps.
 
-        Two solver cores are available via ``engine``:
+        Three solver cores are available via ``engine``:
+
+        - ``"systematic"``: a four-stage subcircuit preview over an explicit
+          captured ``board_context`` and sourced ``design_intent``. Binds full
+          passive roles, pin-facing rotation, scoped weighted HPWL/MST crossings,
+          signal escape reservations and conditional uniform-pitch banks. Uses
+          captured clearance/scope/fixed objects and ``placement_options``;
+          it performs no native reads or edits. Apply through ``layout__``.
 
         - ``"refine"`` (default): a force-directed relaxation that nudges
           the board's CURRENT positions, then a legalization pass. Best
@@ -1486,7 +1496,12 @@ def register_pcb_tools(mcp):
             engine: ``"refine"`` (default, nudge current positions) or
                 ``"construct"`` (from-scratch placement). ``"construct"``
                 implies a from-scratch re-place regardless of
-                ``reseed_grid``.
+                ``reseed_grid``. ``"systematic"`` requires ``board_context``
+                and uses its explicit scope/fixed objects and real geometry.
+            board_context: Existing layout BoardContext for systematic preview.
+            design_intent: Sourced anchors, pin-role bindings and routing-space
+                choices for systematic preview; no project template is assumed.
+            placement_options: Bounded systematic search grid/radius options.
             restarts: ``"construct"`` engine only. When > 1, run that many
                 seeded restarts and keep the lowest-objective legal
                 placement (variance reduction at a cost linear in
@@ -1542,6 +1557,20 @@ def register_pcb_tools(mcp):
               - ``region`` used, ``notes`` from the solver, and
                 native apply requires the suite's evidence-bound layout protocol.
         """
+        if engine == 'systematic':
+            import asyncio
+            if not board_context:
+                raise ValueError('Systematic preview requires a layout__capture_context BoardContext; apply uses the layout protocol')
+            from eda_agent.design.cluster_placement import UnifiedBoardModel
+            from eda_agent.design.systematic_placement import SystematicClusterPlacer
+            from eda_agent.design.placement_evidence import compare_placement_candidates
+            options=dict(placement_options or {})
+            options.setdefault('search_grid_mm',grid_mils*0.0254)
+            options['optimize_rotation']=optimize_rotation
+            proposal=await asyncio.to_thread(SystematicClusterPlacer().propose,UnifiedBoardModel.from_capture({'context':board_context}),design_intent or {},options)
+            comparison=await asyncio.to_thread(compare_placement_candidates,board_context,proposal['intent'],candidates=proposal['candidates'])
+            return dict(dry_run=True,engine='systematic',native_edits=False,
+                        systematic_analysis={k:v for k,v in proposal.items() if k not in {'intent','candidates'}},**comparison)
         bridge = get_bridge()
 
         comp_resp = await bridge.send_command_async("pcb.get_components", {})

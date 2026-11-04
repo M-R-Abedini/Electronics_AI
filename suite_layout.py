@@ -21,7 +21,7 @@ P0_POLICY_VERSION = 'placement-evidence-p0-v4'
 P1_POLICY_VERSION = 'placement-evidence-p1-v1'
 POLICY_VERSION = P1_POLICY_VERSION
 SUPPORTED_POLICIES = (P0_POLICY_VERSION, P1_POLICY_VERSION)
-GATE_REVISION = 'placement-copper-p2-v1'
+GATE_REVISION = 'placement-systematic-p3-v1'
 
 # Bridge/session diagnostics have no physical meaning. Keep this allowlist
 # explicit: rules, lock state, dirty state and unknown fields still bind plans.
@@ -73,7 +73,7 @@ def canonical_snapshot_records(snapshot):
     stacks or rule priorities. Every field and each duplicate remain bound.
     """
     result = dict(snapshot)
-    for key in ('components','pads','holes','tracks','arcs','vias','regions','keepouts','cutouts','net_ties'):
+    for key in ('components','pads','holes','tracks','arcs','vias','regions','keepouts','cutouts','net_ties','component_bindings','polygon_bindings'):
         if isinstance(result.get(key),list):
             result[key] = sorted(result[key], key=lambda row: (str(row.get('id','')),
                 str(row.get('owner_id','')), digest(row)) if isinstance(row,dict) else ('','',digest(row)))
@@ -175,6 +175,25 @@ def unexpected_post_changes(before, after, context, moves):
                 if actual_hole and actual_hole.get('hole_geometry'):
                     normalise_position(actual_hole['hole_geometry'],hole['hole_geometry'],'hole_geometry')
     ignored = CAPTURE_TRANSPORT_FIELDS | {'document_modified'}
+    observed_cutouts={row['id']:row for row in observed.get('cutouts',[])}
+    for row in expected.get('cutouts',[]):
+        owner=row.get('owner_component_id')
+        if (owner not in changed or row.get('kind')!='polygon_cutout'
+                or row.get('ownership_source')!='native_component_group_iterator'):continue
+        actual=observed_cutouts.get(row['id'])
+        if actual is None:
+            errors.append('cutout:'+row['id']);continue
+        for field in ('outline','holes'):
+            contours=[row.get(field,[])] if field=='outline' else row.get(field,[])
+            predicted=[[transform_point(inverse_transform_point(point,old[owner]),poses[owner]) for point in ring] for ring in contours]
+            value=predicted[0] if field=='outline' else predicted
+            row[field]=value
+            actual_rings=[actual.get(field,[])] if field=='outline' else actual.get(field,[])
+            if len(actual_rings)!=len(predicted) or any(len(a)!=len(b) for a,b in zip(actual_rings,predicted)):
+                errors.append('cutout:'+row['id']+':'+field);continue
+            if any(abs(v-w)>.0000031 for a,b in zip(actual_rings,predicted) for p,q in zip(a,b) for v,w in zip(p,q)):
+                errors.append('cutout:'+row['id']+':'+field)
+            actual[field]=copy.deepcopy(value)
     expected, observed = canonical_snapshot_records(expected), canonical_snapshot_records(observed)
     for key in set(expected) | set(observed):
         if key not in ignored and digest(expected.get(key)) != digest(observed.get(key)):
@@ -326,7 +345,7 @@ def list_tools():
              dict(plan_id=string), ['plan_id']),
         tool('apply_plan', 'Apply the exact validated plan once, with checkpoint, native freshness and readback; never rerun the optimizer.',
              dict(plan_id=string, validation_id=string, operation_id=string), ['plan_id', 'validation_id', 'operation_id']),
-        tool('revert_in_memory', 'Compensate the latest exact applied placement with its captured original poses, without saving or closing Altium. Refuses intervening physical edits; not general undo.',
+        tool('revert_in_memory', 'Compensate the latest exact applied placement with its captured original poses, without saving or closing Altium. Refuses changed target poses/locks; preserves unrelated edits; not general undo.',
              dict(plan_id=string)),
         tool('get_evidence', 'Read an integrity-checked server-created context, plan, gate or receipt. Does not certify its current freshness.',
              dict(evidence_id=string, kind={'enum': ['contexts', 'plans', 'validations', 'receipts']}), ['evidence_id', 'kind']),
@@ -359,13 +378,16 @@ class LayoutService(SiPiService):
                 'description':'Lossless immutable adapter of one capture record; unknown fields retained'}
             return dict(policy_version=POLICY_VERSION, gate_revision=GATE_REVISION, schemas=schemas,
                         supported_policy_versions=list(SUPPORTED_POLICIES),
-                        search_modes=['refine','construct','hierarchical','cluster_scoped'],
+                        search_modes=['refine','construct','hierarchical','cluster_scoped','systematic'],
                         p1_assumptions={'derived_envelope_margins':'user-authorized engineering defaults; not IPC certification',
                             'large_cutout':'explicit reported area heuristic; no native contour removal',
                             'board_rule_clearance':'design constraint; fabricator capability remains unverified'},
                         native_apply={'side_changes': False, 'transactional_rollback': False,
                                       'revert_in_memory':True,
-                                      'recovery': 'disk_checkpoint_or_freshness_bound_original_pose_compensation'})
+                                      'revert_scope':'document identity, captured object IDs, expected current poses, locks and targeted readback; unrelated edits preserved',
+                                      'revert_full_board_requalification':False,
+                                      'interactive_native_idle_lease_ms':30000,
+                                      'recovery': 'disk_checkpoint_or_targeted_original_pose_compensation'})
         if name == 'get_evidence':
             return await asyncio.to_thread(self._load, arguments['kind'], arguments['evidence_id'])
         method = getattr(self, name, None)
@@ -483,7 +505,7 @@ class LayoutService(SiPiService):
         record = self._load('contexts', context_id)
         context, intent, rules, options = record['context'], design_intent or {}, constraints or [], options or {}
         allowed = {'mode', 'seed', 'candidate_count', 'iterations', 'search_grid_mm', 'managed_scope',
-                   'restart_radius_mm', 'proposal_clearance_mm', 'selection_policy', 'recovery_mode', 'candidates'}
+                   'restart_radius_mm', 'proposal_clearance_mm', 'selection_policy', 'recovery_mode', 'candidates','optimize_rotation'}
         if set(options) - allowed:
             raise ValueError('Unknown placement search options: ' + ', '.join(sorted(set(options) - allowed)))
         recovery = options.get('recovery_mode', 'require_clean_document')
@@ -492,6 +514,13 @@ class LayoutService(SiPiService):
         hierarchy = None
         if 'candidates' in options:
             candidates = copy.deepcopy(options['candidates'])
+        elif options.get('mode') == 'systematic':
+            from eda_agent.design.cluster_placement import UnifiedBoardModel
+            from eda_agent.design.systematic_placement import SystematicClusterPlacer
+            hierarchy=await asyncio.to_thread(SystematicClusterPlacer().propose,
+                UnifiedBoardModel.from_capture(record),intent,options)
+            intent=hierarchy.pop('intent')
+            candidates=hierarchy['candidates']
         elif options.get('mode') == 'cluster_scoped':
             from eda_agent.design.cluster_placement import UnifiedBoardModel,ScopedCopperClusterRefiner
             hierarchy=await asyncio.to_thread(ScopedCopperClusterRefiner().propose,
@@ -736,7 +765,7 @@ class LayoutService(SiPiService):
         moves = [dict(component_id=m['component_id'],designator=original[m['component_id']]['reference'],
                       **{k:original[m['component_id']][k] for k in ('x_mm','y_mm','rotation_deg','side')})
                  for m in receipt['exact_moves']]
-        operation_id = 'revert_' + scope['receipt_id'][:40]
+        operation_id = 'fast_revert_' + scope['receipt_id'][:36]
         operation = self.data_dir / 'operations' / (operation_id + '.json')
         async with self.native_sequence():
             if operation.exists():
@@ -745,9 +774,6 @@ class LayoutService(SiPiService):
                     return dict(self._load('receipts',op['receipt_id']),receipt_id=op['receipt_id'],
                                 receipt_reused=True,current_freshness_verified=False)
                 raise ValueError('REVERT_OUTCOME_UNKNOWN: inspect native receipt; never replay automatically')
-            _, before = await self._snapshot(board_path=record['context']['board_path'],source='live')
-            if capture_digest(before['snapshot']) != receipt['post_capture_digest']:
-                raise ValueError('STALE_PLACEMENT: intervening edit or editor reload; revert refused')
             from suite_checkpoints import _atomic
             operation.parent.mkdir(parents=True,exist_ok=True)
             claim=operation.with_name(operation.name+'.'+os.urandom(12).hex()+'.tmp')
@@ -756,23 +782,25 @@ class LayoutService(SiPiService):
                 try: os.link(claim,operation)
                 except FileExistsError as exc: raise ValueError('Concurrent revert already claimed') from exc
             finally: claim.unlink(missing_ok=True)
-            args=dict(board_path=record['context']['board_path'],board_identity=before['snapshot']['board_identity'],
-                      expected_native_snapshot_token=before['snapshot']['native_snapshot_token'],
-                      moves=moves,operation_id=operation_id)
+            args=dict(board_path=record['context']['board_path'],board_identity=record['snapshot']['board_identity'],
+                      expected_poses=receipt['exact_moves'],moves=moves,operation_id=operation_id)
             ticket=self._native_ticket.set((asyncio.current_task(),digest(args)))
-            try: native=await self._native('_suite_layout_apply_plan',args)
+            started=time.perf_counter()
+            try: native=await self._native('_suite_layout_fast_pose',args)
             finally: self._native_ticket.reset(ticket)
-            result=dict(plan_id=plan_id,operation_id=operation_id,reverted=False,applied=False,
-                        exact_moves=moves,readback_coords=native.get('readback',[]),native=native,
-                        saved=False,altium_closed=False,automatic_retry=False,
-                        qualification_scope='original placement poses only; not a full unsaved-buffer undo')
-            if native.get('success') is True:
-                _, after=await self._snapshot(board_path=record['context']['board_path'],source='live')
-                current=context_from_snapshot(before['snapshot'],'before-revert',record.get('models',{}),
-                    record.get('fabrication',{}),record.get('assembly',{}),plan['policy_version'])
-                errors=unexpected_post_changes(before['snapshot'],after['snapshot'],current,moves)
-                result.update(unexpected_post_changes=errors,post_capture_digest=capture_digest(after['snapshot']))
-                result['reverted']=not errors
+            actual={r['component_id']:r for r in native.get('readback',[])}
+            errors=[]
+            for m in moves:
+                r=actual.get(m['component_id'],{})
+                if (not r or not r.get('verified') or r.get('side')!=m['side'] or any(
+                    abs(r.get(k,float('inf'))-m[k])>.0000031 for k in ('x_mm','y_mm')) or
+                    abs((r.get('rotation_deg',float('inf'))-m['rotation_deg']+180)%360-180)>.000001):
+                    errors.append(m['component_id'])
+            result=dict(plan_id=plan_id,operation_id=operation_id,reverted=native.get('success') is True and not errors,
+                        applied=False,exact_moves=moves,readback_coords=native.get('readback',[]),native=native,
+                        saved=False,altium_closed=False,automatic_retry=False,fast_targeted_revert=True,
+                        target_pose_mismatch_ids=errors,elapsed_native_seconds=time.perf_counter()-started,
+                        qualification_scope='target identity, expected poses, locks and targeted readback; full-board evidence invalidated')
             rid=self._save('receipts',result)
             _atomic(operation,_json(dict(plan_id=plan_id,status='completed',receipt_id=rid)))
             self._scope(plan['context_id'],dict(scope,phase='reverted' if result['reverted'] else 'inspect',

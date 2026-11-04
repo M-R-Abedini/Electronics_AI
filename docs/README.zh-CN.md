@@ -1,4 +1,4 @@
-# Electronics AI — 0.9.0
+# Electronics AI — 1.0.0
 
 [English](../README.md) · [فارسی](README.fa.md) · [简体中文](README.zh-CN.md) · [العربية](README.ar.md)
 

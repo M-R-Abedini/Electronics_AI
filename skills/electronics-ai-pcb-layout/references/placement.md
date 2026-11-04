@@ -121,3 +121,23 @@ trial may set board-scoped `allow_routing_detach=true` alongside
 No copper is silently ripped up. Via access contributes to the critical combined
 loop proxy; it is not routed length. Run `si_pi__audit_copper_loops` once after
 selection to measure real copper paths and inspect reference/crosstalk findings.
+
+For a complete subcircuit use `layout__plan_placement` with `mode=systematic`.
+The same engine is available as a dry-run `eda__pcb_plan_placement` preview with
+`engine=systematic`, an explicit captured `board_context` and `design_intent`.
+Declare fixed `anchor_component_ids`, sourced per-component `placement_roles`
+and connected `target_pad_ids`. Series/pull/feedback, decoupling, crystal,
+oscillator, inductor and diode roles guide proposals; inferred roles remain
+structural hypotheses. Optional `preserve_target_distance=true` is an explicit
+relative nonregression policy, not an invented datasheet distance.
+
+The four stages bind full subcircuit roles, choose pin-facing poses, refine
+scoped weighted HPWL/MST crossings with signal-escape reservations, then try
+uniform-pitch/common-angle passive banks. Existing-pose neighborhoods and real
+obstacle-edge slots are retained when fixed packages surround an anchor.
+All moved pads still pass the full geometry/copper gate. An unchanged obstruction
+outside the actual move set is diagnostic, not a claim that the board is clean.
+Reported metric nets retain every captured remote endpoint; power/reference
+rails are excluded only from the ordinary signal attraction. Explicit
+`grid_mm`/`grid_origin_mm` describe the computational grid, not measured native
+grid-origin calibration. Banking cannot compensate for a higher-tier regression.

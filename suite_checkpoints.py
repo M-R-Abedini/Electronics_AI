@@ -36,6 +36,10 @@ OFFLINE_TOOLS = {
 
 def is_mutation(name: str, arguments: dict, read_only: bool | None = None) -> bool:
     """Conservative native classification; annotations are hints, not authority."""
+    if name in {'obj_select','obj_deselect_all','obj_zoom'}:
+        return False  # Exact trusted selection/viewport handlers, no geometry setters.
+    if name=='pcb_plan_placement':
+        return False  # Both legacy solvers and systematic context previews are dry-run.
     if name == 'tool_invoke':
         return is_mutation(arguments.get('name', ''), arguments.get('arguments') or {})
     if name in OFFLINE_TOOLS:

@@ -249,3 +249,29 @@ an exact hole spatial index. Incomplete routing stays unproven; detaching routes
 is blocked unless an explicit board-scoped placement-only trial permits it.
 Old gate revisions cannot authorize edits under the new copper checks.
 Only short focused regressions and disposable-board live checks were run.
+
+
+## 2026-11-04 — 1.0.0 systematic subcircuit placement
+
+Added a four-stage proposal engine over the existing immutable board model,
+real pad/copper geometry, MST diagnostic and evidence-bound native actor.
+Explicit roles cover decoupling, series/pull/feedback, crystal/oscillator,
+inductor and diode parts. Scoped metric nets retain remote endpoints; source
+weights, computational grid, escape dimensions and role-distance policies stay
+explicit. Obstacle-edge slots and existing-pose neighborhoods preserve narrow
+legal regions. Uniform-angle/pitch banks remain conditional on earlier tiers.
+The same engine is exposed by the pure EDA systematic preview without reserving
+the live editor; the numerical extension initializes before worker threads.
+
+Targeted compensation validates document/object identity, expected poses and
+locks without a full-board scan. Native scalars/target interfaces are resolved
+once, the batch has one balanced update scope and authoritative final readback.
+Unrelated edits are preserved and full-board evidence must be revalidated. A
+bounded interactive lease follows managed Apply; reverting restores ordinary
+idle handover. Native restarts use the worker-pinned script project.
+
+Native component-group membership binds footprint polygon voids to their real
+owners. Post-readback permits only the captured owner's verified rigid motion;
+free cutouts and actual routed copper remain strict dependencies. View-only
+selection/zoom do not trigger pre-edit checkpoints. Only short targeted tests
+and disposable-board live checks were used; no routing changes were requested.

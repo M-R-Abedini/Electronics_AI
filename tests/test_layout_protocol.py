@@ -105,6 +105,11 @@ def service_fixture(tmp_path, *, fail_native=False, lie_about_moves=False):
         return value
     async def native(name, args):
         calls.append((name, copy.deepcopy(args)))
+        if name=='_suite_layout_fast_pose':
+            for expected in args['expected_poses']:
+                comp=next(c for c in snapshot['components'] if c['id']==expected['component_id'])
+                if comp.get('locked') or any(comp[k]!=expected[k] for k in ('x_mm','y_mm','rotation_deg','side')):
+                    raise ValueError('STALE_TARGET_POSE')
         if fail_native:
             return {'success': False, 'applied_ids': [args['moves'][0]['component_id']],
                     'possible_partial_native_edit': True, 'automatic_retry': False}
@@ -117,7 +122,8 @@ def service_fixture(tmp_path, *, fail_native=False, lie_about_moves=False):
                         pad['x_mm'] += dx; pad['y_mm'] += dy
                 comp.update({k: move[k] for k in ('x_mm', 'y_mm', 'rotation_deg', 'side')})
             snapshot['document_modified'] = True
-        return {'success': True, 'applied_ids': [m['component_id'] for m in args['moves']]}
+        return {'success': True, 'applied_ids': [m['component_id'] for m in args['moves']],
+                'readback':[dict(m,verified=True) for m in args['moves']]}
     def checkpoint(files):
         checkpoints.append(files)
         return CheckpointStore(tmp_path / 'recovery').create(files)
@@ -293,15 +299,16 @@ def test_memory_revert_restores_only_original_poses_and_is_idempotent(tmp_path):
     asyncio.run(run())
 
 
-def test_memory_revert_refuses_intervening_edit(tmp_path):
+def test_fast_memory_revert_preserves_unrelated_edit_without_capture(tmp_path):
     async def run():
         service,data,models,fab,calls,_=service_fixture(tmp_path)
         _,plan,gate=await preview(service,data,models,fab)
         await service.apply_plan(plan['plan_id'],gate['validation_id'],'p2_stale')
         data['pads'][0]['net_name']='edited by engineer'
-        with pytest.raises(ValueError,match='STALE_PLACEMENT'):
-            await service.revert_in_memory(plan['plan_id'])
-        assert len(calls)==1
+        async def no_capture(*args,**kwargs):pytest.fail('Fast compensation must not scan the whole board')
+        service.snapshot_reader=no_capture
+        assert (await service.revert_in_memory(plan['plan_id']))['reverted']
+        assert data['pads'][0]['net_name']=='edited by engineer' and len(calls)==2
     asyncio.run(run())
 
 def test_live_eco_capture_preserves_explicit_scope_in_post_validation(tmp_path, monkeypatch):
@@ -374,3 +381,42 @@ def test_old_gate_revision_cannot_authorize_new_native_apply(tmp_path):
             await service.apply_plan(plan['plan_id'],old_id,'old_gate')
         assert not calls
     asyncio.run(run())
+
+def test_fast_revert_refuses_a_changed_target_without_global_snapshot(tmp_path):
+    async def run():
+        service,data,models,fab,calls,_=service_fixture(tmp_path)
+        _,plan,gate=await preview(service,data,models,fab)
+        await service.apply_plan(plan['plan_id'],gate['validation_id'],'changed_target')
+        data['components'][1]['x_mm']+=.127
+        async def no_capture(*args,**kwargs):pytest.fail('Targeted path must not take a full snapshot')
+        service.snapshot_reader=no_capture
+        with pytest.raises(ValueError,match='STALE_TARGET_POSE'):
+            await service.revert_in_memory(plan['plan_id'])
+        assert data['components'][1]['x_mm']==pytest.approx(19.127)
+        with pytest.raises(ValueError,match='REVERT_OUTCOME_UNKNOWN'):
+            await service.revert_in_memory(plan['plan_id'])
+        assert len(calls)==2
+    asyncio.run(run())
+
+def test_owned_footprint_void_is_rigidly_checked_without_waiving_free_cutouts(tmp_path):
+    from suite_layout import unexpected_post_changes
+    data,models,fab=native_fixture(tmp_path)
+    owned=dict(id='owned',kind='polygon_cutout',owner_component_id='101',ownership_source='native_component_group_iterator',outline=[[23,24],[25,24],[25,26],[23,26]],holes=[])
+    free=dict(id='free',kind='polygon_cutout',outline=[[11,21],[12,21],[12,22],[11,22]],holes=[])
+    data['cutouts']=[owned,free]
+    c=context_from_snapshot(data,'synthetic',models,fab,{},'placement-evidence-p1-v1')
+    m=dict(component_id='101',designator='R_B',x_mm=19,y_mm=25,rotation_deg=0,side='top')
+    after=copy.deepcopy(data);after['components'][1]['x_mm']=19;after['pads'][1]['x_mm']=19
+    after['cutouts'][0]['outline']=[[x-5,y] for x,y in owned['outline']]
+    assert unexpected_post_changes(data,after,c,[m])==[]
+    after['cutouts'][1]['outline'][0][0]+=.01
+    assert 'dependency:cutouts' in unexpected_post_changes(data,after,c,[m])
+    after=copy.deepcopy(data);after['cutouts'][0]['outline'][0][0]+=.01
+    assert unexpected_post_changes(data,after,c,[m])
+
+def test_native_component_membership_is_verified_before_assigning_void_owner():
+    from suite_reads import resolve_polygon_bindings
+    s=dict(component_bindings=[dict(child_id='v',component_id='101')],cutouts=[dict(id='v',kind='polygon_cutout')])
+    assert resolve_polygon_bindings(s)['cutouts'][0]['owner_component_id']=='101'
+    s['component_bindings'].append(dict(child_id='v',component_id='102'))
+    with pytest.raises(ValueError,match='ownership'):resolve_polygon_bindings(s)

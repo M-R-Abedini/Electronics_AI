@@ -1,6 +1,6 @@
 # Codex plugin packaging and setup
 
-Electronics AI 0.9.0 bundles one MCP connection and three skills for circuit
+Electronics AI 1.0.0 bundles one MCP connection and three skills for circuit
 design, PCB layout and setup. The canonical source is the
 [Electronics_AI repository](https://github.com/M-R-Abedini/Electronics_AI), locally
 `D:\project\Electronics_AI`. Build artifacts and installed caches are deployment
@@ -39,7 +39,7 @@ $installedPlugin = codex plugin add mcp-electronics-ai@electronics-ai --json | C
 $pluginRoot = $installedPlugin.installedPath
 ```
 
-Outputs include `dist/mcp-electronics-ai-0.9.0.zip`, `artifacts.json` and the
+Outputs include `dist/mcp-electronics-ai-1.0.0.zip`, `artifacts.json` and the
 local `dist/marketplace` tree. The builder selects public package files; private
 `analysis/`, `tools/`, environments, configuration and repair backups are not
 release inputs. `--smoke` initializes an isolated empty-config package and checks

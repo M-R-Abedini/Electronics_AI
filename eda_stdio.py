@@ -19,6 +19,7 @@ def configure_cli(argv):
 
 
 configure_cli(sys.argv[1:])
+import numpy  # Warm the numerical extension before the worker's stdio loop/threads.
 # Prefer deployed sources to an unrelated editable package in the interpreter.
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'eda-agent' / 'src'))
 from suite_config import configure_environment
@@ -152,6 +153,27 @@ async def _suite_layout_apply_plan(board_path: str, board_identity: str,
     params = prepare_layout_native_batch(board_path, board_identity,
         expected_native_snapshot_token, moves, operation_id)
     return await get_bridge().send_command_async('pcb.apply_placement_plan', params, timeout=180)
+
+
+@mcp.tool()
+async def _suite_layout_fast_pose(board_path: str, board_identity: str,
+                                  moves: list[dict], expected_poses: list[dict], operation_id: str) -> dict:
+    """Private targeted compensation: identity, expected poses, locks and readback."""
+    from suite_placement_adapter import prepare_layout_native_batch
+    from eda_agent.bridge import get_bridge
+    params=prepare_layout_native_batch(board_path,board_identity,'targeted_pose',moves,operation_id)
+    expected=prepare_layout_native_batch(board_path,board_identity,'targeted_pose',expected_poses,operation_id)
+    if [m['component_id'] for m in moves]!=[m['component_id'] for m in expected_poses]:
+        raise ValueError('Targeted compensation requires ordered matching expected identities')
+    params['targeted_only']=True
+    # Flat packet: cache each bounded scalar once in DelphiScript. Repeated
+    # nested JSON lookups dominated the old small-batch compensation time.
+    for i in range(len(moves)):
+        item=params[f'move_{i}'];before=expected[f'move_{i}']
+        if item['designator']!=before['designator'] or item['side']!=before['side']:
+            raise ValueError('Targeted compensation cannot rename or flip a component')
+        for key in ('x_mm','y_mm','rotation_deg'):item['expected_'+key]=before[key]
+    return await get_bridge().send_command_async('pcb.apply_placement_plan',params,timeout=15)
 
 
 # Keep private native commands callable only by the gateway's direct

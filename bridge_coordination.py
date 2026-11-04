@@ -4,6 +4,7 @@ import contextlib
 import contextvars
 import json
 import math
+import os
 import subprocess
 import time
 import uuid
@@ -557,7 +558,11 @@ def _ensure(probe):
             raise TimeoutError('EDA did not answer, but native shutdown is not confirmed. No second script was launched; inspect Altium or wait for confirmed idle release.')
     if time.time() - _launch_attempted_at() < 45:
         raise TimeoutError('A bridge startup was already attempted recently. No duplicate Altium process was launched.')
-    script = SCRIPT or prepare_runtime()['eda']
+    # Keep a worker on the content-addressed sources selected at startup.
+    # Re-reading a mutable checkout here can launch different code from its
+    # expected identity halfway through a long placement operation.
+    expected_script = os.environ.get('ELECTRONICS_AI_EDA_SCRIPT')
+    script = SCRIPT or (Path(expected_script) if expected_script else prepare_runtime()['eda'])
     executable = EXE or altium_exe()
     if not script.is_file() or not executable.is_file():
         raise RuntimeError('The Altium executable or bridge script is missing')
