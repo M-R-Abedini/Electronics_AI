@@ -1,4 +1,14 @@
-# Release verification: 2026.11.03.electronics-ai-p0
+# Release verification: 2026.11.04.electronics-ai-p1
+
+Version `0.8.0` adds P1 tiered collision envelopes, analytic per-layer pad and
+slot geometry, explicit board-rule provenance and hierarchical proposals.
+Real Apply/readback, physical-change stale refusal, locked-target refusal and
+normalized restoration passed on the authorized disposable Acceptance board.
+See `docs/P1_CLUSTER_PLACEMENT_REPORT.fa.md` in the root repository for scope,
+measured results, failed-trial history and remaining limitations. This does not
+certify manufacturing, arbitrary native handlers or all motif pin roles.
+
+## Historical P0 verification
 
 Version `0.7.0` adds plan-bound placement with exact target, snapshot/rule/lock
 preconditions, whole-batch preflight, durable operation identity and readback.

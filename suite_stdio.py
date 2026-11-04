@@ -735,7 +735,8 @@ def create_server(suite: Suite) -> Server:
         finally:
             await suite.close()
 
-    server = Server(SERVER_NAME, version="0.7.0", instructions=INSTRUCTIONS, lifespan=lifespan)
+    version = json.loads((Path(__file__).resolve().parent / 'plugin.json').read_text(encoding='utf-8'))['version']
+    server = Server(SERVER_NAME, version=version, instructions=INSTRUCTIONS, lifespan=lifespan)
 
     @server.list_tools()
     async def list_tools():

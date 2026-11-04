@@ -42,6 +42,7 @@ ROOT_FILES = (
     'scripts/plugin_runtime.py', 'scripts/launch_plugin.ps1', 'scripts/build_plugin.py',
     'scripts/benchmark_pcb_layout.py', 'scripts/windows_pcb_acceptance.py',
     'docs/PCB_LAYOUT_BENCHMARK_RESULTS.json',
+    'docs/P1_CLUSTER_BENCHMARK_RESULTS.json',
     'eda-agent/pyproject.toml', 'eda-agent/README.md', 'eda-agent/LICENSE', 'eda-agent/NOTICE',
     'suite_json_guard.py', 'notices/batch-safety-MIT.txt',
 )

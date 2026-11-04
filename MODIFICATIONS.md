@@ -213,3 +213,18 @@ capability gaps documented explicitly; no invented registry/API contracts.
 - P0 v3 uses fixed feasibility, per-pair power/return path, signal wirelength and optional alignment tiers. Partial geometry is unknown; free pads remain stationary obstacles; any Tier1 regression rejects the candidate.
 - Bootstrap creates a fresh private regular-wheel environment; release payloads exclude private analyses/tools and retired binaries. The current surface is519 capabilities in9 namespaces plus3 discovery tools.
 - Windows endpoint publication now retries a bounded transient sharing denial without treating uncertain ownership as an absent queue.
+
+
+## 2026-11-04 — Electronics AI 0.8.0 / P1
+
+Original MIT P1 modules: `eda-agent/src/eda_agent/design/placement_p1.py` and
+`cluster_placement.py`. Updated the MIT placement evaluator, gateway and exact
+rectilinear subtraction for explicit versioned engineering envelopes, captured
+board-rule provenance, analytic layer/slot geometry and unchanged-baseline ECO
+handling. Existing upstream Apache-2.0 placers/motif recognition are reused;
+no upstream license notices were removed. P0 remains explicitly selectable.
+Updated package/native version metadata, skill references and schema export.
+Added synthetic regressions and isolated cancellation tests from the real FIFO
+admission service without weakening cancellation or lock ownership assertions.
+Real disposable-board Apply/readback/stale/Locked/Restore evidence is private;
+the Persian P1 report separates it from blocked whole-board solver proposals.

@@ -7,7 +7,8 @@ from fractions import Fraction
 import math
 
 
-def subtract_rectilinear_cutouts(outline, cutouts, *, max_cells=65536):
+def subtract_rectilinear_cutouts(outline, cutouts, *, max_cells=65536,
+                                ignore_full_board_artifacts=False):
     """Return one polygon-with-holes, or reject unsupported/disconnected results.
 
     All coordinates are exact rational representations of the supplied decimals.
@@ -46,6 +47,27 @@ def subtract_rectilinear_cutouts(outline, cutouts, *, max_cells=65536):
                 result = not result
         return result
 
+    ignored = []
+    if ignore_full_board_artifacts:
+        # Explicit P1 policy requested by the operator. Area does not prove a
+        # contour is a nonphysical artifact; keep the rejected raw evidence.
+        subject_area = Fraction(0)
+        overlaps = [Fraction(0) for _ in masks]
+        for i in range(len(xs)-1):
+            for j in range(len(ys)-1):
+                x, y = (xs[i]+xs[i+1])/2, (ys[j]+ys[j+1])/2
+                if inside(x, y, subject):
+                    area = (xs[i+1]-xs[i])*(ys[j+1]-ys[j])
+                    subject_area += area
+                    for k, mask in enumerate(masks):
+                        if inside(x, y, mask):
+                            overlaps[k] += area
+        ignored = [dict(index=k, overlap_ratio=float(a/subject_area),
+                        warning='ignored_full_board_cutout_artifact',
+                        interpretation='operator_authorized_area_heuristic; physical_semantics_unverified',
+                        raw_contour=cutouts[k])
+                   for k,a in enumerate(overlaps) if a > subject_area*Fraction(9,10)]
+        masks = [mask for k,mask in enumerate(masks) if k not in {r['index'] for r in ignored}]
     cells = set()
     area = Fraction(0)
     for i in range(len(xs)-1):
@@ -95,4 +117,7 @@ def subtract_rectilinear_cutouts(outline, cutouts, *, max_cells=65536):
     result = {'outline':convert(outer[0]),'holes':[convert(r) for r in holes]}
     if not region_geometry_valid(result):
         raise ValueError('Subtracted board is unsupported by the placement contract')
+    if ignore_full_board_artifacts:
+        result.update(ignored_full_board_cutout_contours=len(ignored), warnings=ignored,
+                      interpretation_policy='placement-evidence-p1-v1')
     return result

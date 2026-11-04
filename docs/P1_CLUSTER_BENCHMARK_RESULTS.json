@@ -1,0 +1,79 @@
+{
+  "candidate_count": 3,
+  "cluster_hypotheses": {
+    "crystal": 9,
+    "decoupling": 4,
+    "switching_hot_loop": 6
+  },
+  "elapsed_seconds": 71.65600000000268,
+  "fixture": "authorized_disposable_Acceptance",
+  "iterations": 20,
+  "local_clusters_processed": 19,
+  "local_clusters_unprocessed": 0,
+  "native_edits": false,
+  "package_version": "0.8.0",
+  "policies": {
+    "p0": {
+      "candidates": [
+        {
+          "blockers": 22518,
+          "candidate_id": "baseline",
+          "feasible": false
+        },
+        {
+          "blockers": 22518,
+          "candidate_id": "cluster-local-all:7",
+          "feasible": false
+        },
+        {
+          "blockers": 22518,
+          "candidate_id": "cluster-coarse:7",
+          "feasible": false
+        },
+        {
+          "blockers": 22518,
+          "candidate_id": "cluster-construct:7",
+          "feasible": false
+        }
+      ],
+      "selected_candidate_id": "baseline",
+      "selection_status": "blocked"
+    },
+    "p1": {
+      "candidates": [
+        {
+          "blockers": 322,
+          "candidate_id": "baseline",
+          "feasible": false
+        },
+        {
+          "blockers": 183,
+          "candidate_id": "cluster-local-all:7",
+          "feasible": false
+        },
+        {
+          "blockers": 383,
+          "candidate_id": "cluster-coarse:7",
+          "feasible": false
+        },
+        {
+          "blockers": 411,
+          "candidate_id": "cluster-construct:7",
+          "feasible": false
+        }
+      ],
+      "selected_candidate_id": "baseline",
+      "selection_status": "blocked"
+    }
+  },
+  "roundtrip_lossless": true,
+  "scope": "Structural hypotheses and placement envelopes; not routed/3D/manufacturing certification",
+  "seed": 7,
+  "source_sha256": {
+    "eda-agent/src/eda_agent/design/cluster_placement.py": "98c35de4b6a17effa92d8b8a434e82b473a4f8098ebb8464d2a3eecc1189b4c1",
+    "eda-agent/src/eda_agent/design/placement_evidence.py": "15a50f2af4ee50ce822c9745aa4a9fe14da170d58097665f3a69616761f4dc47",
+    "eda-agent/src/eda_agent/design/placement_p1.py": "0f439c041d4c0f43d09c4224de84b069326f9fba871fa786ea15d01ea5b3d4b9",
+    "suite_layout.py": "40dcde210bc43982b766316fd0ad6c3365e38cddc9840956ebfb2b5f1e6d8654"
+  },
+  "synthetic": false
+}

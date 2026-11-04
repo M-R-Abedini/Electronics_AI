@@ -58,6 +58,21 @@ from suite_checkpoints import CheckpointStore
 SOURCE = {'kind': 'engineering_policy', 'id': 'synthetic-fixture', 'revision': '1'}
 
 
+def test_post_readback_uses_identity_when_native_modification_reorders_pads(tmp_path):
+    from suite_layout import unexpected_post_changes
+    snapshot, models, fab = native_fixture(tmp_path)
+    context = context_from_snapshot(snapshot,'synthetic',models,fab,{},'placement-evidence-p1-v1')
+    move=dict(component_id='101',designator='R_B',x_mm=19,y_mm=25,rotation_deg=0,side='top')
+    after=copy.deepcopy(snapshot)
+    after['components'][1]['x_mm']=19
+    after['pads'][1]['x_mm']=19
+    after['pads'].reverse()
+    after['document_modified']=True
+    assert unexpected_post_changes(snapshot,after,context,[move])==[]
+    after['pads'][0]['net_name']='unexpected net edit'
+    assert 'dependency:pads' in unexpected_post_changes(snapshot,after,context,[move])
+
+
 def native_fixture(tmp_path):
     context = core.example_board_context()
     path = tmp_path / 'scratch.PcbDoc'

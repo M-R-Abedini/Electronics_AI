@@ -6,7 +6,7 @@ terms are useful heuristics; validate the returned candidate with the currently
 implemented evidence contract before considering mutation.
 
 In `layout__plan_placement`, nested search `options` currently include `mode`
-(`refine` or `construct`), `seed`, `candidate_count`, `iterations`,
+(`refine`, `construct` or `hierarchical`), `seed`, `candidate_count`, `iterations`,
 `search_grid_mm`, `restart_radius_mm`, `proposal_clearance_mm`,
 `selection_policy`, `managed_scope`, `recovery_mode` and explicit `candidates`.
 Read the current contracts before supplying nested values. Candidate count,
@@ -14,7 +14,36 @@ seed and budget are computation settings; proposal clearance is not a
 fabrication limit. The evaluator independently requires a qualified
 `fabrication_profile.minimum_pad_clearance_mm` and its source.
 
-The P0 comparison order is fixed:
+The default gateway policy is `placement-evidence-p1-v1`; capture with
+`policy_version="placement-evidence-p0-v4"` for the historical comparison.
+The selected policy is bound to the context, plan, gate and receipt.
+
+P1 uses an explicit sourced courtyard first. Otherwise its collision envelope
+combines all captured pad-layer bounds and a component body/mechanical extent,
+with a recorded engineering-policy margin. `envelope_source` identifies the
+fallback; it is not a certified IPC courtyard or an exact 3D package model.
+Partial pad ownership/geometry remains a blocker. Clearance can come from a
+captured enabled All/All board DRC rule, labelled `board_drc_rule`; this proves
+a design constraint, not the fabricator's capabilities.
+
+P1's full-board-cutout override (>90% exact overlap for supported rectilinear
+contours) is an operator-authorized heuristic, not proof of a nonphysical object.
+Inspect `ignored_full_board_cutout_artifact` warnings and retain raw contours;
+do not describe that override as manufacturing verification or remove the CAD
+object. Native edits still need the exact stored passing plan and authorization
+for the target and the policy assumptions used.
+
+Use `mode="hierarchical"` to run existing local solvers, then rigid meta-cluster
+placement through `UnifiedBoardModel`. Structural motif hypotheses are labelled
+separately from sourced VCC/GND or TVS/crystal/switch/shunt pin bindings. A
+missing pin role is not permission to manufacture a binding. The final evaluator
+rejects any moved-object Tier 0 violation and any critical-leg regression;
+unchanged defects outside an ECO remain visible. Proximity budgets are board-
+scoped proposals unless approved. Via/layer-span cost is only a soft proxy.
+`epsilon_quant_mm` stays zero without proven native grid origin and measured
+on-grid evidence. Computational search pitch is not native grid evidence.
+
+The explicitly selected P0 comparison order remains:
 
 For explicitly supplied local PcbLibs, `scripts/extract_package_geometry.py`
 can read a private native capture and emit `package_geometry` for the existing
@@ -28,7 +57,7 @@ source/mismatch report private. This helper does not execute placement.
   pad/outline coverage. Missing required evidence remains unknown.
 - Tier 1: transformed pad AABB Manhattan gaps for critical paths and each
   decoupler's VCC and GND relationship. Cross-side cost requires an explicit
-  `cross_side_via_penalty_mm`. Every individual binding and aggregate must not
+  `via_transition_penalty_mm`. Every individual binding and aggregate must not
   increase at all; positive regression tolerance is rejected.
 - Tier 2: weighted signal HPWL excluding global GND and explicitly declared
   reference/power nets. Ratsnest crossings are diagnostic proxies.

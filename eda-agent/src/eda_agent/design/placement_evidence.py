@@ -373,6 +373,9 @@ def transformed_pads(context, poses):
         except (ValueError, KeyError, TypeError):
             pad["x_mm"] = pad["y_mm"] = None
             pad.pop("outline", None)
+        if context.get('policy_version') == 'placement-evidence-p1-v1':
+            from .placement_p1 import transform_layer_geometry
+            pad = transform_layer_geometry(raw, pad, old, pose)
         result[raw["id"]] = pad
     for raw in context.get("stationary_pads", []):
         pad = dict(raw)
@@ -581,6 +584,9 @@ def _manufacturing_checks(context, pads, snapshot):
     unsupported curved/stack geometries stay unknown instead of passing from
     an inscribed render polygon. This is not a complete fabrication DRC.
     """
+    if context.get('policy_version') == 'placement-evidence-p1-v1':
+        from .placement_p1 import manufacturing_checks
+        return manufacturing_checks(context, pads, snapshot)
     profile = context.get('fabrication_profile', {})
     limit = profile.get('minimum_pad_clearance_mm')
     source = profile.get('source')
@@ -704,6 +710,10 @@ def _manufacturing_checks(context, pads, snapshot):
 
 def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candidate_id="baseline"):
     """Validate final batch geometry; hard failures/unknowns cannot be scored away."""
+    from .placement_p1 import policy_version, prepare_context
+    version = policy_version(context)
+    if version == 'placement-evidence-p1-v1':
+        context = prepare_context(context)
     context = validate_board_context(context)
     intent = validate_design_intent(intent, context)
     if not isinstance(constraints, (list, tuple)) or len(constraints) > 10000:
@@ -735,6 +745,8 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
         ring = rings[cid]
         status = "pass" if ring is not None else "unknown"
         checks.append(_check(f"courtyard:{cid}", status, snapshot, scope={"components": [cid]},
+            source=comps[cid].get('courtyard_source'),
+            geometry={'envelope_source':comps[cid].get('envelope_source','explicit_courtyard')},
             reason="Supply sourced courtyard geometry and explicit component side" if status == "unknown" else ""))
         if outline is None or ring is None or context.get("coverage", {}).get("outline") not in {"complete", True}:
             checks.append(_check(f"outline:{cid}", "unknown", snapshot, scope={"components": [cid]},
@@ -751,6 +763,7 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
             scope={"components": [cid]}, geometry={"courtyard": ring},
             reason="Courtyard crosses the real outline/cutout outside a sourced overhang allowance" if not inside else ""))
     pairs = sorted(comps)
+    separated_pairs = 0
     for i, a in enumerate(pairs):
         for b in pairs[i + 1:]:
             if not ({a, b} & scoped):
@@ -765,10 +778,17 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
             if rings[a] is None or rings[b] is None:
                 checks.append(_check(f"collision:{a}:{b}", "unknown", snapshot,
                     scope={"components": [a, b]}, reason="Courtyard unavailable; AABB cannot certify a noncollision")); continue
+            if version == 'placement-evidence-p1-v1' and not _aabb_touch(rings[a],rings[b]):
+                separated_pairs += 1
+                continue
             overlap = _interior_overlap(rings[a], rings[b])
             checks.append(_check(f"collision:{a}:{b}", "fail" if overlap else "pass", snapshot,
                 scope={"components": [a, b]}, geometry={"courtyards": [rings[a], rings[b]]},
                 reason="Final-state courtyards overlap" if overlap else ""))
+    if version == 'placement-evidence-p1-v1':
+        checks.append(_check('collision:separated_envelopes','pass',snapshot,
+            geometry={'certified_pair_count':separated_pairs,'method':'disjoint_exact_envelope_bounds',
+                      'individual_failure_and_unknown_checks_retained':True}))
     pads = transformed_pads(context, poses)
     checks += _manufacturing_checks(context, pads, snapshot)
     checks += _profile_checks(context, intent, snapshot, constraints)
@@ -797,17 +817,22 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
                 verification='copper_geometry_audit', geometry={'audit': audit},
                 reason='Existing copper auditor reused on proposed pad positions; no routing or field simulation is implied'))
     metrics = _metrics(context, intent, poses, pads)
+    unchanged_baseline = []
+    if version == 'placement-evidence-p1-v1' and canonical:
+        from .placement_p1 import qualify_unchanged_baseline
+        unchanged_baseline = qualify_unchanged_baseline(context, checks, canonical)
     hard = [c for c in checks if c["required"] and c["kind"] == "hard"]
     failed = any(c["status"] == "fail" for c in hard)
     unknown = any(c["status"] == "unknown" for c in hard)
     input_context = {k: v for k, v in context.items() if k not in {"capture_metrics", "captured_at", "native_snapshot_json", "native_snapshot_token"}}
-    report = {"schema": 1, "policy_version": POLICY_VERSION, "candidate_id": candidate_id,
+    report = {"schema": 1, "policy_version": version, "candidate_id": candidate_id,
         "source_snapshot": snapshot, "input_digest": digest({"context": input_context, "intent": intent, "constraints": constraints}),
         "constraint_digest": digest(constraints), "status": "infeasible" if failed else "unknown" if unknown else "feasible",
         "feasible": not failed and not unknown, "required_checks": [c["id"] for c in hard], "checks": checks,
         "blockers": [c["id"] for c in hard if c["status"] not in {"pass", "not_applicable"}],
         "metrics": metrics, "final_poses": poses, "moves": canonical, "reservations": reservations,
         "profiles": select_profiles(intent),
+        "unchanged_baseline_defects": unchanged_baseline,
         "coverage": {"electrical_routing": "not_verified", "courtyards": "complete" if all(rings[c] is not None for c in scoped) else "unknown",
                      "renderer": "not_evaluated", "physics": "not_simulated"}}
     report["evidence_id"] = digest(report)
@@ -816,6 +841,8 @@ def evaluate_placement(context, intent=None, constraints=(), moves=(), *, candid
 
 def _metrics(context, intent, poses, pads):
     from .placement_p0 import transformed_pad_aabb_manhattan_mm as gap, crossing_proxy, alignment_proxy
+    if context.get('policy_version') == 'placement-evidence-p1-v1':
+        from .placement_p1 import transformed_pad_aabb_manhattan_mm as gap
     by_net = defaultdict(list)
     for pad in pads.values():
         if pad.get("net_name") and pad.get("x_mm") is not None:
@@ -832,6 +859,14 @@ def _metrics(context, intent, poses, pads):
                   for c in context["components"]), "unit": "mm", "method": "origin_displacement", "coverage": "complete"}}
     result['ratsnest_crossings'] = {'value': crossing_proxy(pads, excluded), 'unit': 'count',
         'method': 'existing_mst_crossing_diagnostic', 'routing_verified': False, 'pad_budget':512}
+    if context.get('policy_version') == 'placement-evidence-p1-v1':
+        net_layers=defaultdict(set)
+        for pad in pads.values():
+            if pad.get('net_name') and pad['net_name'] not in excluded:
+                net_layers[pad['net_name']].add(_layer(pad.get('layer')))
+        result['via_proxy']={'value':sum('top' in layers and 'bottom' in layers for layers in net_layers.values()),
+            'unit':'count','method':'net_layer_span_proxy','critical':False,'return_path_verified':False,
+            'scope':'soft objective only; no actual via count or return continuity claim'}
     alignment = alignment_proxy(context, intent, poses)
     result['alignment_penalty'] = {'value': None if alignment is None else 1-alignment, 'aligned_ratio':alignment,
         'unit':'ratio', 'method':'declared_passive_family_grid_and_collinearity'}
@@ -947,6 +982,10 @@ def evaluate_channels(context, intent, poses, pads):
 
 def compare_placement_candidates(context, intent=None, constraints=(), candidates=(), selection_policy=None):
     """Baseline + supplied proposals; feasibility and critical tiers precede cost."""
+    from .placement_p1 import policy_version, prepare_context
+    version = policy_version(context)
+    if version == 'placement-evidence-p1-v1':
+        context = prepare_context(context)
     context = validate_board_context(context)
     intent = validate_design_intent(intent, context)
     policy = copy.deepcopy(selection_policy or {})
@@ -963,13 +1002,23 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
     baseline = evaluations[0]
     critical = [key for key, metric in baseline["metrics"].items() if metric.get("critical")]
     tolerance = policy.get("critical_nonregression_mm", {})
+    epsilon = 0.0
+    if version == 'placement-evidence-p1-v1':
+        from .placement_p1 import quantization_budget
+        epsilon = quantization_budget(context, context.get('native_apply_acceptance'))['epsilon_quant_mm']
     if not isinstance(tolerance, dict) or any(k not in critical for k in tolerance):
         raise ValueError("Critical tolerances must reference actual reported critical metrics")
     for key, value in tolerance.items():
         _number(value, "critical nonregression tolerance", minimum=0)
-        if value != 0:
-            raise ValueError('P0 Tier 1 permits no positive nonregression allowance')
+        if value > epsilon:
+            if version == 'placement-evidence-p0-v4':
+                raise ValueError('P0 Tier 1 permits no positive nonregression allowance')
+            raise ValueError('Tier 1 allowance exceeds the proven native quantization budget')
     metric_order = critical + ['signal_hpwl', 'ratsnest_crossings']
+    if version == 'placement-evidence-p1-v1' and baseline['metrics']['ratsnest_crossings']['value'] is None:
+        metric_order.remove('ratsnest_crossings')  # Bounded optional proxy, never a critical metric.
+    if version == 'placement-evidence-p1-v1':
+        metric_order.append('via_proxy')
     if baseline['metrics']['alignment_penalty']['value'] is not None:
         metric_order.append('alignment_penalty')
     metric_order.append('movement')
@@ -984,18 +1033,29 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
             before, after = baseline["metrics"][key]["value"], report["metrics"][key]["value"]
             if before is None or after is None:
                 regressions.append({"metric": key, "reason": "critical metric unknown"})
-            elif after > before:
+            elif after > before + epsilon:
                 regressions.append({"metric": key, "before": before, "after": after,
-                                    "tolerance_mm": tolerance.get(key, 0)})
+                                    "tolerance_mm": epsilon})
         if not report["feasible"]:
             reason = "Hard constraints fail or required evidence is unknown"
         elif regressions:
             reason = "Critical path lower bound regressed; improved ordinary-net score cannot compensate"
         elif any(report["metrics"][key]["value"] is None for key in metric_order):
             reason = "A selection metric is unknown"
-        elif report is not baseline and not any(report['metrics'][key]['value'] < baseline['metrics'][key]['value']
+        elif report is not baseline and not any(report['metrics'][key]['value'] is not None
+                and baseline['metrics'][key]['value'] is not None
+                and report['metrics'][key]['value'] < baseline['metrics'][key]['value']
                 for key in critical + ['signal_hpwl','ratsnest_crossings']):
-            reason = 'No measurable Tier 1 or Tier 2 improvement; retain baseline'
+            # P1 can remove a baseline collision without trading it for a
+            # critical-leg regression; an aesthetic-only move is still rejected.
+            moved = {m['component_id'] for m in report['moves']}
+            repaired = {c['id'] for c in baseline['checks'] if c['status']=='fail'
+                        and set(c.get('scope',{}).get('components',[])) & moved}
+            removed = version=='placement-evidence-p1-v1' and bool(repaired) and report['feasible']
+            if removed:
+                eligible.append(report); reason='Baseline Tier 0 repaired with critical nonregression'
+            else:
+                reason = 'No measurable Tier 1 or Tier 2 improvement; retain baseline'
         else:
             eligible.append(report); reason = "Eligible under hard constraints and critical nonregression"
         tradeoffs.append({"candidate_id": report["candidate_id"], "reason": reason, "critical_regressions": regressions,
@@ -1015,7 +1075,8 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
                        "seeds": [candidate.get("seed") for candidate in candidates]},
             "apply_eligible": bool(eligible) and winner["feasible"]}
     plan["plan_digest"] = digest(plan)
-    return {"schema": 1, "policy_version": POLICY_VERSION, "input_digest": baseline["input_digest"],
+    return {"schema": 1, "policy_version": version, "input_digest": baseline["input_digest"],
+            "epsilon_quant_mm":epsilon,
             "baseline_id": "baseline", "selected_candidate_id": winner["candidate_id"],
             "selection_status": status, "evaluations": evaluations, "tradeoffs": tradeoffs,
             "profiles": select_profiles(intent), "plan": plan}
@@ -1107,6 +1168,11 @@ def generate_placement_candidates(context, intent=None, options=None):
             rotation=c["rotation_deg"], pins=pins, rotatable=len(c.get("allowed_rotations_deg", [])) > 1)
         comp.flippable = False
         comp.role = roles.get(cid, "")
+        if context.get('policy_version') == 'placement-evidence-p1-v1':
+            for group in intent.get('physical_clusters',[]):
+                if cid in group.get('component_ids',[]):
+                    comp.match_group=group['id']
+                    break
         comp.courtyard_proxy = proxy
         templates.append(comp)
     net_members = defaultdict(set)
@@ -1137,6 +1203,8 @@ def generate_placement_candidates(context, intent=None, options=None):
         else:
             opts = PlaceOptions(iterations=iterations, grid_mils=pitch*scale,
                 clearance_mils=(minimum or 0)*scale, optimize_rotation=True)
+            if context.get('policy_version')=='placement-evidence-p1-v1':
+                opts.max_shove_rounds=min(80,iterations)
             result = plan_placement(comps, nets, region, opts)
             positions, rotations = result.positions, result.rotations
         moves = []
@@ -1216,6 +1284,7 @@ def example_board_context():
     """Synthetic mm fixture, deliberately unrelated to any part or project."""
     source = {"kind": "engineering_policy", "id": "synthetic-regression", "revision": "1"}
     return {"schema": 1, "units": "mm", "snapshot_id": "synthetic-baseline", "source": "synthetic",
+        "policy_version": POLICY_VERSION,
         "fabrication_profile": {"minimum_pad_clearance_mm": .1, "source": source},
         "board_path": "synthetic.PcbDoc", "board_identity": "synthetic-only", "document_modified": None,
         "origin_mm": [10, 20], "outline": [[10, 20], [30, 20], [30, 40], [10, 40]], "cutouts": [],

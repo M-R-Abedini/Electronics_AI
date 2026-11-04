@@ -1,20 +1,25 @@
 {
-  "catalog_sha256": "ca8f3fc69fb807cc93ab58f61b70d5ab493feea5f1ad9d7c7a6a384ee080f7c7",
+  "catalog_sha256": "2d2f54c29404879503b9d2204876c6c1188c3162d0e54bd2e4aeb28b1f1ab077",
   "catalog_total": 519,
   "native_editor_verified_by_generator": false,
   "provenance": {
-    "audit_baseline_commit": "3f2effae37fbb12c81e467f86d4da44ca54c4ab6",
-    "checkout_plugin_version": "0.7.0",
-    "declared_native_script_version": "2026.11.03.electronics-ai-p0",
+    "audit_baseline_commit": "6d317949633777bc5709bfa42fe332878b8ae446",
+    "checkout_plugin_version": "0.8.0",
+    "declared_native_script_version": "2026.11.04.electronics-ai-p1",
     "kind": "source_schema_export",
-    "method": "ToolRegistry/FastMCP source schemas, product list_tools and current native library contracts",
-    "native_editor_probed": false
+    "method": "Isolated source gateway initialize and complete paginated catalog; no CAD calls",
+    "native_editor_probed": false,
+    "source_file_sha256": {
+      "eda-agent/src/eda_agent/design/cluster_placement.py": "98c35de4b6a17effa92d8b8a434e82b473a4f8098ebb8464d2a3eecc1189b4c1",
+      "eda-agent/src/eda_agent/design/placement_p1.py": "0f439c041d4c0f43d09c4224de84b069326f9fba871fa786ea15d01ea5b3d4b9",
+      "suite_layout.py": "40dcde210bc43982b766316fd0ad6c3365e38cddc9840956ebfb2b5f1e6d8654"
+    }
   },
   "schema_version": 1,
   "selected_tool_count": 31,
   "tools": [
     {
-      "description": "Decide the single next action for an autonomous design run.\n\nReads the session journal and returns the next 13-stage pipeline step\nserver-side, so a client need not memorize the workflow: loop\n\"call design_next_action -> do what it says -> design_session_log the\nresult\" until ``status`` is ``complete`` or ``blocked``.\n\nReturns a dict with ``status`` (proceed | retry | blocked | complete),\nthe ``stage``, its ``goal``, ``suggested_tools`` (exact tool names),\nthe ``exit_gate`` that marks it done, and, on ``blocked``, the\n``open_question`` to put to the user. Bounded retries: a stage that\nfails repeatedly escalates to ``blocked`` instead of looping forever.",
+      "description": "Decide the single next action for an autonomous design run.\n\n        Reads the session journal and returns the next 13-stage pipeline step\n        server-side, so a client need not memorize the workflow: loop\n        \"call design_next_action -> do what it says -> design_session_log the\n        result\" until ``status`` is ``complete`` or ``blocked``.\n\n        Returns a dict with ``status`` (proceed | retry | blocked | complete),\n        the ``stage``, its ``goal``, ``suggested_tools`` (exact tool names),\n        the ``exit_gate`` that marks it done, and, on ``blocked``, the\n        ``open_question`` to put to the user. Bounded retries: a stage that\n        fails repeatedly escalates to ``blocked`` instead of looping forever.\n        ",
       "inputSchema": {
         "properties": {
           "session_id": {
@@ -26,10 +31,15 @@
         "title": "design_next_actionArguments",
         "type": "object"
       },
-      "name": "eda__design_next_action"
+      "name": "eda__design_next_action",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "design_next_actionDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Read an existing immutable snapshot without accessing Altium or its queue.\n\nsections: counts (default), components, pads, nets. Several requested\nsections are returned together. Data is historical even if captured\nmoments ago; GUI edits may occur without a reliable Modified flag.",
+      "description": "Read an existing immutable snapshot without accessing Altium or its queue.\n\n        sections: counts (default), components, pads, nets. Several requested\n        sections are returned together. Data is historical even if captured\n        moments ago; GUI edits may occur without a reliable Modified flag.\n        ",
       "inputSchema": {
         "properties": {
           "sections": {
@@ -58,10 +68,15 @@
         "title": "design_read_snapshotArguments",
         "type": "object"
       },
-      "name": "eda__design_read_snapshot"
+      "name": "eda__design_read_snapshot",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "design_read_snapshotDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Append one event to a design-session journal.\n\n``event`` is one of: ``stage_enter`` (needs ``stage``),\n``stage_result`` (``stage`` + ``status`` = ok|blocked|failed),\n``plan_revision`` (``revision``), ``artifact`` (``path``, ``kind``),\n``blocked`` (``question``), ``resolved`` (``text`` = answer),\n``note`` (``text``). Returns the updated derived state.",
+      "description": "Append one event to a design-session journal.\n\n        ``event`` is one of: ``stage_enter`` (needs ``stage``),\n        ``stage_result`` (``stage`` + ``status`` = ok|blocked|failed),\n        ``plan_revision`` (``revision``), ``artifact`` (``path``, ``kind``),\n        ``blocked`` (``question``), ``resolved`` (``text`` = answer),\n        ``note`` (``text``). Returns the updated derived state.\n        ",
       "inputSchema": {
         "properties": {
           "event": {
@@ -115,10 +130,15 @@
         "title": "design_session_logArguments",
         "type": "object"
       },
-      "name": "eda__design_session_log"
+      "name": "eda__design_session_log",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "design_session_logDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Capture components, pad assignments, nets and physical counts in one native handler.\n\nRequires an absolute path to a loaded PcbDoc and the suite's eda_stdio\nwrapper. Returns an immutable snapshot ID and counts; use\ndesign_read_snapshot or design_analyze_snapshot concurrently afterward.\nEvery capture reads Altium anew. A snapshot is historical evidence,\nnever proof of live state, copper connectivity or permission to edit.",
+      "description": "Capture components, pad assignments, nets and physical counts in one native handler.\n\n        Requires an absolute path to a loaded PcbDoc and the suite's eda_stdio\n        wrapper. Returns an immutable snapshot ID and counts; use\n        design_read_snapshot or design_analyze_snapshot concurrently afterward.\n        Every capture reads Altium anew. A snapshot is historical evidence,\n        never proof of live state, copper connectivity or permission to edit.\n        ",
       "inputSchema": {
         "properties": {
           "board_path": {
@@ -144,10 +164,15 @@
         "title": "pcb_capture_snapshotArguments",
         "type": "object"
       },
-      "name": "eda__pcb_capture_snapshot"
+      "name": "eda__pcb_capture_snapshot",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_capture_snapshotDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Dry-run check whether moving a component to (x, y[, rotation])\nwould overlap any other placed component on the same side.\n\nDOES NOT actually move the component. Computes the predicted\naxis-aligned bounding box at the proposed pose, then AABB-tests\nagainst every other component's current bounding rect. Use this\nBEFORE every `pcb_move_components` call when placing parts on a\nboard that already has placed parts.\n\nArgs:\n    designator: Component to test (must exist on the board).\n    x: Proposed X position in mils (component reference point).\n    y: Proposed Y position in mils.\n    rotation: Proposed rotation in degrees. When None the target's\n        current rotation is used. Quarter-turn deltas (~+/-90 from\n        current) swap the AABB dimensions; other angles use the\n        current-orientation bbox as an approximation.\n    margin_mils: Extra clearance to require around the target.\n        Default 0 (touching bounding boxes count as collision).\n\nReturns:\n    Dict with:\n      - designator: target.\n      - proposed: {x, y, rotation, bbox:{x1,y1,x2,y2}, margin_mils}.\n      - clear: True if no collisions, False otherwise.\n      - colliding_count: number of collisions.\n      - colliding: list of {designator, bbox:{...}} per collider.\n\nCaveats:\n    - AABB only; rotated non-square footprints will report an\n      inflated bbox.\n    - Same-side check is automatic; the target's bbox is compared\n      only against components on the same layer (Top vs Bottom).\n    - Does not detect courtyard violations or pad-to-pad clearances,\n      only solid-box overlap. Use DRC for actual clearance rules.",
+      "description": "Dry-run check whether moving a component to (x, y[, rotation])\n        would overlap any other placed component on the same side.\n\n        DOES NOT actually move the component. Computes the predicted\n        axis-aligned bounding box at the proposed pose, then AABB-tests\n        against every other component's current bounding rect. Use this\n        BEFORE every `pcb_move_components` call when placing parts on a\n        board that already has placed parts.\n\n        Args:\n            designator: Component to test (must exist on the board).\n            x: Proposed X position in mils (component reference point).\n            y: Proposed Y position in mils.\n            rotation: Proposed rotation in degrees. When None the target's\n                current rotation is used. Quarter-turn deltas (~+/-90 from\n                current) swap the AABB dimensions; other angles use the\n                current-orientation bbox as an approximation.\n            margin_mils: Extra clearance to require around the target.\n                Default 0 (touching bounding boxes count as collision).\n\n        Returns:\n            Dict with:\n              - designator: target.\n              - proposed: {x, y, rotation, bbox:{x1,y1,x2,y2}, margin_mils}.\n              - clear: True if no collisions, False otherwise.\n              - colliding_count: number of collisions.\n              - colliding: list of {designator, bbox:{...}} per collider.\n\n        Caveats:\n            - AABB only; rotated non-square footprints will report an\n              inflated bbox.\n            - Same-side check is automatic; the target's bbox is compared\n              only against components on the same layer (Top vs Bottom).\n            - Does not detect courtyard violations or pad-to-pad clearances,\n              only solid-box overlap. Use DRC for actual clearance rules.\n        ",
       "inputSchema": {
         "properties": {
           "designator": {
@@ -200,10 +225,15 @@
         "title": "pcb_check_placement_collisionArguments",
         "type": "object"
       },
-      "name": "eda__pcb_check_placement_collision"
+      "name": "eda__pcb_check_placement_collision",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_check_placement_collisionDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Get the board outline vertices and bounding rectangle.\n\nReturns outline geometry as a list of vertices (line segments and\narcs) plus the bounding rectangle dimensions.\n\nReturns:\n    Dictionary with \"point_count\", \"vertices\" array (each with\n    index, kind, x, y, and optionally cx, cy, angle1, angle2 for arcs),\n    and \"bounding_rect\" (left, bottom, right, top in mils)",
+      "description": "Get the board outline vertices and bounding rectangle.\n\n        Returns outline geometry as a list of vertices (line segments and\n        arcs) plus the bounding rectangle dimensions.\n\n        Returns:\n            Dictionary with \"point_count\", \"vertices\" array (each with\n            index, kind, x, y, and optionally cx, cy, angle1, angle2 for arcs),\n            and \"bounding_rect\" (left, bottom, right, top in mils)\n        ",
       "inputSchema": {
         "properties": {
           "target_board_path": {
@@ -222,10 +252,15 @@
         "title": "pcb_get_board_outlineArguments",
         "type": "object"
       },
-      "name": "eda__pcb_get_board_outline"
+      "name": "eda__pcb_get_board_outline",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_get_board_outlineDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Get all components from the active PCB with position and properties.\n\nDATASHEET DISCIPLINE: The response carries a `_datasheet_guidance`\nblock. Before drawing any conclusion about a listed part's\nelectrical behavior, pin function, or voltage rating, fetch its\nmanufacturer datasheet (use WebSearch + WebFetch if you don't\nalready have it). Library metadata here is NOT authoritative.\n\nReturns:\n    Dictionary with \"components\" array (each with designator, x, y,\n    rotation, layer, footprint) and \"count\", plus\n    `_datasheet_guidance` + `_datasheet_parts`.\n\nExtended geometry mode requires an explicit target_board_path, returns\nactual pad and component-owned mechanical primitives in mm and explicit\ncourtyard coverage. Caller-declared layer IDs are not inferred roles.\nRaw primitives are not a qualified closed courtyard boundary.",
+      "description": "Get all components from the active PCB with position and properties.\n\n        DATASHEET DISCIPLINE: The response carries a `_datasheet_guidance`\n        block. Before drawing any conclusion about a listed part's\n        electrical behavior, pin function, or voltage rating, fetch its\n        manufacturer datasheet (use WebSearch + WebFetch if you don't\n        already have it). Library metadata here is NOT authoritative.\n\n        Returns:\n            Dictionary with \"components\" array (each with designator, x, y,\n            rotation, layer, footprint) and \"count\", plus\n            `_datasheet_guidance` + `_datasheet_parts`.\n\n        Extended geometry mode requires an explicit target_board_path, returns\n        actual pad and component-owned mechanical primitives in mm and explicit\n        courtyard coverage. Caller-declared layer IDs are not inferred roles.\n        Raw primitives are not a qualified closed courtyard boundary.\n        ",
       "inputSchema": {
         "properties": {
           "body_layers": {
@@ -279,10 +314,15 @@
         "title": "pcb_get_componentsArguments",
         "type": "object"
       },
-      "name": "eda__pcb_get_components"
+      "name": "eda__pcb_get_components",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_get_componentsDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Get the full PCB layer stackup information.\n\nReturns copper layers with thickness, dielectric type/height/constant,\nand board name.\n\nReturns:\n    Dictionary with \"layers\" array (each with name, order,\n    copper_thickness_mils, dielectric_type, dielectric_height_mils,\n    dielectric_constant), \"layer_count\", and \"board_name\"",
+      "description": "Get the full PCB layer stackup information.\n\n        Returns copper layers with thickness, dielectric type/height/constant,\n        and board name.\n\n        Returns:\n            Dictionary with \"layers\" array (each with name, order,\n            copper_thickness_mils, dielectric_type, dielectric_height_mils,\n            dielectric_constant), \"layer_count\", and \"board_name\"\n        ",
       "inputSchema": {
         "properties": {
           "target_board_path": {
@@ -301,10 +341,15 @@
         "title": "pcb_get_layer_stackupArguments",
         "type": "object"
       },
-      "name": "eda__pcb_get_layer_stackup"
+      "name": "eda__pcb_get_layer_stackup",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_get_layer_stackupDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Get all unique net names from the active PCB board.\n\nReturns:\n    Dictionary with \"nets\" array of net name strings and \"count\"",
+      "description": "Get all unique net names from the active PCB board.\n\n        Returns:\n            Dictionary with \"nets\" array of net name strings and \"count\"\n        ",
       "inputSchema": {
         "properties": {
           "target_board_path": {
@@ -323,10 +368,15 @@
         "title": "pcb_get_netsArguments",
         "type": "object"
       },
-      "name": "eda__pcb_get_nets"
+      "name": "eda__pcb_get_nets",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_get_netsDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Get list of nets with unrouted connections (ratsnest lines).\n\nIdentifies nets that still have ratsnest lines, meaning they are\nnot fully routed. Useful for checking routing completion status.\n\nReturns:\n    Dictionary with \"unrouted_nets\" array (each with net name and\n    unrouted_connections count), \"net_count\", and \"total_unrouted\"",
+      "description": "Get list of nets with unrouted connections (ratsnest lines).\n\n        Identifies nets that still have ratsnest lines, meaning they are\n        not fully routed. Useful for checking routing completion status.\n\n        Returns:\n            Dictionary with \"unrouted_nets\" array (each with net name and\n            unrouted_connections count), \"net_count\", and \"total_unrouted\"\n        ",
       "inputSchema": {
         "properties": {
           "target_board_path": {
@@ -345,10 +395,15 @@
         "title": "pcb_get_unrouted_netsArguments",
         "type": "object"
       },
-      "name": "eda__pcb_get_unrouted_nets"
+      "name": "eda__pcb_get_unrouted_nets",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_get_unrouted_netsDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Move and/or rotate MANY PCB components in ONE IPC round-trip.\n\nPREFER THIS over moving one component per call. Each singular\nmove is a full LLM turn (5-15 s); one call to this tool\nrepositions every component in the list in a single Altium\ntransaction.\n\nTypical uses: applying a full layout pass, running an\nauto-placement result, undoing and redoing a placement set,\nadjusting a row of components relative to each other.\n\nArgs:\n    moves: List of move dicts. Each dict supports:\n        designator (required) , target component\n        x        (optional)   , new X in mils\n        y        (optional)   , new Y in mils\n        rotation (optional)   , new rotation in degrees\n\n    Example:\n        [\n          {\"designator\": \"U1\", \"x\": 5000, \"y\": 5000, \"rotation\": 0},\n          {\"designator\": \"R1\", \"x\": 5200, \"y\": 4800},\n          {\"designator\": \"C1\", \"rotation\": 90},\n        ]\n\nReturns:\n    Dictionary with per-designator results and a count.",
+      "description": "Move and/or rotate MANY PCB components in ONE IPC round-trip.\n\n        PREFER THIS over moving one component per call. Each singular\n        move is a full LLM turn (5-15 s); one call to this tool\n        repositions every component in the list in a single Altium\n        transaction.\n\n        Typical uses: applying a full layout pass, running an\n        auto-placement result, undoing and redoing a placement set,\n        adjusting a row of components relative to each other.\n\n        Args:\n            moves: List of move dicts. Each dict supports:\n                designator (required) , target component\n                x        (optional)   , new X in mils\n                y        (optional)   , new Y in mils\n                rotation (optional)   , new rotation in degrees\n\n            Example:\n                [\n                  {\"designator\": \"U1\", \"x\": 5000, \"y\": 5000, \"rotation\": 0},\n                  {\"designator\": \"R1\", \"x\": 5200, \"y\": 4800},\n                  {\"designator\": \"C1\", \"rotation\": 90},\n                ]\n\n        Returns:\n            Dictionary with per-designator results and a count.\n        ",
       "inputSchema": {
         "properties": {
           "moves": {
@@ -378,10 +433,15 @@
         "title": "pcb_move_componentsArguments",
         "type": "object"
       },
-      "name": "eda__pcb_move_components"
+      "name": "eda__pcb_move_components",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_move_componentsDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Connectivity-driven auto-placement: shorten wirelength, keep\ncomponents legal. **Dry-run by default** -- returns a proposed\nmove list and quality metrics without touching the board.\n\nA pure-Python solver run on the current board. It reads the\ncompiled netlist and every component's real footprint bounding\nbox, then improves positions to minimize half-perimeter\nwirelength (HPWL) while keeping components inside the board\noutline and free of same-layer overlaps.\n\nTwo solver cores are available via ``engine``:\n\n- ``\"refine\"`` (default): a force-directed relaxation that nudges\n  the board's CURRENT positions, then a legalization pass. Best\n  for tidying an already-placed board.\n- ``\"construct\"``: a from-scratch constructor that sizes the\n  placement, seeds parts at connectivity-weighted centroids,\n  chooses orientations, legalizes, and runs a short cooled\n  polish on a full multi-term objective (wirelength, overlap,\n  board-edge, decoupling proximity, connector banding, thermal).\n  Best for an unplaced or badly scrambled board. The full\n  per-term objective is always returned under ``objective_report``.\n\nWith ``optimize_rotation`` (default on) it also picks each\neligible part's orientation (0/90/180/270) to point its pins at\nthe nets they connect -- the classic auto-place win for 2-pin\npassives. This needs per-pin geometry, so the tool also reads the\nboard's pads and maps them to components; orientation is only\nconsidered for top-side parts currently sitting at an orthogonal\nangle (others keep their rotation).\n\nThis preview endpoint produces candidate geometry without native edits.\nUse the suite's ``layout__`` capabilities to bind a reviewed exact move\nlist to evidence and apply it without rerunning the optimizer.\nOpposite-side XY overlap alone does not establish physical collision;\nholes, body protrusion, height and assembly access need separate checks.\n\nSeeding: by default the solver refines the board's CURRENT\npositions (small, sensible nudges). Pass ``reseed_grid=True`` for\na from-scratch re-place (ignores current positions) -- use only\non an unplaced or badly-scrambled board.\n\nArgs:\n    designators: If given, ONLY these components are moved; every\n        other placed component is held fixed but still attracts\n        its nets and blocks overlaps. If omitted, all components\n        are candidates (minus ``fixed``).\n    fixed: Designators to pin in place (connectors, mounting\n        holes, anything already positioned). Naming-agnostic --\n        you choose which; the tool does not guess by prefix.\n    region: Placement bounds ``{x1, y1, x2, y2}`` in mils. If\n        omitted, the board outline's bounding rectangle is used.\n    iterations: Global-placement relaxation steps (default 400).\n        More iterations = better convergence, longer runtime.\n    grid_mils: Snap grid for final positions (default 5).\n    clearance_mils: Extra copper-to-copper breathing room added\n        to each pair's half-extents (default 15).\n    max_net_fanout: Skip nets touching more than this many\n        components (default 0 = keep all). Set e.g. 20 to ignore\n        power/ground planes that do not usefully guide placement.\n    exclude_nets: Explicit net names to ignore (e.g. ``[\"GND\"]``).\n    critical_nets: Net names to treat as placement-critical (e.g. a\n        clock, a high-speed pair, a sensitive analog feedback line).\n        Their pull is scaled by ``critical_weight`` so the solver\n        keeps their endpoints close and shortens those traces first,\n        at a small cost to ordinary nets. You (the planner) decide\n        which nets matter; the tool does not guess by name.\n    critical_weight: Multiplier applied to ``critical_nets`` pull\n        (default 3.0, clamped to [1, 20]). Higher = more aggressive\n        shortening of the critical nets versus the rest.\n    edge_parts: ``{refdes: band}`` mapping parts that must sit on a\n        board EDGE to which edge -- ``\"L\"``/``\"R\"``/``\"T\"``/``\"B\"``\n        (left/right/top/bottom). The solver seats each against that\n        edge (centred on the free axis) and holds it there. Use for\n        connectors, mounting holes, USB/headers -- anything needing\n        cable or panel access. You (the planner) decide which; the\n        tool does not guess by designator prefix.\n    keepout_groups: ``{refdes: group}`` mixed-signal separation tags.\n        Parts in DIFFERENT groups are pushed apart (the\n        industrial-engineering \"undesirable adjacency\" relationship)\n        -- segregate a noisy switching / digital section from a\n        sensitive analog / RF one. The group string is opaque (only\n        equality matters); you (the planner) assign the domains\n        semantically. ``construct`` engine only. Separating the groups\n        usually also shortens wirelength by de-interleaving them.\n    match_groups: ``{refdes: group}`` matched-pair keep-together tags.\n        Parts in the SAME group are pulled ADJACENT even when they\n        share no net -- the absolutely-necessary-adjacency relationship\n        / analog common-centroid matching (a differential pair's two\n        input resistors, a current mirror, a matched array). HPWL only\n        co-locates parts that share a net; this co-locates matched ones\n        that don't. ``construct`` engine only.\n    match_roles: ``{refdes: role}`` common-centroid sub-device labels\n        WITHIN a match_group (e.g. ``A``/``B`` for the two matched\n        halves of a cross-quad or interdigitated array). The optimiser\n        drives each role's centroid onto a common point so a linear\n        process/thermal gradient cancels -- it picks the balanced\n        ABBA/ABAB arrangement that ``match_groups`` alone (which only\n        keeps the cells compact) cannot distinguish from an unbalanced\n        AABB. Only meaningful with >= 2 roles per group and >= 2 cells\n        per role; needs ``match_groups`` set too. ``construct`` only.\n    plan_json: The DesignPlan (JSON string or dict) you authored. When\n        given, the placer auto-derives matched-pair ``match_groups``\n        from differential nets and analog/digital ``keepout_groups``\n        from the plan's net roles, and MERGES them under the explicit\n        ``match_groups`` / ``keepout_groups`` args (explicit wins per\n        refdes). No-op for a plan with no differential / mixed-signal\n        structure. What was inferred is echoed in ``auto_constraints``.\n    reseed_grid: Re-place from a fresh grid instead of refining\n        current positions (default False).\n    optimize_rotation: Also choose part orientation to shorten\n        pin-level wirelength (default True). Set False to keep\n        every part's current rotation.\n    engine: ``\"refine\"`` (default, nudge current positions) or\n        ``\"construct\"`` (from-scratch placement). ``\"construct\"``\n        implies a from-scratch re-place regardless of\n        ``reseed_grid``.\n    restarts: ``\"construct\"`` engine only. When > 1, run that many\n        seeded restarts and keep the lowest-objective legal\n        placement (variance reduction at a cost linear in\n        ``restarts``). Default 1 (single deterministic run).\n    render_png: Optional file path. When set, also render a preview\n        image of the proposed placement (board outline, courtyards,\n        net stars) to that path and return it as ``preview_png``\n        (offline, matplotlib). Rendering never breaks the move data;\n        failures surface as ``preview_error``.\n\nReturns:\n    Dict with:\n      - ``dry_run``: bool (always True)\n      - ``engine``: the solver core used\n      - ``component_count``, ``movable_count``, ``fixed_count``\n      - ``net_count`` (nets used after filtering)\n      - ``pin_count`` (pads mapped to components for rotation)\n      - ``summary``: a one-line plain-language assessment synthesising\n        legality, utilization, signal routability, decoupling, and the\n        suggested board size -- read this first to judge the placement\n      - ``hpwl_before``, ``hpwl_after``, ``hpwl_improvement_pct``\n      - ``overlap_pairs_before``, ``overlap_pairs_after``\n      - ``objective_report``: every objective term un-weighted\n        (``hpwl``, ``via``, ``cong``, ``clear``, ``edge``,\n        ``decap``, ``conn``, ``therm``) plus ``weighted_total``,\n        ``legal``, and ``utilization`` for the proposed layout\n      - ``net_length_report``: ``longest_nets`` (the few nets with\n        the largest physical bounding span in mils -- the routing\n        risk, and the candidates to mark ``critical_nets``) plus\n        ``critical_net_spans`` echoing the achieved span of each\n        net you flagged critical, so you can confirm it paid off\n      - ``ratsnest``: routability / via-pressure indicator from the\n        straight-line MST of each net. ``signal_crossings`` (rails\n        above ``signal_fanout_cap`` pins excluded, since planes carry\n        no signal via) predicts routing difficulty -- different-net\n        MST edges that cross need a layer change; ``total_crossings``\n        is the conservative all-net count\n      - ``decoupling_report``: the engine's structural decoupling\n        analysis -- a list of ``{decap, ic, distance_mils}`` (worst\n        first) naming which cap decouples which IC (found on the\n        connectivity graph, never by reference) and how close it\n        landed to the served power pin. Empty when no decoupling is\n        structurally identifiable\n      - ``suggested_board``: for the ``construct`` engine, the board\n        rectangle it sized and tightened to the placement\n        (``{x1, y1, x2, y2, width, height}`` in mils) -- the \"best\n        PCB size\" recommendation. ``null`` for the ``refine`` engine,\n        which works inside the existing outline\n      - ``moved_count``, ``rotated_count`` and ``moves`` (each\n        ``{designator, from: {x, y, rotation}, to: {x, y,\n        rotation}}`` in mils/degrees; ``to.rotation`` is null\n        when the orientation was unchanged)\n      - ``region`` used, ``notes`` from the solver, and\n        native apply requires the suite's evidence-bound layout protocol.",
+      "description": "Connectivity-driven auto-placement: shorten wirelength, keep\n        components legal. **Dry-run by default** -- returns a proposed\n        move list and quality metrics without touching the board.\n\n        A pure-Python solver run on the current board. It reads the\n        compiled netlist and every component's real footprint bounding\n        box, then improves positions to minimize half-perimeter\n        wirelength (HPWL) while keeping components inside the board\n        outline and free of same-layer overlaps.\n\n        Two solver cores are available via ``engine``:\n\n        - ``\"refine\"`` (default): a force-directed relaxation that nudges\n          the board's CURRENT positions, then a legalization pass. Best\n          for tidying an already-placed board.\n        - ``\"construct\"``: a from-scratch constructor that sizes the\n          placement, seeds parts at connectivity-weighted centroids,\n          chooses orientations, legalizes, and runs a short cooled\n          polish on a full multi-term objective (wirelength, overlap,\n          board-edge, decoupling proximity, connector banding, thermal).\n          Best for an unplaced or badly scrambled board. The full\n          per-term objective is always returned under ``objective_report``.\n\n        With ``optimize_rotation`` (default on) it also picks each\n        eligible part's orientation (0/90/180/270) to point its pins at\n        the nets they connect -- the classic auto-place win for 2-pin\n        passives. This needs per-pin geometry, so the tool also reads the\n        board's pads and maps them to components; orientation is only\n        considered for top-side parts currently sitting at an orthogonal\n        angle (others keep their rotation).\n\n        This preview endpoint produces candidate geometry without native edits.\n        Use the suite's ``layout__`` capabilities to bind a reviewed exact move\n        list to evidence and apply it without rerunning the optimizer.\n        Opposite-side XY overlap alone does not establish physical collision;\n        holes, body protrusion, height and assembly access need separate checks.\n\n        Seeding: by default the solver refines the board's CURRENT\n        positions (small, sensible nudges). Pass ``reseed_grid=True`` for\n        a from-scratch re-place (ignores current positions) -- use only\n        on an unplaced or badly-scrambled board.\n\n        Args:\n            designators: If given, ONLY these components are moved; every\n                other placed component is held fixed but still attracts\n                its nets and blocks overlaps. If omitted, all components\n                are candidates (minus ``fixed``).\n            fixed: Designators to pin in place (connectors, mounting\n                holes, anything already positioned). Naming-agnostic --\n                you choose which; the tool does not guess by prefix.\n            region: Placement bounds ``{x1, y1, x2, y2}`` in mils. If\n                omitted, the board outline's bounding rectangle is used.\n            iterations: Global-placement relaxation steps (default 400).\n                More iterations = better convergence, longer runtime.\n            grid_mils: Snap grid for final positions (default 5).\n            clearance_mils: Extra copper-to-copper breathing room added\n                to each pair's half-extents (default 15).\n            max_net_fanout: Skip nets touching more than this many\n                components (default 0 = keep all). Set e.g. 20 to ignore\n                power/ground planes that do not usefully guide placement.\n            exclude_nets: Explicit net names to ignore (e.g. ``[\"GND\"]``).\n            critical_nets: Net names to treat as placement-critical (e.g. a\n                clock, a high-speed pair, a sensitive analog feedback line).\n                Their pull is scaled by ``critical_weight`` so the solver\n                keeps their endpoints close and shortens those traces first,\n                at a small cost to ordinary nets. You (the planner) decide\n                which nets matter; the tool does not guess by name.\n            critical_weight: Multiplier applied to ``critical_nets`` pull\n                (default 3.0, clamped to [1, 20]). Higher = more aggressive\n                shortening of the critical nets versus the rest.\n            edge_parts: ``{refdes: band}`` mapping parts that must sit on a\n                board EDGE to which edge -- ``\"L\"``/``\"R\"``/``\"T\"``/``\"B\"``\n                (left/right/top/bottom). The solver seats each against that\n                edge (centred on the free axis) and holds it there. Use for\n                connectors, mounting holes, USB/headers -- anything needing\n                cable or panel access. You (the planner) decide which; the\n                tool does not guess by designator prefix.\n            keepout_groups: ``{refdes: group}`` mixed-signal separation tags.\n                Parts in DIFFERENT groups are pushed apart (the\n                industrial-engineering \"undesirable adjacency\" relationship)\n                -- segregate a noisy switching / digital section from a\n                sensitive analog / RF one. The group string is opaque (only\n                equality matters); you (the planner) assign the domains\n                semantically. ``construct`` engine only. Separating the groups\n                usually also shortens wirelength by de-interleaving them.\n            match_groups: ``{refdes: group}`` matched-pair keep-together tags.\n                Parts in the SAME group are pulled ADJACENT even when they\n                share no net -- the absolutely-necessary-adjacency relationship\n                / analog common-centroid matching (a differential pair's two\n                input resistors, a current mirror, a matched array). HPWL only\n                co-locates parts that share a net; this co-locates matched ones\n                that don't. ``construct`` engine only.\n            match_roles: ``{refdes: role}`` common-centroid sub-device labels\n                WITHIN a match_group (e.g. ``A``/``B`` for the two matched\n                halves of a cross-quad or interdigitated array). The optimiser\n                drives each role's centroid onto a common point so a linear\n                process/thermal gradient cancels -- it picks the balanced\n                ABBA/ABAB arrangement that ``match_groups`` alone (which only\n                keeps the cells compact) cannot distinguish from an unbalanced\n                AABB. Only meaningful with >= 2 roles per group and >= 2 cells\n                per role; needs ``match_groups`` set too. ``construct`` only.\n            plan_json: The DesignPlan (JSON string or dict) you authored. When\n                given, the placer auto-derives matched-pair ``match_groups``\n                from differential nets and analog/digital ``keepout_groups``\n                from the plan's net roles, and MERGES them under the explicit\n                ``match_groups`` / ``keepout_groups`` args (explicit wins per\n                refdes). No-op for a plan with no differential / mixed-signal\n                structure. What was inferred is echoed in ``auto_constraints``.\n            reseed_grid: Re-place from a fresh grid instead of refining\n                current positions (default False).\n            optimize_rotation: Also choose part orientation to shorten\n                pin-level wirelength (default True). Set False to keep\n                every part's current rotation.\n            engine: ``\"refine\"`` (default, nudge current positions) or\n                ``\"construct\"`` (from-scratch placement). ``\"construct\"``\n                implies a from-scratch re-place regardless of\n                ``reseed_grid``.\n            restarts: ``\"construct\"`` engine only. When > 1, run that many\n                seeded restarts and keep the lowest-objective legal\n                placement (variance reduction at a cost linear in\n                ``restarts``). Default 1 (single deterministic run).\n            render_png: Optional file path. When set, also render a preview\n                image of the proposed placement (board outline, courtyards,\n                net stars) to that path and return it as ``preview_png``\n                (offline, matplotlib). Rendering never breaks the move data;\n                failures surface as ``preview_error``.\n\n        Returns:\n            Dict with:\n              - ``dry_run``: bool (always True)\n              - ``engine``: the solver core used\n              - ``component_count``, ``movable_count``, ``fixed_count``\n              - ``net_count`` (nets used after filtering)\n              - ``pin_count`` (pads mapped to components for rotation)\n              - ``summary``: a one-line plain-language assessment synthesising\n                legality, utilization, signal routability, decoupling, and the\n                suggested board size -- read this first to judge the placement\n              - ``hpwl_before``, ``hpwl_after``, ``hpwl_improvement_pct``\n              - ``overlap_pairs_before``, ``overlap_pairs_after``\n              - ``objective_report``: every objective term un-weighted\n                (``hpwl``, ``via``, ``cong``, ``clear``, ``edge``,\n                ``decap``, ``conn``, ``therm``) plus ``weighted_total``,\n                ``legal``, and ``utilization`` for the proposed layout\n              - ``net_length_report``: ``longest_nets`` (the few nets with\n                the largest physical bounding span in mils -- the routing\n                risk, and the candidates to mark ``critical_nets``) plus\n                ``critical_net_spans`` echoing the achieved span of each\n                net you flagged critical, so you can confirm it paid off\n              - ``ratsnest``: routability / via-pressure indicator from the\n                straight-line MST of each net. ``signal_crossings`` (rails\n                above ``signal_fanout_cap`` pins excluded, since planes carry\n                no signal via) predicts routing difficulty -- different-net\n                MST edges that cross need a layer change; ``total_crossings``\n                is the conservative all-net count\n              - ``decoupling_report``: the engine's structural decoupling\n                analysis -- a list of ``{decap, ic, distance_mils}`` (worst\n                first) naming which cap decouples which IC (found on the\n                connectivity graph, never by reference) and how close it\n                landed to the served power pin. Empty when no decoupling is\n                structurally identifiable\n              - ``suggested_board``: for the ``construct`` engine, the board\n                rectangle it sized and tightened to the placement\n                (``{x1, y1, x2, y2, width, height}`` in mils) -- the \"best\n                PCB size\" recommendation. ``null`` for the ``refine`` engine,\n                which works inside the existing outline\n              - ``moved_count``, ``rotated_count`` and ``moves`` (each\n                ``{designator, from: {x, y, rotation}, to: {x, y,\n                rotation}}`` in mils/degrees; ``to.rotation`` is null\n                when the orientation was unchanged)\n              - ``region`` used, ``notes`` from the solver, and\n                native apply requires the suite's evidence-bound layout protocol.\n        ",
       "inputSchema": {
         "properties": {
           "clearance_mils": {
@@ -608,10 +668,15 @@
         "title": "pcb_plan_placementArguments",
         "type": "object"
       },
-      "name": "eda__pcb_plan_placement"
+      "name": "eda__pcb_plan_placement",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_plan_placementDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Render the active PcbDoc to an SVG file (in-house renderer).\n\nSCOPE: a VISUAL artifact for when an image is genuinely needed\n(placement / silkscreen / spacing review, sharing a picture).\nIt is NOT an input to a design review's electrical findings.\nNEVER judge connectivity, net assignment, or clearance from this\nrender -- read those from the board data (`pcb_get_nets`,\n`pcb_get_unrouted_nets`, `pcb_get_clearance_violations`,\n`pcb_run_drc`, `proj_compare_sch_pcb`). The render shows\ngeometry; the netlist shows connection.\n\nPulls the board outline, every track, arc, pad, via, and text\nprimitive from the active PCB via the bridge, then emits a\nper-layer SVG. Layers are grouped in render order (KeepOut at\nbottom, then bottom copper, top copper, overlays, outline on\ntop, drills last) and every track / arc / pad / via group\ncarries ``data-net``, ``data-layer``, ``data-shape`` so a\ndownstream dashboard or LLM tool can cross-probe or net-\nhighlight without re-parsing.\n\nv1 surface: board outline + tracks + arcs + pads (round / rect /\noctagonal / rounded-rect) + vias + texts on overlays. Regions\n(polygon fills / copper pours) and component-body silkscreen\noutlines are deferred to v1.1.\n\nArgs:\n    output_path: Where to write the SVG. Defaults to the\n        transient ``<workspace>/renders/`` dir (kept out of the\n        workspace root so renders don't pile up in your folder).\n    layers: Restrict to these Altium layer names (e.g.\n        ``[\"TopLayer\", \"TopOverlay\", \"KeepOutLayer\"]``). When\n        ``None`` (default) every known layer is rendered.\n        ``MultiLayer`` (vias) and the outline are always drawn.\n    margin_mils: Padding around the board bbox in mils.\n    flip_y: When True (default) flip Y so the SVG reads in\n        Altium's bottom-left-origin space.\n    show_drills: Punch hole circles through pads / vias.\n    show_texts: Render text primitives on overlay layers.\n    show_designators: Draw component designators on the overlay.\n    interactive_legend: Emit a clickable per-layer legend group\n        in the SVG (for the dashboard / cross-probe consumers).\n    background: Board-background fill (defaults to a slate\n        review colour; pass ``\"none\"`` for transparent).\n\nReturns:\n    Dict with ``ok``, ``svg_path``, ``counts`` (per primitive\n    kind), ``bbox`` (in mils), ``bytes``.",
+      "description": "Render the active PcbDoc to an SVG file (in-house renderer).\n\n        SCOPE: a VISUAL artifact for when an image is genuinely needed\n        (placement / silkscreen / spacing review, sharing a picture).\n        It is NOT an input to a design review's electrical findings.\n        NEVER judge connectivity, net assignment, or clearance from this\n        render -- read those from the board data (`pcb_get_nets`,\n        `pcb_get_unrouted_nets`, `pcb_get_clearance_violations`,\n        `pcb_run_drc`, `proj_compare_sch_pcb`). The render shows\n        geometry; the netlist shows connection.\n\n        Pulls the board outline, every track, arc, pad, via, and text\n        primitive from the active PCB via the bridge, then emits a\n        per-layer SVG. Layers are grouped in render order (KeepOut at\n        bottom, then bottom copper, top copper, overlays, outline on\n        top, drills last) and every track / arc / pad / via group\n        carries ``data-net``, ``data-layer``, ``data-shape`` so a\n        downstream dashboard or LLM tool can cross-probe or net-\n        highlight without re-parsing.\n\n        v1 surface: board outline + tracks + arcs + pads (round / rect /\n        octagonal / rounded-rect) + vias + texts on overlays. Regions\n        (polygon fills / copper pours) and component-body silkscreen\n        outlines are deferred to v1.1.\n\n        Args:\n            output_path: Where to write the SVG. Defaults to the\n                transient ``<workspace>/renders/`` dir (kept out of the\n                workspace root so renders don't pile up in your folder).\n            layers: Restrict to these Altium layer names (e.g.\n                ``[\"TopLayer\", \"TopOverlay\", \"KeepOutLayer\"]``). When\n                ``None`` (default) every known layer is rendered.\n                ``MultiLayer`` (vias) and the outline are always drawn.\n            margin_mils: Padding around the board bbox in mils.\n            flip_y: When True (default) flip Y so the SVG reads in\n                Altium's bottom-left-origin space.\n            show_drills: Punch hole circles through pads / vias.\n            show_texts: Render text primitives on overlay layers.\n            show_designators: Draw component designators on the overlay.\n            interactive_legend: Emit a clickable per-layer legend group\n                in the SVG (for the dashboard / cross-probe consumers).\n            background: Board-background fill (defaults to a slate\n                review colour; pass ``\"none\"`` for transparent).\n\n        Returns:\n            Dict with ``ok``, ``svg_path``, ``counts`` (per primitive\n            kind), ``bbox`` (in mils), ``bytes``.\n        ",
       "inputSchema": {
         "properties": {
           "background": {
@@ -692,10 +757,15 @@
         "title": "pcb_render_svgArguments",
         "type": "object"
       },
-      "name": "eda__pcb_render_svg"
+      "name": "eda__pcb_render_svg",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_render_svgDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Run Design Rule Check (DRC) on the active PCB. MODAL --\nBLOCKS THE BRIDGE. Opt in with ``allow_modal=True``.\n\nDANGER: Altium has no non-interactive DRC trigger exposed to\nDelphiScript. ``PCB:DesignRuleCheck`` raises the MODAL \"Design\nRule Checker [mil]\" setup dialog and the worker sits behind it\nuntil a HUMAN clicks Cancel/OK. Nothing else on the bridge\nruns meanwhile: one observed call left the loop dead for 30+\nmin, the client timed out at 1800 s, and every in-flight job\nwas stranded. No parameter suppresses the dialog, so this tool\nrefuses to fire unless the caller passes ``allow_modal=True``,\nwhich is a promise that a human is at the keyboard.\n\nPREFER ``pcb_get_clearance_violations`` -- it reads the\nviolations already stored on the board, runs no DRC, and\ncannot block.\n\nPATHOLOGICAL CASE: a full DRC on a placed-but-unrouted board\n(many components, zero tracks, everything unrouted) checks\nevery pad pair against every rule and is enormously slow for\nan answer that is already known -- \"nothing is routed yet\".\nCheck ``pcb_get_board_statistics`` / ``pcb_get_unrouted_nets``\nfirst; if track count is 0, do not run DRC.\n\nWith ``allow_modal=True`` it executes the DRC and returns up\nto 100 violations with full location data, so the agent can\njump straight to the offending spot instead of guessing from\nthe description.\n\nPer-violation shape:\n  - ``name``, ``description``, ``rule``: text from Altium\n  - ``x_mils`` / ``y_mils`` / ``layer``: violation's bbox\n    centre (the \"go here\" hint)\n  - ``primitive1`` / ``primitive2``: objects with\n    ``{detail, type, net, layer, x_mils, y_mils}``. ``type``\n    is the object kind (Track / Pad / Via / Region / Comp);\n    ``net`` is the net name. Two primitives are involved in\n    most rule kinds (Clearance, Short Circuit); a single-\n    primitive violation (e.g. AcuteAngle) leaves\n    ``primitive2`` with empty fields.\n\nUse ``primitive1.net`` and ``primitive2.net`` to spot the\nnets in conflict; use ``x_mils`` / ``y_mils`` to drive\n``proj_cross_probe`` or the dashboard's Drawing tab to the site.\n\nArgs:\n    allow_modal: Must be True to actually run DRC, and it\n        means \"I accept that the bridge blocks on a modal\n        dialog until a human clicks it\". Default False\n        refuses without touching Altium.\n\nReturns:\n    Dict with ``violation_count`` (full count even if > 100),\n    ``drc_triggered``, and ``violations`` array (first 100).\n    With ``allow_modal=False``: ``{ok: False, reason: ...}``\n    and no bridge call at all.",
+      "description": "Run Design Rule Check (DRC) on the active PCB. MODAL --\n        BLOCKS THE BRIDGE. Opt in with ``allow_modal=True``.\n\n        DANGER: Altium has no non-interactive DRC trigger exposed to\n        DelphiScript. ``PCB:DesignRuleCheck`` raises the MODAL \"Design\n        Rule Checker [mil]\" setup dialog and the worker sits behind it\n        until a HUMAN clicks Cancel/OK. Nothing else on the bridge\n        runs meanwhile: one observed call left the loop dead for 30+\n        min, the client timed out at 1800 s, and every in-flight job\n        was stranded. No parameter suppresses the dialog, so this tool\n        refuses to fire unless the caller passes ``allow_modal=True``,\n        which is a promise that a human is at the keyboard.\n\n        PREFER ``pcb_get_clearance_violations`` -- it reads the\n        violations already stored on the board, runs no DRC, and\n        cannot block.\n\n        PATHOLOGICAL CASE: a full DRC on a placed-but-unrouted board\n        (many components, zero tracks, everything unrouted) checks\n        every pad pair against every rule and is enormously slow for\n        an answer that is already known -- \"nothing is routed yet\".\n        Check ``pcb_get_board_statistics`` / ``pcb_get_unrouted_nets``\n        first; if track count is 0, do not run DRC.\n\n        With ``allow_modal=True`` it executes the DRC and returns up\n        to 100 violations with full location data, so the agent can\n        jump straight to the offending spot instead of guessing from\n        the description.\n\n        Per-violation shape:\n          - ``name``, ``description``, ``rule``: text from Altium\n          - ``x_mils`` / ``y_mils`` / ``layer``: violation's bbox\n            centre (the \"go here\" hint)\n          - ``primitive1`` / ``primitive2``: objects with\n            ``{detail, type, net, layer, x_mils, y_mils}``. ``type``\n            is the object kind (Track / Pad / Via / Region / Comp);\n            ``net`` is the net name. Two primitives are involved in\n            most rule kinds (Clearance, Short Circuit); a single-\n            primitive violation (e.g. AcuteAngle) leaves\n            ``primitive2`` with empty fields.\n\n        Use ``primitive1.net`` and ``primitive2.net`` to spot the\n        nets in conflict; use ``x_mils`` / ``y_mils`` to drive\n        ``proj_cross_probe`` or the dashboard's Drawing tab to the site.\n\n        Args:\n            allow_modal: Must be True to actually run DRC, and it\n                means \"I accept that the bridge blocks on a modal\n                dialog until a human clicks it\". Default False\n                refuses without touching Altium.\n\n        Returns:\n            Dict with ``violation_count`` (full count even if > 100),\n            ``drc_triggered``, and ``violations`` array (first 100).\n            With ``allow_modal=False``: ``{ok: False, reason: ...}``\n            and no bridge call at all.\n        ",
       "inputSchema": {
         "properties": {
           "allow_modal": {
@@ -719,10 +789,15 @@
         "title": "pcb_run_drcArguments",
         "type": "object"
       },
-      "name": "eda__pcb_run_drc"
+      "name": "eda__pcb_run_drc",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "pcb_run_drcDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Route the board offline (grid A*) and return placeable ops.\n\nPure Python -- no Altium round-trip unless ``fetch_geometry``\nis set. Output ``tracks`` are ``{x1, y1, x2, y2, width, layer,\nnet_name}`` (the ``pcb_place_tracks`` item shape) and ``vias``\nare ``{x, y, net, size, hole_size}`` (the ``pcb_place_via``\nparams), integer mils, so the result applies verbatim. Per-net\nfailure is honest data (status ``failed``), not a tool error.\n\nLive sequence: fetch geometry -> this tool ->\n``pcb_place_tracks`` / ``pcb_place_via`` -> ``pcb_run_drc`` ->\n``route_plan_repairs`` -> apply -> repeat.\n\nArgs:\n    geometry: ``Gen_GetPcbGeometry`` payload (bbox / outline /\n        pads / tracks / vias, all mils). Pads and copper of\n        nets NOT being routed stay in the obstacle map.\n    rules: Routing rules, all mils -- ``clearance_mils``,\n        ``track_width_mils`` (int, or per-class dict with\n        ``\"default\"``), ``via_size_mils``, ``via_drill_mils``,\n        ``layers`` (default TopLayer + BottomLayer). ``None``\n        uses defaults.\n    nets: Route only these net names; everything else stays a\n        static obstacle. Unknown names are reported in\n        ``unknown_nets``. ``None`` routes every netted pad\n        group.\n    net_classes: Net name -> class (``power`` / ``ground`` /\n        ``differential`` / ...). Sets routing order and the\n        per-class track width. Unlisted nets are ``signal``.\n    grid_pitch_mils: Routing grid pitch in mils (default 25).\n    bend_penalty: A* corner cost in grid-pitch units.\n    via_cost: A* layer-change cost in grid-pitch units.\n    max_expansions: Per-connection A* budget so a walled-in\n        net fails fast.\n    fetch_geometry: When True and ``geometry`` is None, pull\n        the live board over the bridge.\n\nReturns:\n    ``{\"ok\": True, \"summary\": {nets_total, routed, failed,\n    skipped, completion, track_count, via_count,\n    total_length_mils}, \"order\": [...], \"nets\": {net:\n    {status, class, width, tracks, vias, ...}}, \"tracks\":\n    [...], \"vias\": [...], \"validation\": {...}}``; with a\n    ``nets`` filter also ``requested_nets`` / ``unknown_nets``.\n    ``{\"ok\": False, \"reason\": ...}`` on malformed input.",
+      "description": "Route the board offline (grid A*) and return placeable ops.\n\n        Pure Python -- no Altium round-trip unless ``fetch_geometry``\n        is set. Output ``tracks`` are ``{x1, y1, x2, y2, width, layer,\n        net_name}`` (the ``pcb_place_tracks`` item shape) and ``vias``\n        are ``{x, y, net, size, hole_size}`` (the ``pcb_place_via``\n        params), integer mils, so the result applies verbatim. Per-net\n        failure is honest data (status ``failed``), not a tool error.\n\n        Live sequence: fetch geometry -> this tool ->\n        ``pcb_place_tracks`` / ``pcb_place_via`` -> ``pcb_run_drc`` ->\n        ``route_plan_repairs`` -> apply -> repeat.\n\n        Args:\n            geometry: ``Gen_GetPcbGeometry`` payload (bbox / outline /\n                pads / tracks / vias, all mils). Pads and copper of\n                nets NOT being routed stay in the obstacle map.\n            rules: Routing rules, all mils -- ``clearance_mils``,\n                ``track_width_mils`` (int, or per-class dict with\n                ``\"default\"``), ``via_size_mils``, ``via_drill_mils``,\n                ``layers`` (default TopLayer + BottomLayer). ``None``\n                uses defaults.\n            nets: Route only these net names; everything else stays a\n                static obstacle. Unknown names are reported in\n                ``unknown_nets``. ``None`` routes every netted pad\n                group.\n            net_classes: Net name -> class (``power`` / ``ground`` /\n                ``differential`` / ...). Sets routing order and the\n                per-class track width. Unlisted nets are ``signal``.\n            grid_pitch_mils: Routing grid pitch in mils (default 25).\n            bend_penalty: A* corner cost in grid-pitch units.\n            via_cost: A* layer-change cost in grid-pitch units.\n            max_expansions: Per-connection A* budget so a walled-in\n                net fails fast.\n            fetch_geometry: When True and ``geometry`` is None, pull\n                the live board over the bridge.\n\n        Returns:\n            ``{\"ok\": True, \"summary\": {nets_total, routed, failed,\n            skipped, completion, track_count, via_count,\n            total_length_mils}, \"order\": [...], \"nets\": {net:\n            {status, class, width, tracks, vias, ...}}, \"tracks\":\n            [...], \"vias\": [...], \"validation\": {...}}``; with a\n            ``nets`` filter also ``requested_nets`` / ``unknown_nets``.\n            ``{\"ok\": False, \"reason\": ...}`` on malformed input.\n        ",
       "inputSchema": {
         "properties": {
           "bend_penalty": {
@@ -822,10 +897,15 @@
         "title": "route_planArguments",
         "type": "object"
       },
-      "name": "eda__route_plan"
+      "name": "eda__route_plan",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "route_planDictOutput",
+        "type": "object"
+      }
     },
     {
-      "description": "Turn a DRC violation payload into an ordered repair plan.\n\nPure Python, stateless. Classifies the ``pcb_run_drc`` payload\n(or a bare violation list) into buckets (net_clearance /\npad_clearance / unrouted / antenna / width / other), then plans\nactions: ``rip_and_reroute`` (worst clearance offender first),\n``nudge`` {net, dx, dy, x_mils, y_mils} for a lone\npad-clearance conflict, ``widen``/``narrow`` {net} for width\nviolations, ``escalate`` {reason} when the plan cannot converge\nalone. Deltas/coordinates are integer mils.\n\nExecutor contract: apply the actions in order\n(``rip_and_reroute`` = ``pcb_delete_net`` + route that net\nagain via ``route_plan`` with the ``nets`` filter or a DSN\nround-trip; ``nudge`` = ``obj_modify`` on the primitive nearest\n(x_mils, y_mils); ``widen``/``narrow`` =\n``pcb_set_track_width``; ``escalate`` = stop and surface the\nreason). Then ``pcb_run_drc`` again and re-plan from the fresh\nviolations -- the loop's outer iteration bound is the caller's.\n\nArgs:\n    violations: ``pcb_run_drc`` result ``{violation_count,\n        violations}`` or a bare list of violation dicts.\n    max_rounds: Rip budget for the clearance worst-offender\n        loop, integer >= 0 (0 = escalate-only for clearance).\n\nReturns:\n    ``{\"ok\": True, \"actions\": [...], \"rounds_used\": n,\n    \"ripped_nets\": [...], \"counts\": {bucket: n}}``;\n    ``{\"ok\": False, \"reason\": ...}`` on malformed input.",
+      "description": "Turn a DRC violation payload into an ordered repair plan.\n\n        Pure Python, stateless. Classifies the ``pcb_run_drc`` payload\n        (or a bare violation list) into buckets (net_clearance /\n        pad_clearance / unrouted / antenna / width / other), then plans\n        actions: ``rip_and_reroute`` (worst clearance offender first),\n        ``nudge`` {net, dx, dy, x_mils, y_mils} for a lone\n        pad-clearance conflict, ``widen``/``narrow`` {net} for width\n        violations, ``escalate`` {reason} when the plan cannot converge\n        alone. Deltas/coordinates are integer mils.\n\n        Executor contract: apply the actions in order\n        (``rip_and_reroute`` = ``pcb_delete_net`` + route that net\n        again via ``route_plan`` with the ``nets`` filter or a DSN\n        round-trip; ``nudge`` = ``obj_modify`` on the primitive nearest\n        (x_mils, y_mils); ``widen``/``narrow`` =\n        ``pcb_set_track_width``; ``escalate`` = stop and surface the\n        reason). Then ``pcb_run_drc`` again and re-plan from the fresh\n        violations -- the loop's outer iteration bound is the caller's.\n\n        Args:\n            violations: ``pcb_run_drc`` result ``{violation_count,\n                violations}`` or a bare list of violation dicts.\n            max_rounds: Rip budget for the clearance worst-offender\n                loop, integer >= 0 (0 = escalate-only for clearance).\n\n        Returns:\n            ``{\"ok\": True, \"actions\": [...], \"rounds_used\": n,\n            \"ripped_nets\": [...], \"counts\": {bucket: n}}``;\n            ``{\"ok\": False, \"reason\": ...}`` on malformed input.\n        ",
       "inputSchema": {
         "properties": {
           "max_rounds": {
@@ -855,7 +935,12 @@
         "title": "route_plan_repairsArguments",
         "type": "object"
       },
-      "name": "eda__route_plan_repairs"
+      "name": "eda__route_plan_repairs",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "route_plan_repairsDictOutput",
+        "type": "object"
+      }
     },
     {
       "description": "Apply the exact validated plan once, with checkpoint, native freshness and readback; never rerun the optimizer.",
@@ -903,6 +988,12 @@
           },
           "package_geometry": {
             "type": "object"
+          },
+          "policy_version": {
+            "enum": [
+              "placement-evidence-p0-v4",
+              "placement-evidence-p1-v1"
+            ]
           },
           "scope_component_ids": {
             "items": {

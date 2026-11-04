@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(sys.platform != 'win32', reason='Exercises real Windows cross-process file locking')
 def test_cancel_retains_lock_until_worker_finishes(tmp_path, monkeypatch, scoped):
     from types import SimpleNamespace
+    import suite_config
+    # The FIFO admission service must be private too: otherwise this unit test
+    # queues behind real Altium work despite its independent engine.lock.
+    monkeypatch.setattr(suite_config, 'runtime_dir', lambda: tmp_path)
     monkeypatch.setattr(coord, 'LOCK', tmp_path / 'engine.lock')
     started, release, finished = threading.Event(), threading.Event(), threading.Event()
     def dispatch(*args):

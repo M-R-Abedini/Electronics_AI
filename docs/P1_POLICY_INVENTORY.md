@@ -21,3 +21,15 @@
 دو ثابت اجرایی در suite_layout.py:20 و eda-agent/src/eda_agent/design/placement_evidence.py:20 هستند. session.py نسخه را در journal ذخیره/بازپخش می‌کند. benchmark از ثابت core وارد می‌کند و JSON بنچمارک نسخهٔ ثبت‌شده را دارد. test_layout_protocol.py:216 عمداً نسخهٔ قدیمی نامعتبر می‌سازد تا رد سیاست کهنه را بررسی کند؛ این نسخهٔ جاری نیست.
 
 در مبنا selector ورودی policy_version وجود ندارد؛ get_contracts آن را در خروجی اعلام می‌کند. این محدودیت قبل از گام ۲ گزارش شد و سیاست/قرارداد در این مرحله تغییر نکرد.
+
+
+## P1-v1 — current source inventory (2026-11-04)
+
+The historical P0 inventory above remains the baseline audit. The authorized
+P1 follow-up changes the default gateway policy in `suite_layout.py`; explicit
+P0 selection is retained. `placement_evidence.py` dispatches by captured policy,
+`placement_p0.py` retains the historical distance proxy, `placement_p1.py`
+contains analytic geometry/engineering-envelope behavior, and
+`cluster_placement.py` adapts the captured record without a second board store.
+Context, plan, validation and receipt bind the selected version. The skill's
+placement reference and generated tool-map describe the same selection.
