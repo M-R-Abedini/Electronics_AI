@@ -35,6 +35,7 @@ from .toolchain import RUNTIME_DIR
 MAX_ROUTERS = 4
 PLACE_TIMEOUT_S = 600  # declared parameter: a floor baseline slower than this is reported as a timeout
 ROUTE_TIMEOUT_S = 300  # declared parameter: one Freerouting budget for every placement compared (C1 fairness)
+GATE_ROUTE_TIMEOUT_S = 1800  # user decision 2026-11-08: phase-end gates give every placement 30 minutes
 
 
 def _place_worker(board_path: str, baseline: str, seed: int, out_dir: str, result_json: str) -> None:
@@ -168,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--no-route", action="store_true")
     ap.add_argument("--route-timeout", type=int, default=ROUTE_TIMEOUT_S, help="Freerouting budget per run, seconds")
+    ap.add_argument("--gate", action="store_true",
+                    help=f"phase-end gate run: Freerouting budget {GATE_ROUTE_TIMEOUT_S} s for every placement")
     ap.add_argument("--out")
     ap.add_argument("--worker", nargs=5, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
@@ -179,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         raise corpus.SealedBoardError("the test split is sealed (plan section 3)")
     names = args.boards.split(",") if args.boards else [e.name for e in corpus.entries(args.split)]
     summary = run(names, args.baselines.split(","), seed=args.seed, route=not args.no_route, jobs=args.jobs,
-                  out=Path(args.out) if args.out else None, route_timeout_s=args.route_timeout)
+                  out=Path(args.out) if args.out else None, route_timeout_s=GATE_ROUTE_TIMEOUT_S if args.gate else args.route_timeout)
     print(markdown(summary))
     return 0
 
