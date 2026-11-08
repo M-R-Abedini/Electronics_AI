@@ -54,6 +54,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/python-3.12.16-hb12b558_0_cpython.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/ruff-0.17.4-h18a1a76_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/rust-1.99.1-h394c39e_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/scipy-1.18.1-py312h8847828_2.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/shapely-2.2.0-py312hc709015_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/symlink-exe-runtime-1.0-hfd05255_2.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/tbb-2023.1.0-h272cf33_2.conda
@@ -729,6 +730,28 @@ packages:
   run_exports: {}
   size: 230098195
   timestamp: 1792910304119
+- conda: https://conda.anaconda.org/conda-forge/win-64/scipy-1.18.1-py312h8847828_2.conda
+  sha256: 572b2e7c3c01f94006fff4b37bac1a210610712d6689c53d0cd9a75e8bed02ca
+  md5: 390c9523cb56afe99b5e68c771e2d63c
+  depends:
+  - libblas >=3.9.0,<4.0a0
+  - libcblas >=3.9.0,<4.0a0
+  - liblapack >=3.9.0,<4.0a0
+  - numpy <2.8
+  - numpy >=1.25,<3
+  - numpy >=2.0.0
+  - python >=3.12,<3.13.0a0
+  - python_abi 3.12.* *_cp312
+  - ucrt >=10.0.20348.0
+  - vc >=14.3,<15
+  - vc14_runtime >=14.44.35208
+  license: BSD-3-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/scipy?source=compressed-mapping
+  run_exports: {}
+  size: 14853101
+  timestamp: 1792930962900
 - conda: https://conda.anaconda.org/conda-forge/win-64/shapely-2.2.0-py312hc709015_1.conda
   sha256: a698cfab9fb0ede8ee98624ee40a2fb2c87a19f22a62ec4d2bc9413fae96913f
   md5: b778ce7df57bfe1aa6705c0beebbc483

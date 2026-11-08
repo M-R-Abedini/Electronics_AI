@@ -7,7 +7,7 @@
 | alpha.1 | F0a | تمام شد (commit `ba3cdb3`) | 2026-11-07 | ۷ از ۷ روی StickHub |
 | alpha.1 | F0b | تمام شد (commit `21f7c2d`) | 2026-11-07 | ۵ از ۵ |
 | alpha.1 | F0c | تمام شد (commit `3cd7f9c`، tag `v2.0.0-alpha.1`) | 2026-11-08 | ۴ از ۴ |
-| alpha.2 | F1 | در انتظار تأیید شروع | — | — |
+| alpha.2 | F1 | پیاده‌سازی تمام؛ در انتظار اجرای Cypress روی A100، بازبینی تو و تصمیم بودجهٔ router | — | ۵ از ۵ |
 | alpha.3 | F2 | — | — | — |
 | alpha.3 | F3 | — | — | — |
 | alpha.4 | F4 | — | — | — |
@@ -113,3 +113,31 @@
 | رفت‌وبرگشت ۸ برد | ✅ (F0b) |
 | قرارداد ماکرو ۱۶ از ۱۶ | ✅ (F0c، دو ماکرو) |
 | برش عمودی: `placer__inspect` و `placer__score` روی هر برد KiCad از Claude Code | ✅ (F0b) |
+
+### F1 · هستهٔ Rust و اولین چیدمان کل برد (2026-11-08، شاخهٔ `feat/v2-f1`)
+
+اجرا: `pixi run place <board>` یا ابزار MCP `placer__place_board`؛ مقایسه: `pixi run bench`.
+
+| گیت (پلن F1) | نتیجه | آستانه | |
+|---|---|---|---|
+| dev بدون نقض سخت | placer_v2 روی هر ۵ برد: legality سخت‌گیرانه **۰** | ۰ | ✅ |
+| C1: بهتر از random، `pcb_placement.py` و 1.0.0 در HPWL و پوشش | هر ۵ برد بهتر یا برابر (جدول پایین) | بهتر | ✅ |
+| ارزیابی هزینه ≥ ۵۰ برابر Python | ارزیابی کامل **۵۷×** (StickHub)، **۱۱۳×** (video)؛ برابری دقیق با مرجع Python | ≥ ۵۰× | ✅ |
+| S0 تا S5 برای بزرگ‌ترین برد dev | video (۱۷۹ قطعهٔ متحرک): **۲۷۰ s**، با هر دو مسیر | ≤ ۳۰۰ s | ✅ |
+| خروجی قطعی | دو اجرا: hash یکسان روی StickHub و pic_programmer | یکسان | ✅ |
+
+**C1 روی dev** (پوشش؛ بودجهٔ Freerouting ۳۰۰ s برای همهٔ چیدمان‌ها؛ \* = router به بودجه رسید):
+
+| برد | متخصص | **placer_v2** | random_legal | v1 (= `pcb_placement` و 1.0.0) |
+|---|---|---|---|---|
+| stickhub | ۹۷٫۴٪ | **۷۷٫۰٪\*** (HPWL ۴۰۸ در برابر ۴۲۹) | ۶۵٫۰٪\* | ۶۳٫۳٪\* (۲۰ نقض) |
+| pic_programmer | ۱۰۰٪ | **۱۰۰٪** (HPWL ۱۰۱۲ در برابر ۱۲۸۳) | ۹۸٫۴٪ | ۸۶٫۴٪ (۱۰ نقض) |
+| royalblue | ۷۳٫۲٪\* | **۵۷٫۷٪\*** | ۴۶٫۴٪\* | ۴۴٫۴٪\* (۲۹ نقض) |
+| video | ۲۳٫۵٪\* | **۳۵٫۸٪\*** | ۱۱٫۸٪\* | timeout |
+| ecc83 | ۱۰۰٪ | **۱۰۰٪** (HPWL ۱۴۷ در برابر ۱۷۳) | ۱۰۰٪ | ۱۰۰٪ (۴ نقض) |
+
+**DG-F1:** S3 تحلیلی روی ecc83، pic و video ۱۴ تا ۲۵٪ هزینهٔ کمتری از «فقط SA» داد. روی royalblue برابر بود و روی StickHub legal نشد ⇐ حالت `best` هر دو را اجرا می‌کند (دفتر تصمیم‌ها). **Cypress:** ورودی‌ها آماده‌اند (`pixi run cypress export` ⇐ `.runtime/cypress/in`)؛ اسکریپت `scripts/cypress/run_cypress_a100.sh` در انتظار اجرا روی A100.
+
+**فاصله با متخصص** روی StickHub و royalblue: HPWL و تقاطع کمتر ولی پوشش کمتر. یعنی این دو معیار روت‌پذیری را کامل نمی‌سنجند. این شکاف هدف F3 (fanout قطعی و جفت‌های USB) و F5 (برآوردگر PathFinder) است.
+
+ساخته‌شده: `crates/placer-core` (geom، problem، sa؛ ۱۱ آزمون Rust)، `placer/place/` (problem، analytical، pipeline، CLI)، baseline `placer_v2` در bench، `placer/cypress.py` و `scripts/cypress/`، ابزارهای MCP `placer__place_board` و `placer__gallery`. آزمون‌ها: ۲۴ واحد + ۹ کند. گالری‌ها: `.runtime/f1/bench_dev/<board>/gallery.html`.

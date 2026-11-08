@@ -257,7 +257,8 @@ class Board:
 
     def placement(self) -> dict[str, dict]:
         """``{uuid: pose}``: references can repeat, UUIDs cannot."""
-        return {fp.uuid: {"ref": fp.ref, "x": fp.x, "y": fp.y, "rotation": fp.rotation, "side": fp.side}
+        return {fp.uuid: {"ref": fp.ref, "x": fp.x, "y": fp.y, "rotation": fp.rotation, "side": fp.side,
+                          "locked": fp.locked}
                 for fp in self.footprints if fp.uuid}
 
     def copy(self) -> Board:

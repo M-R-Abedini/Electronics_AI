@@ -21,6 +21,7 @@ from shapely.prepared import prep
 from .eval.legality import board_polygon, courtyard_polygon
 from .geometry import transform
 from .ir import Board, Footprint
+from .place.problem import fixed_parts
 
 MIL = 0.0254
 RANDOM_TRIES = 400
@@ -48,7 +49,7 @@ def random_legal(board: Board, seed: int = 0) -> tuple[Board, dict]:
     if outline is None or box is None:
         raise ValueError("random_legal needs a board outline")
     inside = prep(outline)
-    fixed = out.fixed_refs()
+    fixed = set(fixed_parts(out))
     placed: dict[str, list[Polygon]] = {"F": [], "B": []}
     for fp in out.footprints:
         if fp.ref in fixed and (shape := courtyard_polygon(fp)) is not None:
@@ -81,7 +82,7 @@ def v1_constructor(board: Board, seed: int = 0) -> tuple[Board, dict]:
     from eda_agent.placement.autoplace import BoardRegion, PlaceComp, PlaceNet, PlacePin
 
     out = board.copy()
-    fixed = out.fixed_refs()
+    fixed = set(fixed_parts(out))
     comps, c0 = [], {}
     for fp in out.footprints:
         pts = [p for poly in fp.courtyard.polygons for p in poly] or [p.local for p in fp.pads] or [(0.0, 0.0)]
@@ -114,9 +115,17 @@ def v1_constructor(board: Board, seed: int = 0) -> tuple[Board, dict]:
                                                           result.region.x2, result.region.y2)]}
 
 
+def placer_v2(board: Board, seed: int = 0) -> tuple[Board, dict]:
+    """The 2.0 placer (S1 to S5), sides from the expert (P2)."""
+    from .place.pipeline import solve
+
+    return solve(board, side_policy="expert", mode="best", seed=seed)
+
+
 BASELINES: dict[str, Callable[[Board, int], tuple[Board, dict]]] = {
     "expert": expert,
     "random_legal": random_legal,
     "v1_constructor": v1_constructor,
+    "placer_v2": placer_v2,
 }
 

@@ -82,6 +82,19 @@ class PlacerService:
              "attribution, coverage and every unrouted connection with its cause. Writes run_report.json and an "
              "HTML gallery to a new run folder; never writes the board."),
              {"board_path": _STRING, "route": {"type": "boolean", "default": True}}, ["board_path"], True),
+            ("place_board",
+             ("Place the whole board from scratch with the 2.0 placer (S1 fixed parts, S2b sides, S3 analytical and "
+              "SA-only starts, S4 legalization, S5 annealing in the Rust core; the better legal result wins), write a "
+              "NEW board file, route it with the strict Freerouting check and evaluate it against the expert. "
+              "side_policy 'expert' keeps every part's side (fair comparison), 'top_only' is assembly level 1. "
+              "Takes 1 to 10 minutes. Never modifies the input board."),
+             {"board_path": _STRING, "side_policy": {"type": "string", "enum": ["expert", "top_only"], "default": "expert"},
+              "seed": {"type": "integer", "minimum": 0, "default": 0}, "route": {"type": "boolean", "default": True}},
+             ["board_path"], False),
+            ("gallery",
+             ("Build one side-by-side HTML gallery from run folders of placer__score or placer__place_board "
+              "(run_report.json paths or their folders): placements with ratsnest, routed copper and metrics."),
+             {"runs": {"type": "array", "items": _STRING, "minItems": 1}, "title": _STRING}, ["runs"], True),
         ]
         return [{"name": name, "description": description,
                  "inputSchema": {"type": "object", "properties": props, "required": required,
@@ -92,6 +105,53 @@ class PlacerService:
     # ------------------------------------------------------------------ tools
     def inspect(self, board_path: str) -> dict:
         return _inspect_summary(read_board(board_path))
+
+    def place_board(self, board_path: str, side_policy: str = "expert", seed: int = 0, route: bool = True) -> dict:
+        from .place.pipeline import place_board
+
+        board_name = Path(board_path).stem
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        rep = place_board(board_path, out_dir=self.runs / f"{board_name}-place-{stamp}", side_policy=side_policy,
+                          seed=seed, route=route)
+        info = rep["stages"]["place"]
+        return {
+            "passed": rep["passed"],
+            "gates": [{k: g[k] for k in ("name", "value", "op", "threshold", "passed")} for g in rep["gates"]],
+            "placed_board": rep["artifacts"]["placed_board"],
+            "mode": info["mode"], "candidates": info.get("candidates"), "fixed_parts": info["fixed"],
+            "seconds_s0_s5": info["seconds_s0_s5"],
+            "metrics": {"hpwl_signal_mm": rep["metrics"]["hpwl"]["signal_mm"],
+                        "crossings": rep["metrics"]["crossings"]["count"],
+                        "route": ({k: rep["metrics"]["route"][k] for k in ("coverage", "unrouted", "vias",
+                                                                            "track_length_mm", "router_stop")}
+                                  if rep["metrics"]["route"] else None)},
+            "pro_score": rep["metrics"]["pro_score"],
+            "run_report": str(Path(rep["artifacts"]["run_dir"]) / "run_report.json"),
+            "gallery": rep["artifacts"]["gallery"],
+        }
+
+    def gallery(self, runs: list[str], title: str = "Placement gallery") -> dict:
+        import json as _json
+
+        panels = []
+        for run in runs:
+            path = Path(run)
+            report = path / "run_report.json" if path.is_dir() else path
+            rep = _json.loads(report.read_text(encoding="utf-8"))
+            art = rep.get("artifacts", {})
+            board_file = art.get("placed_board") or rep["inputs"]["board"]["path"]
+            route_dir = Path(art.get("run_dir", report.parent)) / "route" / "run_report.json"
+            shown = board_file
+            route_metrics = None
+            if route_dir.is_file():
+                rr = _json.loads(route_dir.read_text(encoding="utf-8"))
+                shown = rr["artifacts"].get("routed_board", board_file)
+                route_metrics = rr["metrics"]
+            board = read_board(shown)
+            panels.append(Panel(f"{board.name} ({rep['kind']})", board, evaluate(board, route_metrics), route_metrics))
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        out = gallery(panels, self.runs / f"gallery-{stamp}.html", title=title)
+        return {"gallery": str(out), "panels": len(panels)}
 
     def score(self, board_path: str, route: bool = True) -> dict:
         board = read_board(board_path)
@@ -142,7 +202,8 @@ class PlacerService:
         }
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        functions = {"inspect": self.inspect, "score": self.score}
+        functions = {"inspect": self.inspect, "score": self.score, "place_board": self.place_board,
+                     "gallery": self.gallery}
         if name not in functions:
             raise ValueError(f"Unknown placer tool: {name}")
         return await asyncio.to_thread(functions[name], **(arguments or {}))

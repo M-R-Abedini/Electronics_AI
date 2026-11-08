@@ -27,6 +27,7 @@ from . import corpus
 from .baselines import BASELINES
 from .eval.score import evaluate
 from .io.kicad import read_board, write_board
+from .place.problem import fixed_parts
 from .render import Panel, gallery
 from .route.check import route_check
 from .toolchain import RUNTIME_DIR
@@ -46,8 +47,10 @@ def _place_worker(board_path: str, baseline: str, seed: int, out_dir: str, resul
         target = Path(board_path)
     else:
         target = write_board(board_path, placed, Path(out_dir) / f"{baseline}.kicad_pcb", strip_routing=True)
+    fixed = set(fixed_parts(board))  # one S1 set for every baseline and for the expert (P2)
     Path(result_json).write_text(json.dumps({"baseline": baseline, "board_file": str(target), "place_seconds": seconds,
-                                             "info": info, "evaluation": evaluate(placed)}), encoding="utf-8")
+                                             "info": info, "evaluation": evaluate(placed, fixed=fixed)}),
+                                 encoding="utf-8")
 
 
 def _job(entry: corpus.Entry, baseline: str, seed: int, out: Path, route: bool, route_timeout_s: int) -> dict:

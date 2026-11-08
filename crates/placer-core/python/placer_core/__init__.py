@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Electronics AI placement core (Rust)."""
+"""Electronics AI placement core (Rust): geometry, incremental cost, legalization, annealing."""
 
-from ._core import __version__, hpwl
+from ._core import PlacementProblem, __version__, hpwl
 
-__all__ = ["__version__", "hpwl"]
+__all__ = ["PlacementProblem", "__version__", "hpwl"]

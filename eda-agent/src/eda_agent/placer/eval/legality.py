@@ -48,9 +48,10 @@ def board_polygon(board: Board) -> Polygon | None:
     return unary_union(parts) if parts else None
 
 
-def check(board: Board, *, clearance_mm: float | None = None) -> list[Finding]:
+def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | None = None) -> list[Finding]:
+    """fixed: parts the placer did not move (S1); defaults to the locked footprints."""
     clearance = board.rules.get("courtyard_clearance", 0.0) if clearance_mm is None else clearance_mm
-    fixed = board.fixed_refs()
+    fixed = board.fixed_refs() if fixed is None else set(fixed)
     shapes = {fp.ref: courtyard_polygon(fp) for fp in board.footprints}
     sev = board.drc_severities.get("courtyards_overlap")
     overlap_waiver = f"project rule courtyards_overlap={sev}" if sev else None

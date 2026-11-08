@@ -50,9 +50,9 @@ def pro_score(parts: dict[str, float | None]) -> dict:
             "weights_used": used}
 
 
-def evaluate(board: Board, route: dict | None = None) -> dict:
-    """``route`` is the metrics block of a route check run on the same placement, if any."""
-    findings = legality.check(board)
+def evaluate(board: Board, route: dict | None = None, fixed: set[str] | None = None) -> dict:
+    """``route`` is the metrics block of a route check run on the same placement; ``fixed`` the S1 parts."""
+    findings = legality.check(board, fixed=fixed)
     legal = legality.summary(findings)
     m = {"hpwl": metrics.hpwl(board), "crossings": metrics.crossings(board), "rudy": metrics.rudy(board),
          "critical_loops": metrics.critical_loops(board), "regularity": metrics.regularity(board)}

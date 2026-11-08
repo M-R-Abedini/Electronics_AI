@@ -607,6 +607,8 @@ def place(board_path, placement_json, out_board, strip_routing, out_json):
             flipped += 1
         fp.SetOrientationDegrees(float(pose["rotation"]))
         fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(float(pose["x"])), pcbnew.FromMM(float(pose["y"]))))
+        if "locked" in pose:
+            fp.SetLocked(bool(pose["locked"]))
         moved += 1
     removed = list(board.GetTracks()) if strip_routing == "1" else []
     for item in removed:
