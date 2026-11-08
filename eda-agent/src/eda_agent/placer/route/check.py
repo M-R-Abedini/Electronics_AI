@@ -17,12 +17,13 @@ from pathlib import Path
 
 from .. import report as run_report
 from ..io.kicad import KiCadAdapterError, read_board, run_helper
-from ..ir import plane_zone_layers
+from ..ir import plane_zone_layers, power_layers
 from ..toolchain import RUNTIME_DIR, sha256_file
 from . import drc, dsn
 from .freerouting import RouterConfig, route
 
 PROJECT_SIDECARS = (".kicad_pro", ".kicad_dru")  # .kicad_prl is per-user view state
+MACRO_ZONE_PREFIX = "eai-macro"
 TIME_BUDGET_S = 300  # plan F0a acceptance: whole path <= 5 minutes on StickHub
 
 
@@ -152,6 +153,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
 
     ir = read_board(source)
     keep = plane_zone_layers(ir)
+    # macro zones (architecture 7.3): kept on their own layers so the router sees their copper
+    keep |= {z["uuid"]: z["layers"] for z in ir.zones if (z.get("name") or "").startswith(MACRO_ZONE_PREFIX)}
     (work / "plane_zones.json").write_text(json.dumps(keep, indent=1), encoding="utf-8")
     run_helper("prepare", source, work / "plane_zones.json", work / "prepared.kicad_pcb", work / "board.dsn",
                work / "prepare.json")
@@ -160,6 +163,12 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         raise RouteCheckError("KiCad failed to export the Specctra DSN")
     keepouts, skipped = keepouts_from(prepared["obstacles"]) if obstacle_keepouts else ([], [])
     text = (work / "board.dsn").read_text(encoding="utf-8")
+    text = dsn.set_layer_types(text, {name: "power" for name in power_layers(ir)})
+    macro_zone_keepouts = [dsn.Keepout(name=f"macro_zone_{z['uuid'][:8]}_{i}", layer=layer,
+                                       outline=tuple(tuple(q) for q in z["outline"][0]))
+                           for z in ir.zones if (z.get("name") or "").startswith(MACRO_ZONE_PREFIX)
+                           for i, layer in enumerate(z["layers"])]
+    text = dsn.add_wire_keepouts(text, macro_zone_keepouts)
     route_dsn = work / "route.dsn"
     route_dsn.write_text(dsn.add_keepouts(text, keepouts), encoding="utf-8", newline="\n")
     t = tick("prepare", t)
@@ -228,6 +237,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         stages={
             "prepare": {k: v for k, v in prepared.items() if k != "obstacles"},
             "layer_roles": [asdict(r) for r in ir.stackup.roles],
+            "dsn_power_layers": power_layers(ir),
+            "macro_zone_wire_keepouts": len(macro_zone_keepouts),
             "obstacle_keepouts": {"exported": len(keepouts), "by_kind": _by_kind(prepared["obstacles"]),
                                   "skipped": skipped},
             "freerouting": routed.summary(),

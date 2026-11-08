@@ -22,6 +22,7 @@ test-placer = { cmd = "python -m pytest eda-agent/tests/placer -q -p no:cachepro
 lint-placer = "ruff check eda-agent/src/eda_agent/placer eda-agent/tests/placer"
 bench = { cmd = "python -m eda_agent.placer.bench", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
 placer-mcp = { cmd = "python -m eda_agent.placer.mcp", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
+macro-proof = { cmd = "python -m eda_agent.placer.macro_proof", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
 roundtrip = { cmd = "python -m eda_agent.placer.io.roundtrip", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
 build-core = { cmd = "maturin develop --release", cwd = "crates/placer-core" }
 test-core = { cmd = "cargo test --lib", cwd = "crates/placer-core" }

@@ -190,6 +190,7 @@ def prepare(board_path, keep_json, out_board, out_dsn, out_json):
     with open(keep_json, encoding="utf-8") as fh:
         keep = json.load(fh)
     tracks = list(board.GetTracks())
+    fixed = [t for t in tracks if t.IsLocked()]  # macro and S6a copper: exported to the DSN as fixed wiring
     zones = list(board.Zones())
     zone_rows = [_zone_info(board, z, keep) for z in zones]
     copper = [z for z, row in zip(zones, zone_rows) if row["role"] != "rule_area"]
@@ -197,6 +198,8 @@ def prepare(board_path, keep_json, out_board, out_dsn, out_json):
     for item in tracks + copper:
         board.Remove(item)
     denominator = _unconnected(board)  # pads only: the fixed netlist denominator
+    for item in fixed:
+        board.Add(item)
     for zone in planes:
         _restrict_layers(board, zone, keep[zone.m_Uuid.AsString()])
         board.Add(zone)
@@ -209,7 +212,8 @@ def prepare(board_path, keep_json, out_board, out_dsn, out_json):
         "footprints": len(board.GetFootprints()),
         "pads": sum(len(fp.Pads()) for fp in board.GetFootprints()),
         "copper_layers": board.GetCopperLayerCount(),
-        "removed_routing_items": len(tracks),
+        "removed_routing_items": len(tracks) - len(fixed),
+        "fixed_routing_items": len(fixed),
         "zones": zone_rows,
         "plane_zones_kept": len(planes),
         "obstacles": obstacles,
@@ -269,15 +273,51 @@ def _pad_rows(board):
     return rows
 
 
+def _signature(item):
+    cls = item.GetClass()
+    if cls == "PCB_VIA":
+        p = item.GetPosition()
+        return (cls, p.x, p.y, item.GetWidth(pcbnew.F_Cu), item.GetDrillValue(), item.GetNetname())
+    mid = (item.GetMid().x, item.GetMid().y) if cls == "PCB_ARC" else None
+    a, b = item.GetStart(), item.GetEnd()
+    ends = tuple(sorted(((a.x, a.y), (b.x, b.y))))
+    return (cls, item.GetLayer(), ends, mid, item.GetWidth(), item.GetNetname())
+
+
+def _reconcile_fixed(board, fixed):
+    """Put the original fixed (locked) copper back after an SES import.
+
+    The session carries the fixed wiring Freerouting received, re-created as new
+    items; those copies are removed and the original objects (same UUIDs, still
+    locked) are added, so macro and S6a copper are the very same items.
+    """
+    originals = {_signature(t) for t in fixed}
+    copies = [t for t in board.GetTracks() if _signature(t) in originals]
+    matched = {_signature(t) for t in copies}
+    for t in copies:
+        board.Remove(t)
+    for t in fixed:
+        board.Add(t)
+    return {"count": len(fixed), "session_copies_replaced": len(copies),
+            "missing_from_session": len(originals - matched)}
+
+
 def finish(board_path, ses_path, out_board, out_json):
     board = pcbnew.LoadBoard(board_path)
     tracks = list(board.GetTracks())
+    fixed = [t for t in tracks if t.IsLocked()]
     zones = list(board.Zones())
     copper = [z for z in zones if not z.GetIsRuleArea()]
+    # teardrops belong to the routing they were made for; the old routing is gone, so they are not restored
+    stale = [z for z in copper if hasattr(z, "IsTeardropArea") and z.IsTeardropArea()]
     for item in tracks + copper:
         board.Remove(item)
+    copper = [z for z in copper if not (hasattr(z, "IsTeardropArea") and z.IsTeardropArea())]
     denominator = _unconnected(board)
+    # ImportSpecctraSES deletes every track on the board, so the fixed copper stays out
+    # (and alive in ``fixed``) until the import is done, then replaces its session copy.
     imported = bool(pcbnew.ImportSpecctraSES(board, ses_path))
+    fixed_report = _reconcile_fixed(board, fixed)
     unrouted_tracks_only = _unconnected(board)
     stats = _routing_stats(board)
     pads = _pad_rows(board)
@@ -288,6 +328,8 @@ def finish(board_path, ses_path, out_board, out_json):
     pcbnew.SaveBoard(out_board, board)
     report = {
         "imported": imported,
+        "stale_teardrops_dropped": len(stale),
+        "fixed": fixed_report,
         "denominator": denominator,
         "unrouted_tracks_only": unrouted_tracks_only,
         "unrouted_final": unrouted_final,
@@ -297,7 +339,7 @@ def finish(board_path, ses_path, out_board, out_json):
     }
     with open(out_json, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=1)
-    del tracks, zones, copper
+    del tracks, zones, copper, stale
 
 
 # --------------------------------------------------------------------------
@@ -485,22 +527,29 @@ def _zones(board):
             by_net[zone.GetNetname()] = round(by_net.get(zone.GetNetname(), 0.0) + area, 4)
         rows.append({"uuid": zone.m_Uuid.AsString(), "net": zone.GetNetname() or None, "layers": names,
                      "priority": int(zone.GetAssignedPriority()), "filled": bool(zone.IsFilled()),
-                     "filled_area_mm2": areas, "outline_area_mm2": _area_mm2(zone.Outline())})
+                     "filled_area_mm2": areas, "outline_area_mm2": _area_mm2(zone.Outline()),
+                     "name": zone.GetZoneName(), "locked": bool(zone.IsLocked()),
+                     "outline": [[[round(x, 6), round(y, 6)] for x, y in ring]
+                                 for ring in _world_outlines(zone.Outline())]})
     return rows, rule_areas, fill, teardrops
 
 
 def _routing_geometry(board):
-    """Existing copper routing for review renders: segments (arcs as 3 points) and vias."""
+    """Existing copper routing: segments and arcs (3 points), vias with drill and layer span, lock state."""
     tracks, vias = [], []
     for t in board.GetTracks():
         cls = t.GetClass()
         if cls == "PCB_VIA":
             p = t.GetPosition()
-            vias.append([_mm(p.x), _mm(p.y), _mm(t.GetWidth(pcbnew.F_Cu) if cls == "PCB_VIA" else 0), t.GetNetname()])
+            top, bottom = t.TopLayer(), t.BottomLayer()
+            vias.append({"x": _mm(p.x), "y": _mm(p.y), "diameter": _mm(t.GetWidth(pcbnew.F_Cu)),
+                         "drill": _mm(t.GetDrillValue()), "net": t.GetNetname(), "locked": bool(t.IsLocked()),
+                         "layers": [pcbnew.BOARD.GetStandardLayerName(top), pcbnew.BOARD.GetStandardLayerName(bottom)]})
             continue
         pts = [t.GetStart(), t.GetMid(), t.GetEnd()] if cls == "PCB_ARC" else [t.GetStart(), t.GetEnd()]
         tracks.append({"layer": pcbnew.BOARD.GetStandardLayerName(t.GetLayer()), "width": _mm(t.GetWidth()),
-                       "net": t.GetNetname(), "points": [[_mm(q.x), _mm(q.y)] for q in pts]})
+                       "net": t.GetNetname(), "locked": bool(t.IsLocked()),
+                       "points": [[_mm(q.x), _mm(q.y)] for q in pts]})
     return {"tracks": tracks, "vias": vias}
 
 
@@ -569,6 +618,96 @@ def place(board_path, placement_json, out_board, strip_routing, out_json):
     del removed
 
 
+# --------------------------------------------------------------------------
+# Macro instances (F0c)
+# --------------------------------------------------------------------------
+def _vec(pt):
+    return pcbnew.VECTOR2I(pcbnew.FromMM(float(pt[0])), pcbnew.FromMM(float(pt[1])))
+
+
+def _add_copper(board, spec, lock):
+    added = {"tracks": 0, "vias": 0, "zones": 0}
+    for t in spec.get("tracks", []):
+        item = pcbnew.PCB_ARC(board) if len(t["points"]) == 3 else pcbnew.PCB_TRACK(board)
+        item.SetStart(_vec(t["points"][0]))
+        if len(t["points"]) == 3:
+            item.SetMid(_vec(t["points"][1]))
+        item.SetEnd(_vec(t["points"][-1]))
+        item.SetWidth(pcbnew.FromMM(float(t["width"])))
+        item.SetLayer(board.GetLayerID(t["layer"]))
+        item.SetNet(board.FindNet(t["net"]))
+        item.SetLocked(lock)
+        board.Add(item)
+        added["tracks"] += 1
+    for v in spec.get("vias", []):
+        via = pcbnew.PCB_VIA(board)
+        via.SetViaType(pcbnew.VIATYPE_THROUGH)
+        via.SetPosition(_vec((v["x"], v["y"])))
+        via.SetLayerPair(board.GetLayerID(v["layers"][0]), board.GetLayerID(v["layers"][1]))
+        via.SetWidth(pcbnew.FromMM(float(v["diameter"])))
+        via.SetDrill(pcbnew.FromMM(float(v["drill"])))
+        via.SetNet(board.FindNet(v["net"]))
+        via.SetLocked(lock)
+        board.Add(via)
+        added["vias"] += 1
+    for z in spec.get("zones", []):
+        zone = pcbnew.ZONE(board)
+        layers = pcbnew.LSET()
+        for name in z["layers"]:
+            layers.AddLayer(board.GetLayerID(name))
+        zone.SetLayerSet(layers)
+        zone.SetNet(board.FindNet(z["net"]))
+        outline = zone.Outline()
+        for ring in z["outline"]:
+            outline.NewOutline()
+            for x, y in ring:
+                outline.Append(pcbnew.FromMM(float(x)), pcbnew.FromMM(float(y)))
+        if z.get("pad_connection", "solid") == "solid":
+            zone.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL)
+        zone.SetZoneName(z.get("name", ""))
+        zone.SetAssignedPriority(int(z.get("priority", 0)))
+        zone.SetLocked(lock)
+        board.Add(zone)
+        added["zones"] += 1
+    return added
+
+
+def macro_apply(board_path, spec_json, out_board, out_json):
+    """Write a macro instance: keep only some footprints (optional), strip copper (optional),
+    pose the parts (flipping when the side changes) and add the macro copper, locked."""
+    board = pcbnew.LoadBoard(board_path)
+    with open(spec_json, encoding="utf-8") as fh:
+        spec = json.load(fh)
+    removed = []
+    keep = spec.get("keep_only")
+    if keep is not None:
+        keep = set(keep)
+        removed += [fp for fp in board.GetFootprints() if fp.m_Uuid.AsString() not in keep]
+    strip = spec.get("strip", "none")  # none | tracks | all
+    if strip in ("tracks", "all"):
+        removed += list(board.GetTracks())
+    if strip == "all":
+        removed += [z for z in board.Zones() if not z.GetIsRuleArea()]
+    for item in removed:
+        board.Remove(item)
+    by_uuid = {fp.m_Uuid.AsString(): fp for fp in board.GetFootprints()}
+    flipped = 0
+    for uuid, pose in spec.get("poses", {}).items():
+        fp = by_uuid[uuid]
+        if (pose["side"] == "B") != fp.IsFlipped():
+            fp.Flip(fp.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+            flipped += 1
+        fp.SetOrientationDegrees(float(pose["rotation"]))
+        fp.SetPosition(_vec((pose["x"], pose["y"])))
+    added = _add_copper(board, spec, bool(spec.get("lock", True)))
+    if spec.get("fill", True):
+        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    pcbnew.SaveBoard(out_board, board)
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump({"removed": len(removed), "flipped": flipped, **added}, fh)
+    del removed
+
+
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
-    {"prepare": prepare, "finish": finish, "dump": dump, "place": place}[_cmd](*_args)
+    {"prepare": prepare, "finish": finish, "dump": dump, "place": place, "macro_apply": macro_apply}[_cmd](*_args)

@@ -94,3 +94,13 @@ def test_evaluate_reports_uncalibrated_pro_score_without_lint():
     ps = e["pro_score"]
     assert ps["calibrated"] is False and "lint" not in ps["weights_used"]
     assert 0 <= ps["score"] <= 100
+
+
+def test_inner_plane_carrying_other_nets_is_mixed_and_not_a_power_layer():
+    from eda_agent.placer.ir import power_layers
+
+    b = _board([_fp("R1", 5, 5)], layers=4, fills={"In1.Cu": {"GND": 300.0}, "In2.Cu": {"VDD": 300.0}})
+    b.routing = {"tracks": [{"layer": "In2.Cu", "net": "SIG", "points": [[0, 0], [10, 0]], "width": 0.2}]}
+    derive(b)
+    assert {r.layer: r.role for r in b.stackup.roles}["In2.Cu"] == "mixed"
+    assert power_layers(b) == ["In1.Cu"]

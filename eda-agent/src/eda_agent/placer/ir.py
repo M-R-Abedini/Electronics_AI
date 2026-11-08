@@ -27,6 +27,7 @@ SCHEMA_VERSION = 1
 ROLE_MIN_NET_FRACTION = 0.02  # a net's fill below 2 % of the board area is ignored (teardrops, islands)
 ROLE_POUR_FRACTION = 0.30  # one net filling >= 30 % of the board makes the layer a pour/plane layer
 ROLE_PLANE_SHARE = 0.80  # ... and that net must hold >= 80 % of the layer's counted fill
+ROLE_SIGNAL_TRACK_MM = 5.0  # ... and the input may route at most this much of other nets on it (else: mixed)
 CAPACITY_WARN = 0.70  # courtyard area / usable area of a side above this is reported
 
 GROUND_HINTS = ("GND", "VSS", "AGND", "DGND", "PGND", "GNDA", "GNDD", "EARTH", "0V")
@@ -297,6 +298,14 @@ def infer_layer_roles(board: Board) -> list[LayerRole]:
     names = {cl.name: cl for cl in board.copper_layers}
     roles = []
     last = len(board.copper_layers) - 1
+    # tracks of nets other than the layer's fill nets: a plane that also carries signals is mixed
+    fill_nets = {cl.canonical: {n for n in board.zone_fill_by_layer_mm2.get(cl.name, {}) if n}
+                 for cl in board.copper_layers}
+    foreign: dict[str, float] = {}
+    for t in board.routing.get("tracks", []):
+        if t["net"] not in fill_nets.get(t["layer"], set()):
+            (x0, y0), (x1, y1) = t["points"][0], t["points"][-1]
+            foreign[t["layer"]] = foreign.get(t["layer"], 0.0) + ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
     for cl in board.copper_layers:
         fills = board.zone_fill_by_layer_mm2.get(cl.name, {})
         counted = {n: a for n, a in fills.items() if n and area and a / area >= ROLE_MIN_NET_FRACTION}
@@ -309,7 +318,7 @@ def infer_layer_roles(board: Board) -> list[LayerRole]:
         if frac < ROLE_POUR_FRACTION:
             role, net = "signal", None
             conf = 1.0 - frac / ROLE_POUR_FRACTION * 0.5
-        elif inner and share >= ROLE_PLANE_SHARE:
+        elif inner and share >= ROLE_PLANE_SHARE and foreign.get(cl.canonical, 0.0) <= ROLE_SIGNAL_TRACK_MM:
             role, net = "plane", top[0]
             conf = min(1.0, 0.5 + (share - ROLE_PLANE_SHARE) / (1 - ROLE_PLANE_SHARE) * 0.5)
         else:
@@ -383,6 +392,17 @@ def is_power_net(name: str | None) -> bool:
     return len(core) <= 6 and core[:1].isdigit() and "V" in core
 
 
+
+
+def power_layers(board: Board) -> list[str]:
+    """Layers the router must not route on: inner layers whose role is a pure plane (names as the EDA shows them).
+
+    Exported as DSN ``(type power)``: Freerouting then keeps other nets off them
+    while vias still pass through.  Evidence: on royalblue it routed 56 signal
+    tracks across the pure GND planes In1/In3, which the expert never used.
+    """
+    by_canonical = {cl.canonical: cl.name for cl in board.copper_layers}
+    return [by_canonical[r.layer] for r in board.stackup.roles if r.role == "plane"]
 
 
 def plane_zone_layers(board: Board) -> dict[str, list[str]]:

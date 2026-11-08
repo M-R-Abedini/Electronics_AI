@@ -125,3 +125,11 @@ def test_keepouts_skip_pad_overlap_and_net_copper_with_reason():
     keep, skipped = keepouts_from(rows)
     assert [k.name for k in keep] == ["mask_aperture_aaaaaaaa_0"]
     assert [s["reason"] for s in skipped] == ["overlaps pads JP1-1", "carries net GND"]
+
+
+def test_dsn_layer_type_and_wire_keepout():
+    text = DSN.replace("(layer B.Cu (type signal))", "(layer In1.Cu (type signal))\n    (layer B.Cu (type signal))")
+    out = dsn.set_layer_types(text, {"In1.Cu": "power"})
+    assert "(layer In1.Cu (type power))" in out and "(layer F.Cu (type signal))" in out
+    k = dsn.add_wire_keepouts(DSN, [dsn.Keepout("mz", "F.Cu", ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0)))])
+    assert '(wire_keepout "mz" (polygon F.Cu 0' in k and "(keepout " not in k

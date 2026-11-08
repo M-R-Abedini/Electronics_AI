@@ -63,7 +63,8 @@ def svg(board: Board, evaluation: dict | None = None, *, width_px: int = 640) ->
     for t in sorted(board.routing.get("tracks", []), key=lambda t: t["layer"] != "B.Cu"):
         out.append(f'<polyline points="{_pts(t["points"])}" stroke="{_layer_colour(t["layer"])}" '
                    f'stroke-width="{t["width"]}" class="track"/>')
-    out += [f'<circle cx="{v[0]}" cy="{v[1]}" r="{v[2] / 2}" class="via"/>' for v in board.routing.get("vias", [])]
+    out += [f'<circle cx="{v["x"]}" cy="{v["y"]}" r="{v["diameter"] / 2}" class="via"/>'
+            for v in board.routing.get("vias", [])]
     for side in ("B", "F"):
         for fp in board.footprints:
             if fp.side != side:

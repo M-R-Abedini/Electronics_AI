@@ -62,3 +62,24 @@ def layers(dsn: str) -> list[str]:
     start = dsn.find("(structure")
     end = dsn.find("(boundary", start)
     return re.findall(r"\(layer ([^\s()]+)", dsn[start:end])
+
+
+def set_layer_types(dsn: str, types: dict[str, str]) -> str:
+    """Change ``(layer NAME (type ...))`` of the given layers in the structure section."""
+    for name, kind in types.items():
+        token = re.escape(_token(name))
+        pattern = re.compile(r"(\(layer " + token + r"\s*\(type )(\w+)(\))")
+        dsn, count = pattern.subn(lambda m, kind=kind: m.group(1) + kind + m.group(3), dsn, count=1)
+        if count != 1:
+            raise ValueError(f"DSN layer {name!r} not found")
+    return dsn
+
+
+def add_wire_keepouts(dsn: str, keepouts: list[Keepout]) -> str:
+    """Like ``add_keepouts`` but blocks wires only; vias may still enter (used over macro zones)."""
+    if not keepouts:
+        return dsn
+    text = add_keepouts(dsn, keepouts)
+    for k in keepouts:
+        text = text.replace(f"(keepout {_quote(k.name)} ", f"(wire_keepout {_quote(k.name)} ", 1)
+    return text

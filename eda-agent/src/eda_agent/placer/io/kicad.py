@@ -108,7 +108,7 @@ def _canonical_order(data: dict) -> None:
     for key in ("zones", "rule_areas", "obstacles"):
         data[key].sort(key=lambda r: r["uuid"])
     data["routing"]["tracks"].sort(key=lambda t: (t["layer"], t["points"], t["width"], t["net"]))
-    data["routing"]["vias"].sort()
+    data["routing"]["vias"].sort(key=lambda v: (v["x"], v["y"], v["net"], v["diameter"]))
 
 
 def board_from_dump(data: dict, stackup: Stackup, name: str) -> Board:
