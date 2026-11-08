@@ -26,8 +26,10 @@ cells = [
 2. **Runtime > Run all**. Cell 2 asks for `cypress_in.zip` (from `pixi run cypress export`).
 3. When the last cell finishes, `cypress_out.zip` downloads. Send it back.
 
-The build pins Cypress's own stack: Python 3.10, PyTorch 1.13.1 + CUDA 11.7, nvcc 11.7 with gcc 11,
-because Colab's default PyTorch needs C++17 while Cypress compiles as C++14; numpy stays at 1.23.5
+The build pins the stack of Cypress's own Dockerfile (nvcr.io/nvidia/pytorch:21.10): Python 3.8,
+PyTorch 1.10.0 + CUDA 11.3, nvcc 11.3 with gcc 10. Newer stacks fail to compile: PyTorch >= 1.13
+dropped `AT_PRIVATE_CASE_TYPE`, CUDA >= 11.5 ships a CUB that needs `CUB_NS_QUALIFIER`, and Colab's
+default PyTorch needs C++17 while Cypress compiles as C++14. numpy stays at 1.23.5
 because Cypress still calls `np.str`, removed in numpy 1.24. Every step stops
 with a clear message if the GPU, CUDA or the CUDA kernels are missing; nothing falls back to the CPU.
 First run takes about 25 minutes (CUDA toolkit download and the build).
@@ -59,49 +61,49 @@ print(sorted(os.listdir("/content/in")))
 """),
     code("""
 %%bash
-# 3. System packages, gcc 11 and the CUDA 11.7 toolkit (toolkit only; the A100 driver is Colab's)
+# 3. System packages, gcc 10 and the CUDA 11.3 toolkit (toolkit only; the A100 driver is Colab's)
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get -qq update
-apt-get -qq install -y bison flex libboost-all-dev libcairo2-dev gcc-11 g++-11 > /dev/null
-if [ ! -x /usr/local/cuda-11.7/bin/nvcc ]; then
-  wget -q https://developer.download.nvidia.com/compute/cuda/11.7.1/local_installers/cuda_11.7.1_515.65.01_linux.run -O /content/cuda117.run
-  sh /content/cuda117.run --silent --toolkit --toolkitpath=/usr/local/cuda-11.7 --override --no-man-page
-  rm -f /content/cuda117.run
+apt-get -qq install -y bison flex libboost-all-dev libcairo2-dev gcc-10 g++-10 > /dev/null
+if [ ! -x /usr/local/cuda-11.3/bin/nvcc ]; then
+  wget -q https://developer.download.nvidia.com/compute/cuda/11.3.1/local_installers/cuda_11.3.1_465.19.01_linux.run -O /content/cuda113.run
+  sh /content/cuda113.run --silent --toolkit --toolkitpath=/usr/local/cuda-11.3 --override --no-man-page
+  rm -f /content/cuda113.run
 fi
-/usr/local/cuda-11.7/bin/nvcc --version | tail -n 2
-gcc-11 --version | head -n 1
+/usr/local/cuda-11.3/bin/nvcc --version | tail -n 2
+gcc-10 --version | head -n 1
 """),
     code("""
 %%bash
-# 4. Python 3.10 environment with PyTorch 1.13.1 + CUDA 11.7
+# 4. Python 3.8 environment with PyTorch 1.10.0 + CUDA 11.3 (Cypress's Dockerfile stack)
 set -euo pipefail
 cd /content
 if [ ! -x /content/bin/micromamba ]; then
   curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj bin/micromamba
 fi
 export MAMBA_ROOT_PREFIX=/content/mamba
-[ -x /content/env/bin/python ] || /content/bin/micromamba create -y -q -p /content/env -c conda-forge python=3.10 pip
-/content/env/bin/pip install -q torch==1.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
-/content/env/bin/pip install -q "numpy==1.23.5" scipy shapely matplotlib cairocffi pyunpack patool pkgconfig \\
+[ -x /content/env38/bin/python ] || /content/bin/micromamba create -y -q -p /content/env38 -c conda-forge python=3.8 pip
+/content/env38/bin/pip install -q torch==1.10.0+cu113 -f https://download.pytorch.org/whl/cu113/torch_stable.html
+/content/env38/bin/pip install -q "numpy==1.23.5" scipy shapely matplotlib cairocffi pyunpack patool pkgconfig \\
     "cmake>=3.21,<3.28" pyyaml
-/content/env/bin/python -c "import torch; assert torch.cuda.is_available(), 'PyTorch sees no CUDA'; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))"
+/content/env38/bin/python -c "import torch; assert torch.cuda.is_available(), 'PyTorch sees no CUDA'; assert torch.version.cuda == '11.3', torch.version.cuda; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))"
 """),
     code("""
 %%bash
 # 5. Clone and build Cypress with its CUDA kernels (about 15 minutes)
 set -euo pipefail
-export PATH=/content/env/bin:/usr/local/cuda-11.7/bin:$PATH
-export CUDA_HOME=/usr/local/cuda-11.7 CC=gcc-11 CXX=g++-11 CUDAHOSTCXX=g++-11
+export PATH=/content/env38/bin:/usr/local/cuda-11.3/bin:$PATH
+export CUDA_HOME=/usr/local/cuda-11.3 CC=gcc-10 CXX=g++-10 CUDAHOSTCXX=g++-10
 cd /content
 [ -d Cypress/.git ] || git clone -q --recursive https://github.com/NVlabs/Cypress.git
 cd Cypress
 git submodule update --init --recursive -q
 echo "Cypress $(git rev-parse HEAD)"
-mkdir -p build && cd build
+rm -rf build install && mkdir -p build && cd build  # never reuse a cache from another stack
 if ! cmake .. -DCMAKE_INSTALL_PREFIX=/content/Cypress/install -DCMAKE_BUILD_TYPE=Release \\
-      -DPython_EXECUTABLE=/content/env/bin/python -DPYTHON_EXECUTABLE=/content/env/bin/python \\
-      -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.7 -DCUDA_HOST_COMPILER=/usr/bin/g++-11 \\
+      -DPython_EXECUTABLE=/content/env38/bin/python -DPYTHON_EXECUTABLE=/content/env38/bin/python \\
+      -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.3 -DCUDA_HOST_COMPILER=/usr/bin/g++-10 \\
       -DCUDA_ARCH_LIST="8.0" > cmake.log 2>&1; then
   tail -n 60 cmake.log; exit 1
 fi
@@ -119,7 +121,7 @@ echo "CUDA kernel libraries: $n_cuda"
 # 6. Place every board on the GPU
 import subprocess
 
-r = subprocess.run(["/content/env/bin/python", "/content/cypress_run.py"], capture_output=True, text=True, check=False)
+r = subprocess.run(["/content/env38/bin/python", "/content/cypress_run.py"], capture_output=True, text=True, check=False)
 print(r.stdout[-6000:])
 print(r.stderr[-6000:])
 """),
@@ -144,9 +146,33 @@ files.download("/content/cypress_out.zip")
 """),
 ]
 
-notebook = {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"gpuType": "A100", "provenance": []},
-                                         "kernelspec": {"display_name": "Python 3", "name": "python3"},
-                                         "language_info": {"name": "python"}},
-            "nbformat": 4, "nbformat_minor": 0}
-(HERE / "cypress_colab.ipynb").write_text(json.dumps(notebook, indent=1, ensure_ascii=False), encoding="utf-8")
-print("wrote", HERE / "cypress_colab.ipynb")
+META = {"accelerator": "GPU", "colab": {"gpuType": "A100", "provenance": []},
+        "kernelspec": {"display_name": "Python 3", "name": "python3"}, "language_info": {"name": "python"}}
+
+
+def write(path, cell_list):
+    nb = {"cells": cell_list, "metadata": META, "nbformat": 4, "nbformat_minor": 0}
+    path.write_text(json.dumps(nb, indent=1, ensure_ascii=False), encoding="utf-8")
+    print("wrote", path)
+
+
+write(HERE / "cypress_colab.ipynb", cells)
+
+# Self-contained copy: the boards ride inside the notebook, so nothing has to be uploaded.
+# Built only when the export exists; it lives in .runtime (generated data, not source).
+EXPORT = HERE.parents[1] / ".runtime" / "cypress" / "in" / "cypress_in.zip"
+if EXPORT.is_file():
+    import base64
+
+    payload = base64.b64encode(EXPORT.read_bytes()).decode("ascii")
+    embedded = code(
+        "# 0. Boards embedded in this notebook (no upload needed)\n"
+        "import base64\n\n"
+        f'DATA = "{payload}"\n'
+        'with open("/content/cypress_in.zip", "wb") as fh:\n'
+        "    fh.write(base64.b64decode(DATA))\n"
+        'print("cypress_in.zip ready")\n')
+    intro = md(cells[0]["source"] and "".join(cells[0]["source"]).replace(
+        "2. **Runtime > Run all**. Cell 2 asks for `cypress_in.zip` (from `pixi run cypress export`).",
+        "2. **Runtime > Run all**. The boards are already inside this notebook; nothing to upload."))
+    write(EXPORT.parent / "cypress_colab_selfcontained.ipynb", [intro, embedded, *cells[1:]])

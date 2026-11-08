@@ -12,7 +12,7 @@ export   ``pixi run cypress export``: every corpus board becomes a JSON file in
          relative to the courtyard centre, all nets, plus the S1 fixed parts.
          Everything goes into one ``cypress_in.zip``.
 GPU      ``scripts/cypress/cypress_colab.ipynb`` builds Cypress against a
-         pinned PyTorch 1.13.1 / CUDA 11.7 stack, refuses to run without CUDA,
+         pinned PyTorch 1.10.0 / CUDA 11.3 stack (Cypress's Dockerfile), refuses to run without CUDA,
          places every board and returns ``cypress_out.zip``.
 import   ``pixi run cypress import cypress_out.zip``: the placed dictionaries
          become poses on the original board (rotation recovered from the pins,
