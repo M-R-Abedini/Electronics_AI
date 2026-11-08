@@ -1,0 +1,662 @@
+{
+ "board": "video",
+ "source_sha256": "dda4b7eb8899e0bfd507646112c33281cafa194d5b9e211719f4261e90fd4dd7",
+ "labelled_by": "Claude (F2), pending user review",
+ "definitions": "eda-agent/src/eda_agent/placer/intent/LABELS.md",
+ "parts": {
+  "BUS1": {
+   "role": "connector"
+  },
+  "C1": {
+   "role": "coupling_cap"
+  },
+  "C2": {
+   "role": "decap",
+   "target": "U10",
+   "evidence": "expert placement: VAA_149 of U10 at 5.3 mm on /pal-ntsc.sch/VAF"
+  },
+  "C3": {
+   "role": "coupling_cap"
+  },
+  "C4": {
+   "role": "coupling_cap"
+  },
+  "C5": {
+   "role": "coupling_cap"
+  },
+  "C6": {
+   "role": "pin_cap",
+   "target": "U10"
+  },
+  "C7": {
+   "role": "pin_cap",
+   "target": "U10"
+  },
+  "C8": {
+   "role": "coupling_cap"
+  },
+  "C9": {
+   "role": "decap",
+   "target": "U10",
+   "evidence": "expert placement: VCC_31 of U10 at 5.3 mm on +5V"
+  },
+  "C10": {
+   "role": "decap",
+   "target": "U10",
+   "evidence": "expert placement: VCC_112 of U10 at 3.7 mm on +5V"
+  },
+  "C11": {
+   "role": "decap",
+   "target": "U10",
+   "evidence": "expert placement: VCC_57 of U10 at 2.7 mm on +5V"
+  },
+  "C12": {
+   "role": "decap",
+   "target": "U10",
+   "evidence": "expert placement: VAA_132 of U10 at 5.0 mm on /pal-ntsc.sch/VAF"
+  },
+  "C13": {
+   "role": "decap",
+   "target": "U10",
+   "evidence": "expert placement: VAA_39 of U10 at 3.6 mm on /pal-ntsc.sch/VAF"
+  },
+  "C14": {
+   "role": "decap",
+   "target": "U10",
+   "evidence": "expert placement: VAA_78 of U10 at 5.8 mm on /pal-ntsc.sch/VAF"
+  },
+  "C15": {
+   "role": "decap",
+   "target": "U10",
+   "evidence": "expert placement: VCC_76 of U10 at 4.0 mm on +5V"
+  },
+  "C16": {
+   "role": "pin_cap",
+   "target": "U10"
+  },
+  "C17": {
+   "role": "decap",
+   "target": "U24",
+   "evidence": "expert placement: VCC_60 of U24 at 2.2 mm on +5V"
+  },
+  "C18": {
+   "role": "decap",
+   "target": "U24",
+   "evidence": "expert placement: VCC_81 of U24 at 3.2 mm on +5V"
+  },
+  "C19": {
+   "role": "decap",
+   "target": "U24",
+   "evidence": "expert placement: VCC_100 of U24 at 0.9 mm on +5V"
+  },
+  "C20": {
+   "role": "decap",
+   "target": "U24",
+   "evidence": "expert placement: VCC_120 of U24 at 0.3 mm on +5V"
+  },
+  "C21": {
+   "role": "decap",
+   "target": "U24",
+   "evidence": "expert placement: VCC_142 of U24 at 3.7 mm on +5V"
+  },
+  "C22": {
+   "role": "decap",
+   "target": "U24",
+   "evidence": "expert placement: VCC_160 of U24 at 3.5 mm on +5V"
+  },
+  "C23": {
+   "role": "decap",
+   "target": "U7",
+   "evidence": "expert placement: VCC_7 of U7 at 2.8 mm on /graphic/VOSC"
+  },
+  "C24": {
+   "role": "decap",
+   "target": "U11",
+   "evidence": "expert placement: VCC_111 of U11 at 3.1 mm on +5V"
+  },
+  "C25": {
+   "role": "decap",
+   "target": "U11",
+   "evidence": "expert placement: VCC_91 of U11 at 0.7 mm on +5V"
+  },
+  "C26": {
+   "role": "decap",
+   "target": "U11",
+   "evidence": "expert placement: VCC_71 of U11 at 4.6 mm on +5V"
+  },
+  "C27": {
+   "role": "decap",
+   "target": "U11",
+   "evidence": "expert placement: VCC_131 of U11 at 4.3 mm on +5V"
+  },
+  "C28": {
+   "role": "decap",
+   "target": "U11",
+   "evidence": "expert placement: VCC_51 of U11 at 4.9 mm on +5V"
+  },
+  "C29": {
+   "role": "decap",
+   "target": "U11",
+   "evidence": "expert placement: VCC_31 of U11 at 4.9 mm on +5V"
+  },
+  "C30": {
+   "role": "decap",
+   "target": "U11",
+   "evidence": "expert placement: VCC_11 of U11 at 4.9 mm on +5V"
+  },
+  "C31": {
+   "role": "decap",
+   "target": "U11",
+   "evidence": "expert placement: VCC_151 of U11 at 4.3 mm on +5V"
+  },
+  "C32": {
+   "role": "pin_cap",
+   "target": "U9"
+  },
+  "C33": {
+   "role": "decap",
+   "target": "U9",
+   "evidence": "expert placement: VAA_2 of U9 at 7.0 mm on /ESVIDEO-RVB/VAA"
+  },
+  "C34": {
+   "role": "pin_cap",
+   "target": "U9"
+  },
+  "C35": {
+   "role": "pin_cap",
+   "target": "U9"
+  },
+  "C36": {
+   "role": "coupling_cap"
+  },
+  "C37": {
+   "role": "signal_passive"
+  },
+  "C38": {
+   "role": "bulk_cap"
+  },
+  "C39": {
+   "role": "coupling_cap"
+  },
+  "C40": {
+   "role": "coupling_cap"
+  },
+  "C41": {
+   "role": "coupling_cap"
+  },
+  "C42": {
+   "role": "pin_cap",
+   "target": "U9"
+  },
+  "C43": {
+   "role": "pin_cap",
+   "target": "U20"
+  },
+  "C44": {
+   "role": "pin_cap",
+   "target": "U20"
+  },
+  "C45": {
+   "role": "pin_cap",
+   "target": "U20"
+  },
+  "C46": {
+   "role": "signal_passive"
+  },
+  "C47": {
+   "role": "signal_passive"
+  },
+  "C48": {
+   "role": "pin_cap",
+   "target": "U20"
+  },
+  "C49": {
+   "role": "crystal_load_cap",
+   "target": "X1"
+  },
+  "C50": {
+   "role": "crystal_load_cap",
+   "target": "X1"
+  },
+  "C51": {
+   "role": "bulk_cap"
+  },
+  "C52": {
+   "role": "bulk_cap"
+  },
+  "C53": {
+   "role": "signal_passive"
+  },
+  "C54": {
+   "role": "bulk_cap",
+   "note": "LC filter output of U20's supply, placed 25 mm from U20: bulk, not a local decap"
+  },
+  "C55": {
+   "role": "bulk_cap"
+  },
+  "C56": {
+   "role": "bulk_cap"
+  },
+  "C57": {
+   "role": "bulk_cap"
+  },
+  "C58": {
+   "role": "coupling_cap"
+  },
+  "C59": {
+   "role": "coupling_cap"
+  },
+  "C60": {
+   "role": "coupling_cap"
+  },
+  "C61": {
+   "role": "coupling_cap"
+  },
+  "C62": {
+   "role": "bulk_cap"
+  },
+  "C63": {
+   "role": "bulk_cap"
+  },
+  "C64": {
+   "role": "pin_cap",
+   "target": "U20"
+  },
+  "C65": {
+   "role": "crystal_load_cap",
+   "target": "X2"
+  },
+  "C66": {
+   "role": "crystal_load_cap",
+   "target": "X2"
+  },
+  "C67": {
+   "role": "bulk_cap"
+  },
+  "C68": {
+   "role": "bulk_cap"
+  },
+  "C69": {
+   "role": "bulk_cap"
+  },
+  "C70": {
+   "role": "decap",
+   "target": "U23",
+   "evidence": "expert placement: VCC_92 of U23 at 5.3 mm on +5V"
+  },
+  "C71": {
+   "role": "decap",
+   "target": "U23",
+   "evidence": "expert placement: VCC_54 of U23 at 5.4 mm on +5V"
+  },
+  "C72": {
+   "role": "decap",
+   "target": "U23",
+   "evidence": "expert placement: VCC_28 of U23 at 4.2 mm on +5V"
+  },
+  "C73": {
+   "role": "decap",
+   "target": "U23",
+   "evidence": "expert placement: VCC_3 of U23 at 2.3 mm on +5V"
+  },
+  "CV1": {
+   "role": "crystal_load_cap",
+   "target": "X3"
+  },
+  "D1": {
+   "role": "diode"
+  },
+  "D2": {
+   "role": "diode"
+  },
+  "D3": {
+   "role": "diode"
+  },
+  "D4": {
+   "role": "diode"
+  },
+  "D6": {
+   "role": "led"
+  },
+  "J4": {
+   "role": "connector"
+  },
+  "L1": {
+   "role": "signal_passive"
+  },
+  "L2": {
+   "role": "rail_filter"
+  },
+  "L3": {
+   "role": "rail_filter"
+  },
+  "L4": {
+   "role": "rail_filter"
+  },
+  "L5": {
+   "role": "rail_filter"
+  },
+  "L6": {
+   "role": "signal_passive"
+  },
+  "P1": {
+   "role": "connector"
+  },
+  "P2": {
+   "role": "connector"
+  },
+  "P3": {
+   "role": "connector"
+  },
+  "P4": {
+   "role": "jumper"
+  },
+  "P5": {
+   "role": "connector"
+  },
+  "P8": {
+   "role": "connector"
+  },
+  "P9": {
+   "role": "test_point"
+  },
+  "P10": {
+   "role": "test_point"
+  },
+  "P11": {
+   "role": "test_point"
+  },
+  "P12": {
+   "role": "test_point"
+  },
+  "POT1": {
+   "role": "signal_passive"
+  },
+  "Q1": {
+   "role": "transistor"
+  },
+  "Q2": {
+   "role": "transistor"
+  },
+  "Q3": {
+   "role": "transistor"
+  },
+  "R1": {
+   "role": "rail_filter"
+  },
+  "R2": {
+   "role": "series_resistor"
+  },
+  "R3": {
+   "role": "series_resistor"
+  },
+  "R4": {
+   "role": "pull_up"
+  },
+  "R5": {
+   "role": "pull_up"
+  },
+  "R6": {
+   "role": "pull_up"
+  },
+  "R7": {
+   "role": "pull_up"
+  },
+  "R8": {
+   "role": "bias_resistor",
+   "target": "U9"
+  },
+  "R9": {
+   "role": "signal_passive"
+  },
+  "R10": {
+   "role": "series_resistor"
+  },
+  "R11": {
+   "role": "signal_passive"
+  },
+  "R12": {
+   "role": "bias_resistor",
+   "target": "U10"
+  },
+  "R13": {
+   "role": "led_resistor",
+   "target": "D6"
+  },
+  "R14": {
+   "role": "pull_down"
+  },
+  "R15": {
+   "role": "pull_down"
+  },
+  "R16": {
+   "role": "series_resistor"
+  },
+  "R17": {
+   "role": "series_resistor"
+  },
+  "R18": {
+   "role": "series_resistor"
+  },
+  "R19": {
+   "role": "series_resistor"
+  },
+  "R20": {
+   "role": "series_resistor"
+  },
+  "R21": {
+   "role": "crystal_aux",
+   "target": "X1"
+  },
+  "R22": {
+   "role": "series_resistor"
+  },
+  "R23": {
+   "role": "series_resistor"
+  },
+  "R24": {
+   "role": "series_resistor"
+  },
+  "R25": {
+   "role": "crystal_aux",
+   "target": "X2"
+  },
+  "R26": {
+   "role": "crystal_aux",
+   "target": "X1"
+  },
+  "R27": {
+   "role": "bias_resistor",
+   "target": "U10"
+  },
+  "R28": {
+   "role": "pull_up"
+  },
+  "R29": {
+   "role": "pull_up"
+  },
+  "R30": {
+   "role": "divider_resistor"
+  },
+  "R31": {
+   "role": "divider_resistor"
+  },
+  "R32": {
+   "role": "signal_passive"
+  },
+  "R33": {
+   "role": "signal_passive"
+  },
+  "R34": {
+   "role": "signal_passive"
+  },
+  "R35": {
+   "role": "series_resistor"
+  },
+  "R36": {
+   "role": "series_resistor"
+  },
+  "R37": {
+   "role": "bias_resistor",
+   "target": "U8"
+  },
+  "R38": {
+   "role": "bias_resistor",
+   "target": "U8"
+  },
+  "R39": {
+   "role": "series_resistor"
+  },
+  "R40": {
+   "role": "series_resistor"
+  },
+  "R41": {
+   "role": "series_resistor"
+  },
+  "R42": {
+   "role": "termination"
+  },
+  "R43": {
+   "role": "termination"
+  },
+  "R44": {
+   "role": "termination"
+  },
+  "R45": {
+   "role": "termination"
+  },
+  "R46": {
+   "role": "termination"
+  },
+  "R47": {
+   "role": "termination"
+  },
+  "R48": {
+   "role": "pull_up"
+  },
+  "RR1": {
+   "role": "pull_up"
+  },
+  "RR2": {
+   "role": "pull_up"
+  },
+  "RR3": {
+   "role": "pull_up"
+  },
+  "RR4": {
+   "role": "pull_up"
+  },
+  "RR5": {
+   "role": "pull_up"
+  },
+  "RR6": {
+   "role": "pull_up"
+  },
+  "RR7": {
+   "role": "pull_up"
+  },
+  "RR8": {
+   "role": "pull_up"
+  },
+  "U1": {
+   "role": "ic"
+  },
+  "U2": {
+   "role": "ic"
+  },
+  "U3": {
+   "role": "ic"
+  },
+  "U4": {
+   "role": "ic"
+  },
+  "U5": {
+   "role": "ic"
+  },
+  "U6": {
+   "role": "ic"
+  },
+  "U7": {
+   "role": "ic"
+  },
+  "U8": {
+   "role": "ic"
+  },
+  "U9": {
+   "role": "ic"
+  },
+  "U10": {
+   "role": "ic"
+  },
+  "U11": {
+   "role": "ic"
+  },
+  "U12": {
+   "role": "connector"
+  },
+  "U13": {
+   "role": "connector"
+  },
+  "U14": {
+   "role": "connector"
+  },
+  "U15": {
+   "role": "connector"
+  },
+  "U16": {
+   "role": "connector"
+  },
+  "U17": {
+   "role": "connector"
+  },
+  "U18": {
+   "role": "connector"
+  },
+  "U19": {
+   "role": "connector"
+  },
+  "U20": {
+   "role": "ic"
+  },
+  "U21": {
+   "role": "ic"
+  },
+  "U22": {
+   "role": "ic"
+  },
+  "U23": {
+   "role": "ic"
+  },
+  "U24": {
+   "role": "ic"
+  },
+  "W1": {
+   "role": "jumper"
+  },
+  "W2": {
+   "role": "jumper"
+  },
+  "W3": {
+   "role": "jumper"
+  },
+  "W4": {
+   "role": "jumper"
+  },
+  "W5": {
+   "role": "jumper"
+  },
+  "X1": {
+   "role": "crystal",
+   "target": "U23"
+  },
+  "X2": {
+   "role": "crystal",
+   "target": "U10"
+  },
+  "X3": {
+   "role": "crystal",
+   "target": "U20"
+  }
+ },
+ "pairs": []
+}

@@ -1,0 +1,55 @@
+{
+ "board": "ecc83",
+ "source_sha256": "dec4d97c6c0e4551e0d42dfa99e27d3cb64979f9d70a3ee0d44c2101881dfceb",
+ "labelled_by": "Claude (F2), pending user review",
+ "definitions": "eda-agent/src/eda_agent/placer/intent/LABELS.md",
+ "parts": {
+  "C1": {
+   "role": "bulk_cap"
+  },
+  "C2": {
+   "role": "coupling_cap"
+  },
+  "P1": {
+   "role": "connector"
+  },
+  "P2": {
+   "role": "connector"
+  },
+  "P3": {
+   "role": "connector"
+  },
+  "P4": {
+   "role": "connector"
+  },
+  "P5": {
+   "role": "mechanical"
+  },
+  "P6": {
+   "role": "mechanical"
+  },
+  "P7": {
+   "role": "mechanical"
+  },
+  "P8": {
+   "role": "mechanical"
+  },
+  "R1": {
+   "role": "signal_passive"
+  },
+  "R2": {
+   "role": "signal_passive"
+  },
+  "R3": {
+   "role": "pull_down"
+  },
+  "R4": {
+   "role": "pull_down"
+  },
+  "U1": {
+   "role": "transistor",
+   "note": "ECC83 valve: a discrete active device"
+  }
+ },
+ "pairs": []
+}

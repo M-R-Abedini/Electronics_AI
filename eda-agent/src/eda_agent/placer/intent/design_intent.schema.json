@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://electronics-ai.local/schema/design_intent/1",
+  "title": "design_intent",
+  "description": "Design intent of one board (architecture 4.5). Every statement is a claim {value, source, confidence, confirmed_by_user}. The engine turns a claim into a hard constraint only when it is confirmed by the user or its confidence is at least 0.9; every other claim is a soft penalty. The model may state roles, targets, classes and pairs with a source; it never states coordinates.",
+  "type": "object",
+  "required": ["schema", "schema_version", "board", "parts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "electronics-ai/design_intent"},
+    "schema_version": {"const": 1},
+    "board": {
+      "type": "object",
+      "required": ["name", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "path": {"type": "string"}
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "side_policy": {"$ref": "#/$defs/claim", "properties": {"value": {"enum": ["expert", "top_only"]}}},
+        "stackup": {"$ref": "#/$defs/claim", "properties": {"value": {"enum": ["locked", "propose", "needs_decision"]}}}
+      }
+    },
+    "parts": {
+      "description": "Keyed by reference designator.",
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/part"}
+    },
+    "nets": {
+      "description": "Keyed by net name.",
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/net"}
+    },
+    "diff_pairs": {"type": "array", "items": {"$ref": "#/$defs/pair_claim"}},
+    "blocks": {"type": "array", "items": {"$ref": "#/$defs/block_claim"}},
+    "power_w": {
+      "description": "Dissipation per reference designator. Only from a datasheet or the user; never guessed (P5).",
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/claim", "properties": {"value": {"type": "number", "minimum": 0}}}
+    },
+    "questions": {
+      "description": "Open questions the draft could not settle. Informational; not part of the canonical hash.",
+      "type": "array",
+      "items": {"type": "object"}
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["motif", "board", "datasheet", "schematic", "llm", "user", "label"]},
+        "ref": {"type": "string", "description": "Motif name, datasheet URL and page, schematic sheet, and so on. Required for datasheet, schematic and llm."},
+        "client": {"type": "string", "description": "Client that wrote an llm claim (claude-code, codex, antigravity)."},
+        "detail": {"type": "string"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"enum": ["datasheet", "schematic", "llm"]}}},
+         "then": {"required": ["kind", "ref"], "properties": {"ref": {"minLength": 1}}}}
+      ]
+    },
+    "claim": {
+      "type": "object",
+      "required": ["value", "source", "confidence", "confirmed_by_user"],
+      "properties": {
+        "value": {},
+        "source": {"$ref": "#/$defs/source"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "confirmed_by_user": {"type": "boolean"}
+      }
+    },
+    "role": {
+      "enum": [
+        "ic", "converter_ic", "linear_regulator", "power_switch",
+        "converter_inductor", "converter_diode", "converter_control",
+        "regulator_input_cap", "regulator_output_cap",
+        "decap", "bulk_cap", "pin_cap", "coupling_cap",
+        "crystal", "oscillator", "crystal_load_cap", "crystal_aux",
+        "esd", "connector",
+        "series_resistor", "pull_up", "pull_down", "termination", "bias_resistor", "divider_resistor",
+        "led", "led_resistor", "rail_filter", "signal_passive",
+        "transistor", "diode", "switch", "jumper", "test_point", "mechanical", "unknown"
+      ]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What the part serves. ref null with candidates means the target is not settled.",
+      "properties": {
+        "ref": {"type": ["string", "null"]},
+        "net": {"type": "string"},
+        "pins": {"type": "array", "items": {"type": "string"}},
+        "candidates": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "part": {
+      "type": "object",
+      "required": ["role"],
+      "additionalProperties": false,
+      "properties": {
+        "role": {"allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {"$ref": "#/$defs/role"}}}]},
+        "target": {"allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {"$ref": "#/$defs/target"}}}]}
+      }
+    },
+    "net": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "class": {"allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {"enum": [
+          "POWER_HIGH_CURRENT", "SW_NODE", "DIFF_PAIR", "HIGH_SPEED", "SENSITIVE_ANALOG", "GENERAL"]}}}]},
+        "rail": {"allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {"enum": ["power", "ground", "signal"]}}}]}
+      }
+    },
+    "pair_claim": {
+      "allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {
+        "type": "object", "required": ["positive", "negative"], "additionalProperties": false,
+        "properties": {"positive": {"type": "string"}, "negative": {"type": "string"},
+                       "kind": {"enum": ["usb", "lvds", "ethernet", "other"]}}}}}]
+    },
+    "block_claim": {
+      "allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {
+        "type": "object", "required": ["name", "kind", "members"], "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "kind": {"enum": ["decap_group", "crystal", "converter", "linear_regulator", "esd_port", "led", "pull_up_row", "other"]},
+          "anchor": {"type": ["string", "null"]},
+          "members": {"type": "array", "items": {"type": "string"}, "minItems": 1}}}}}]
+    }
+  }
+}

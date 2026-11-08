@@ -1,0 +1,217 @@
+{
+ "board": "pic_programmer",
+ "source_sha256": "aba03b4359e8bf162fe00b27b0d3394f2141acfbd3d43d9cf8e05bf0845d9bd5",
+ "labelled_by": "Claude (F2), pending user review",
+ "definitions": "eda-agent/src/eda_agent/placer/intent/LABELS.md",
+ "parts": {
+  "C1": {
+   "role": "regulator_output_cap",
+   "target": "U3"
+  },
+  "C2": {
+   "role": "regulator_input_cap",
+   "target": "U3"
+  },
+  "C3": {
+   "role": "regulator_output_cap",
+   "target": "U4"
+  },
+  "C4": {
+   "role": "converter_control",
+   "target": "U4"
+  },
+  "C5": {
+   "role": "converter_control",
+   "target": "U4"
+  },
+  "C6": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC_8 of U1 at 10.6 mm on /pic_sockets/VCC_PIC"
+  },
+  "C7": {
+   "role": "decap",
+   "target": "P3",
+   "evidence": "expert placement: 32_32 of P3 at 8.3 mm on /pic_sockets/VCC_PIC"
+  },
+  "C9": {
+   "role": "signal_passive"
+  },
+  "D1": {
+   "role": "diode"
+  },
+  "D2": {
+   "role": "diode"
+  },
+  "D3": {
+   "role": "diode"
+  },
+  "D4": {
+   "role": "diode"
+  },
+  "D5": {
+   "role": "diode"
+  },
+  "D6": {
+   "role": "diode"
+  },
+  "D7": {
+   "role": "diode"
+  },
+  "D8": {
+   "role": "led"
+  },
+  "D9": {
+   "role": "led"
+  },
+  "D10": {
+   "role": "converter_diode",
+   "target": "U4"
+  },
+  "D11": {
+   "role": "diode"
+  },
+  "D12": {
+   "role": "led"
+  },
+  "J1": {
+   "role": "connector"
+  },
+  "JP1": {
+   "role": "jumper"
+  },
+  "L1": {
+   "role": "converter_inductor",
+   "target": "U4"
+  },
+  "P1": {
+   "role": "connector"
+  },
+  "P2": {
+   "role": "connector"
+  },
+  "P3": {
+   "role": "connector"
+  },
+  "P101": {
+   "role": "mechanical"
+  },
+  "P102": {
+   "role": "mechanical"
+  },
+  "P103": {
+   "role": "mechanical"
+  },
+  "P104": {
+   "role": "mechanical"
+  },
+  "P105": {
+   "role": "mechanical"
+  },
+  "P106": {
+   "role": "mechanical"
+  },
+  "Q1": {
+   "role": "transistor"
+  },
+  "Q2": {
+   "role": "transistor"
+  },
+  "Q3": {
+   "role": "transistor"
+  },
+  "R1": {
+   "role": "divider_resistor",
+   "note": "10k/10k RS-232 input dividers with BAT43 clamps"
+  },
+  "R2": {
+   "role": "divider_resistor"
+  },
+  "R3": {
+   "role": "divider_resistor"
+  },
+  "R4": {
+   "role": "divider_resistor"
+  },
+  "R5": {
+   "role": "divider_resistor"
+  },
+  "R6": {
+   "role": "divider_resistor"
+  },
+  "R7": {
+   "role": "pull_up"
+  },
+  "R8": {
+   "role": "series_resistor"
+  },
+  "R9": {
+   "role": "led_resistor",
+   "target": "D8"
+  },
+  "R10": {
+   "role": "converter_control",
+   "target": "U4"
+  },
+  "R11": {
+   "role": "series_resistor"
+  },
+  "R12": {
+   "role": "series_resistor"
+  },
+  "R13": {
+   "role": "series_resistor"
+  },
+  "R14": {
+   "role": "led_resistor",
+   "target": "D9"
+  },
+  "R15": {
+   "role": "converter_control",
+   "target": "U4"
+  },
+  "R16": {
+   "role": "converter_control",
+   "target": "U4"
+  },
+  "R17": {
+   "role": "signal_passive"
+  },
+  "R18": {
+   "role": "series_resistor"
+  },
+  "R19": {
+   "role": "series_resistor"
+  },
+  "R20": {
+   "role": "pull_up"
+  },
+  "R21": {
+   "role": "led_resistor",
+   "target": "D12"
+  },
+  "RV1": {
+   "role": "converter_control",
+   "target": "U4"
+  },
+  "U1": {
+   "role": "ic"
+  },
+  "U2": {
+   "role": "ic"
+  },
+  "U3": {
+   "role": "linear_regulator"
+  },
+  "U4": {
+   "role": "converter_ic"
+  },
+  "U5": {
+   "role": "ic"
+  },
+  "U6": {
+   "role": "ic"
+  }
+ },
+ "pairs": []
+}

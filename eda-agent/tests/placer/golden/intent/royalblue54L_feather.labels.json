@@ -1,0 +1,273 @@
+{
+ "board": "royalblue54L_feather",
+ "source_sha256": "5f54a63b4640f7d88a1019a0974ff16a775d282e0e141e3ea19d79895452f6f1",
+ "labelled_by": "Claude (F2), pending user review",
+ "definitions": "eda-agent/src/eda_agent/placer/intent/LABELS.md",
+ "parts": {
+  "C1": {
+   "role": "decap",
+   "target": "U2",
+   "evidence": "expert placement: VDDIO of U2 at 1.2 mm on VDD"
+  },
+  "C2": {
+   "role": "regulator_input_cap",
+   "target": "U2"
+  },
+  "C3": {
+   "role": "regulator_input_cap",
+   "target": "U2"
+  },
+  "C4": {
+   "role": "regulator_output_cap",
+   "target": "U2",
+   "note": "nPM1300 VSYS output; C2/C3 sit at PVDD (buck input) on the same net"
+  },
+  "C5": {
+   "role": "regulator_input_cap",
+   "target": "U2"
+  },
+  "C6": {
+   "role": "regulator_output_cap",
+   "target": "U2"
+  },
+  "C7": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: VBUS of U5 at 1.1 mm on VBUS"
+  },
+  "C8": {
+   "role": "regulator_output_cap",
+   "target": "U2"
+  },
+  "C9": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VDD of U1 at 2.5 mm on VDD"
+  },
+  "C10": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: VDD of U5 at 1.1 mm on /Debugger/nRF52_VDD"
+  },
+  "C11": {
+   "role": "decap",
+   "target": "U2",
+   "evidence": "expert placement: VBAT of U2 at 2.2 mm on +BATT",
+   "note": "nPM1300 VBAT bypass"
+  },
+  "C12": {
+   "role": "decap",
+   "target": "U4",
+   "evidence": "expert placement: VCC of U4 at 1.2 mm on VDD"
+  },
+  "C13": {
+   "role": "signal_passive"
+  },
+  "C14": {
+   "role": "signal_passive"
+  },
+  "C15": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: VDD of U5 at 1.1 mm on /Debugger/nRF52_VDD"
+  },
+  "C16": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: VDD of U5 at 1.8 mm on /Debugger/nRF52_VDD"
+  },
+  "C17": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: VDD of U5 at 1.3 mm on /Debugger/nRF52_VDD"
+  },
+  "C18": {
+   "role": "crystal_load_cap",
+   "target": "Y2"
+  },
+  "C19": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: DEC1 of U5 at 1.1 mm on Net-(U5-DEC1)"
+  },
+  "C20": {
+   "role": "crystal_load_cap",
+   "target": "Y2"
+  },
+  "C21": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: DEC3 of U5 at 1.9 mm on Net-(U5-DEC3)"
+  },
+  "C22": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: DEC6 of U5 at 1.9 mm on Net-(U5-DEC4)"
+  },
+  "C23": {
+   "role": "decap",
+   "target": "U5",
+   "evidence": "expert placement: DECUSB of U5 at 1.1 mm on Net-(U5-DECUSB)"
+  },
+  "C24": {
+   "role": "decap",
+   "target": "U6",
+   "evidence": "expert placement: V_{CCB} of U6 at 1.1 mm on VDD"
+  },
+  "C25": {
+   "role": "decap",
+   "target": "U6",
+   "evidence": "expert placement: V_{CCA} of U6 at 1.9 mm on /Debugger/nRF52_VDD"
+  },
+  "D1": {
+   "role": "led"
+  },
+  "D3": {
+   "role": "led"
+  },
+  "H1": {
+   "role": "mechanical"
+  },
+  "H2": {
+   "role": "mechanical"
+  },
+  "H3": {
+   "role": "mechanical"
+  },
+  "H4": {
+   "role": "mechanical"
+  },
+  "J1": {
+   "role": "connector"
+  },
+  "J2": {
+   "role": "connector"
+  },
+  "J3": {
+   "role": "connector"
+  },
+  "J4": {
+   "role": "connector"
+  },
+  "J5": {
+   "role": "connector"
+  },
+  "J6": {
+   "role": "connector"
+  },
+  "J8": {
+   "role": "connector"
+  },
+  "JP1": {
+   "role": "jumper"
+  },
+  "L1": {
+   "role": "converter_inductor",
+   "target": "U2"
+  },
+  "LOGO1": {
+   "role": "mechanical"
+  },
+  "R1": {
+   "role": "signal_passive"
+  },
+  "R2": {
+   "role": "pull_up"
+  },
+  "R3": {
+   "role": "pull_up"
+  },
+  "R4": {
+   "role": "converter_control",
+   "target": "U2"
+  },
+  "R5": {
+   "role": "pull_up"
+  },
+  "R6": {
+   "role": "led_resistor",
+   "target": "D1"
+  },
+  "R7": {
+   "role": "pull_up"
+  },
+  "R8": {
+   "role": "pull_up"
+  },
+  "SW1": {
+   "role": "switch"
+  },
+  "SW2": {
+   "role": "switch"
+  },
+  "TP1": {
+   "role": "test_point"
+  },
+  "TP2": {
+   "role": "test_point"
+  },
+  "TP3": {
+   "role": "test_point"
+  },
+  "TP4": {
+   "role": "test_point"
+  },
+  "TP5": {
+   "role": "test_point"
+  },
+  "TP6": {
+   "role": "test_point"
+  },
+  "TP7": {
+   "role": "test_point"
+  },
+  "TP8": {
+   "role": "test_point"
+  },
+  "TP9": {
+   "role": "test_point"
+  },
+  "TP10": {
+   "role": "test_point"
+  },
+  "TP11": {
+   "role": "test_point"
+  },
+  "TP12": {
+   "role": "test_point"
+  },
+  "U1": {
+   "role": "ic"
+  },
+  "U2": {
+   "role": "converter_ic"
+  },
+  "U3": {
+   "role": "esd",
+   "target": "J3"
+  },
+  "U4": {
+   "role": "ic"
+  },
+  "U5": {
+   "role": "ic"
+  },
+  "U6": {
+   "role": "ic"
+  },
+  "Y1": {
+   "role": "crystal",
+   "target": "U1"
+  },
+  "Y2": {
+   "role": "crystal",
+   "target": "U5"
+  }
+ },
+ "pairs": [
+  [
+   "/Debugger/D+",
+   "/Debugger/D-"
+  ]
+ ]
+}

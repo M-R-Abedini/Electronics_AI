@@ -81,15 +81,33 @@ class PlacerService:
              "route=true it also runs the strict Freerouting route check (about 1 to 5 minutes) and reports DRC "
              "attribution, coverage and every unrouted connection with its cause. Writes run_report.json and an "
              "HTML gallery to a new run folder; never writes the board."),
-             {"board_path": _STRING, "route": {"type": "boolean", "default": True}}, ["board_path"], True),
+             {"board_path": _STRING, "route": {"type": "boolean", "default": True}, "intent_path": _STRING},
+             ["board_path"], True),
+            ("intent_draft",
+             ("Draft the board's design intent (design_intent.json) from its netlist alone: the role of every part "
+              "(decap and its target IC, crystal and load caps, converter parts, ESD and its connector, pull-ups, "
+              "terminations, ...), net classes, differential pairs and blocks, each claim with its source and "
+              "confidence. Writes the draft next to the board as <board>.design_intent.json unless that file exists "
+              "(then into the run folder; never overwrites). Returns the questions it could not settle, critical "
+              "ones first. Settle them with datasheet or schematic evidence by editing the file: set the claim's "
+              "value, source {kind: 'llm', ref: '<datasheet URL + page>', client: '<your client>'} and confidence, "
+              "or ask the user and set confirmed_by_user=true. Never write coordinates. Then call intent_validate."),
+             {"board_path": _STRING, "out_path": _STRING}, ["board_path"], False),
+            ("intent_validate",
+             ("Validate a design_intent.json against its board: JSON schema, every reference, net and pin, target "
+              "roles, sources. Returns errors (the intent is refused), warnings, the canonical intent hash (the same "
+              "for two intents that differ only in order), claim counts (hard = confirmed or confidence >= 0.9; "
+              "uncertain < 0.6) and the open questions. Read-only."),
+             {"board_path": _STRING, "intent_path": _STRING}, ["board_path", "intent_path"], True),
             ("place_board",
              ("Place the whole board from scratch with the 2.0 placer (S1 fixed parts, S2b sides, S3 analytical and "
               "SA-only starts, S4 legalization, S5 annealing in the Rust core; the better legal result wins), write a "
               "NEW board file, route it with the strict Freerouting check and evaluate it against the expert. "
               "side_policy 'expert' keeps every part's side (fair comparison), 'top_only' is assembly level 1. "
               "Takes 1 to 10 minutes. Never modifies the input board."),
-             {"board_path": _STRING, "side_policy": {"type": "string", "enum": ["expert", "top_only"], "default": "expert"},
-              "seed": {"type": "integer", "minimum": 0, "default": 0}, "route": {"type": "boolean", "default": True}},
+             {"board_path": _STRING, "side_policy": {"type": "string", "enum": ["expert", "top_only"]},
+              "seed": {"type": "integer", "minimum": 0, "default": 0}, "route": {"type": "boolean", "default": True},
+              "intent_path": _STRING},
              ["board_path"], False),
             ("gallery",
              ("Build one side-by-side HTML gallery from run folders of placer__score or placer__place_board "
@@ -106,13 +124,41 @@ class PlacerService:
     def inspect(self, board_path: str) -> dict:
         return _inspect_summary(read_board(board_path))
 
-    def place_board(self, board_path: str, side_policy: str = "expert", seed: int = 0, route: bool = True) -> dict:
+    def intent_draft(self, board_path: str, out_path: str | None = None) -> dict:
+        from .intent import infer, model
+
+        board = read_board(board_path)
+        intent = infer.draft(board)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        target = Path(out_path) if out_path else Path(board_path).with_name(f"{board.name}.design_intent.json")
+        note = None
+        if target.exists():
+            note = f"{target} exists and was left untouched"
+            target = self.runs / f"{board.name}-intent-{stamp}" / "design_intent.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        model.dump(intent, target)
+        roles: dict[str, int] = {}
+        for part in intent["parts"].values():
+            roles[part["role"]["value"]] = roles.get(part["role"]["value"], 0) + 1
+        return {"intent_path": str(target), "note": note, "intent_sha256": model.intent_hash(intent),
+                "parts": len(intent["parts"]), "roles": dict(sorted(roles.items())),
+                "diff_pairs": [[p["value"]["positive"], p["value"]["negative"], p["confidence"]]
+                               for p in intent["diff_pairs"]],
+                "questions": intent["questions"][:60], "questions_total": len(intent["questions"])}
+
+    def intent_validate(self, board_path: str, intent_path: str) -> dict:
+        from .intent import model, validate
+
+        return validate.validate(model.load(intent_path), read_board(board_path))
+
+    def place_board(self, board_path: str, side_policy: str | None = None, seed: int = 0, route: bool = True,
+                    intent_path: str | None = None) -> dict:
         from .place.pipeline import place_board
 
         board_name = Path(board_path).stem
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         rep = place_board(board_path, out_dir=self.runs / f"{board_name}-place-{stamp}", side_policy=side_policy,
-                          seed=seed, route=route)
+                          seed=seed, route=route, intent_path=intent_path)
         info = rep["stages"]["place"]
         return {
             "passed": rep["passed"],
@@ -126,6 +172,7 @@ class PlacerService:
                                                                             "track_length_mm", "router_stop")}
                                   if rep["metrics"]["route"] else None)},
             "pro_score": rep["metrics"]["pro_score"],
+            "intent": rep["inputs"]["intent"],
             "run_report": str(Path(rep["artifacts"]["run_dir"]) / "run_report.json"),
             "gallery": rep["artifacts"]["gallery"],
         }
@@ -153,13 +200,16 @@ class PlacerService:
         out = gallery(panels, self.runs / f"gallery-{stamp}.html", title=title)
         return {"gallery": str(out), "panels": len(panels)}
 
-    def score(self, board_path: str, route: bool = True) -> dict:
+    def score(self, board_path: str, route: bool = True, intent_path: str | None = None) -> dict:
+        from .intent.resolve import resolve
+
         board = read_board(board_path)
+        intent, intent_info = resolve(board, intent_path)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         run_dir = (self.runs / f"{board.name}-{stamp}").resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         routed = route_check(board_path, out_dir=run_dir / "route") if route else None
-        evaluation = evaluate(board, routed["metrics"] if routed else None)
+        evaluation = evaluate(board, routed["metrics"] if routed else None, intent=intent)
         page = gallery([Panel(f"{board.name} (current placement)", board, evaluation,
                               routed["metrics"] if routed else None)], run_dir / "gallery.html",
                        title=f"{board.name}: score")
@@ -167,7 +217,7 @@ class PlacerService:
         if routed:
             gates += routed["gates"]
         rep = run_report.build(
-            kind="score", inputs={"board": board.source}, config={"route": route},
+            kind="score", inputs={"board": board.source, "intent": intent_info}, config={"route": route},
             stages={"evaluate": {"legality": {k: v for k, v in evaluation["legality"].items() if k != "findings"}},
                     "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
             metrics={**evaluation["metrics"], "pro_score": evaluation["pro_score"],
@@ -203,7 +253,8 @@ class PlacerService:
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         functions = {"inspect": self.inspect, "score": self.score, "place_board": self.place_board,
-                     "gallery": self.gallery}
+                     "gallery": self.gallery, "intent_draft": self.intent_draft,
+                     "intent_validate": self.intent_validate}
         if name not in functions:
             raise ValueError(f"Unknown placer tool: {name}")
         return await asyncio.to_thread(functions[name], **(arguments or {}))

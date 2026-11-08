@@ -4,13 +4,14 @@
 hpwl            half-perimeter wire length, all nets and signal nets
 crossings       proper crossings between pin-pair (MST) edges of different signal nets
 rudy            rectangular uniform wire density against track capacity
-critical_loops  v0 geometric proxies: decap pin distance, crystal distance
+critical_loops  decap -> target supply pin and crystal distances, from design_intent (F2);
+                v0 prefix heuristics only when no intent is given
 regularity      rotation grid and alignment of repeated passives
 
 "Signal nets" exclude the nets that fill a plane or pour (layer roles), since
 they connect through copper zones rather than pin-to-pin wires.  The critical
-loop proxies are heuristics by reference prefix and net name until intent
-(F2) names decaps and crystals explicitly.
+loop distances follow the intent's roles and targets; a target given only as
+candidates is measured to the nearest candidate pin on the same net.
 """
 
 from __future__ import annotations
@@ -141,7 +142,62 @@ def _is_ic(fp: Footprint) -> bool:
     return fp.prefix in ("U", "IC") and len(fp.pads) >= 4
 
 
-def critical_loops(board: Board) -> dict:
+def _stats(v: list[float]) -> dict:
+    if not v:
+        return {"n": 0}
+    s = sorted(v)
+    return {"n": len(s), "median_mm": round(median(s), 3), "p90_mm": round(s[math.ceil(0.9 * len(s)) - 1], 3),
+            "max_mm": round(s[-1], 3)}
+
+
+def critical_loops_intent(board: Board, intent: dict) -> dict:
+    """Distances that the roles in ``intent`` make critical, measured pad to pad on the same net."""
+    fps = {fp.ref: fp for fp in board.footprints}
+    parts = intent.get("parts", {})
+
+    def pins(ref: str, net: str) -> list[tuple[float, float]]:
+        fp = fps.get(ref)
+        return [pos for pad, pos in fp.pads_world() if pad.net == net] if fp else []
+
+    def nearest(ref: str, targets: list[str], net: str | None = None) -> float | None:
+        fp = fps.get(ref)
+        if fp is None:
+            return None
+        best = None
+        for pad, (x, y) in fp.pads_world():
+            if not pad.net or is_ground_net(pad.net) or (net and pad.net != net):
+                continue
+            for t in targets:
+                for a, b in pins(t, pad.net):
+                    d = math.hypot(a - x, b - y)
+                    best = d if best is None or d < best else best
+        return best
+
+    decap, load, crystal, unsettled = [], [], [], 0
+    for ref, part in parts.items():
+        role = part["role"]["value"]
+        tv = (part.get("target") or {}).get("value") or {}
+        targets = [tv["ref"]] if tv.get("ref") else list(tv.get("candidates", []))
+        if not targets:
+            continue
+        d = nearest(ref, targets, tv.get("net"))
+        if d is None:
+            continue
+        if role == "decap":
+            decap.append(d)
+            unsettled += tv.get("ref") is None
+        elif role == "crystal_load_cap":
+            load.append(d)
+        elif role == "crystal":
+            crystal.append(d)
+    return {"method": "design_intent v1 (role targets; candidates measured to the nearest)",
+            "intent_sha256": None, "decap_pin_distance": _stats(decap), "decaps_with_candidate_targets": unsettled,
+            "crystal_ic_distance": _stats(crystal), "crystal_load_distance": _stats(load)}
+
+
+def critical_loops(board: Board, intent: dict | None = None) -> dict:
+    if intent is not None:
+        return critical_loops_intent(board, intent)
     decaps = []
     for fp in board.footprints:
         nets = [p.net for p in fp.pads]
@@ -171,15 +227,8 @@ def critical_loops(board: Board) -> dict:
                 if pad.net and not is_ground_net(pad.net) and pad.net in ic_pads:
                     crystal.append(min(math.hypot(x - a, y - b) for a, b in ic_pads[pad.net]))
 
-    def stats(v: list[float]) -> dict:
-        if not v:
-            return {"n": 0}
-        s = sorted(v)
-        return {"n": len(s), "median_mm": round(median(s), 3), "p90_mm": round(s[math.ceil(0.9 * len(s)) - 1], 3),
-                "max_mm": round(s[-1], 3)}
-
-    return {"method": "v0 heuristic (prefix + net names); intent replaces it in F2",
-            "decap_pin_distance": stats(pin_dist), "crystal_ic_distance": stats(crystal)}
+    return {"method": "v0 heuristic (prefix + net names); used only without an intent",
+            "decap_pin_distance": _stats(pin_dist), "crystal_ic_distance": _stats(crystal)}
 
 
 def regularity(board: Board) -> dict:

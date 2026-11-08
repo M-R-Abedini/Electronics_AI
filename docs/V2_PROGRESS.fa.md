@@ -8,7 +8,7 @@
 | alpha.1 | F0b | تمام شد (commit `21f7c2d`) | 2026-11-07 | ۵ از ۵ |
 | alpha.1 | F0c | تمام شد (commit `3cd7f9c`، tag `v2.0.0-alpha.1`) | 2026-11-08 | ۴ از ۴ |
 | alpha.2 | F1 | تمام شد (tag `v2.0.0-alpha.2`)؛ Cypress کنار گذاشته شد (پلن F1: جزو گیت نیست)؛ بودجهٔ router: ۳۰ دقیقه؛ hash برد مرجع تو هنوز ثبت نشده | 2026-11-08 | ۵ از ۵ |
-| alpha.3 | F2 | — | — | — |
+| alpha.3 | F2 | پیاده‌سازی تمام؛ گیت‌های خودکار ۳ از ۳؛ در انتظار بازبینی برچسب‌ها و رتبه‌بندی کالیبراسیون Pro Score توسط تو | — | ۳ از ۳ خودکار |
 | alpha.3 | F3 | — | — | — |
 | alpha.4 | F4 | — | — | — |
 | alpha.4 | F5 | — | — | — |
@@ -150,3 +150,22 @@
 **فاصله با متخصص** روی StickHub و royalblue: HPWL و تقاطع کمتر ولی پوشش کمتر. یعنی این دو معیار روت‌پذیری را کامل نمی‌سنجند. این شکاف هدف F3 (fanout قطعی و جفت‌های USB) و F5 (برآوردگر PathFinder) است.
 
 ساخته‌شده: `crates/placer-core` (geom، problem، sa؛ ۱۱ آزمون Rust)، `placer/place/` (problem، analytical، pipeline، CLI)، baseline `placer_v2` در bench، `placer/cypress.py` و `scripts/cypress/`، ابزارهای MCP `placer__place_board` و `placer__gallery`. آزمون‌ها: ۲۴ واحد + ۹ کند. گالری‌ها: `.runtime/f1/bench_dev/<board>/gallery.html`.
+
+### F2 · درک مدار (2026-11-08، شاخهٔ `feat/v2-f2`)
+
+| گیت (پلن F2) | نتیجه | آستانه | |
+|---|---|---|---|
+| دقت نقش‌ها روی dev | **۹۸٫۵٪** (۳۹۴ از ۴۰۰ تصمیم‌گرفته)؛ نامطمئن جدا: ۳۲ از ۴۳۲ | ≥ ۹۰٪ | ✅ |
+| دقت نقش‌های بحرانی | **۱۰۰٪** (۸۲ از ۸۲ تصمیم‌گرفته)؛ نامطمئن جدا: **۳۱ از ۱۱۳** | ≥ ۹۵٪ | ✅ |
+| جفت‌های تفاضلی | ۹ از ۹، بدون جفت اشتباه | همه | ✅ |
+| همان intent روی دو کلاینت | دو کلاینت MCP واقعی (`claude-code` و `codex`) با یک intent در دو ترتیب متفاوت ⇒ hash یکسان intent و فایل برد بیت‌به‌بیت یکسان | یکسان | ✅ |
+
+**صادقانه:** اگر موارد نامطمئن را اشتباه حساب کنیم، دقت سخت‌گیرانه برای همهٔ نقش‌ها ۹۱٫۲٪ و برای نقش‌های بحرانی **۷۲٫۶٪** است. تقریباً همهٔ ۳۱ مورد نامطمئن بحرانی، هدف decap روی ریل‌های مشترک است: video `/graphic/` (U2، U21، U23، U24 روی +5V)، هفت خازن پورت StickHub و U5/U6 در royalblue. netlist به‌تنهایی نمی‌گوید هر خازن مال کدام IC است. این موارد به پرسش برای مدل (با دیتاشیت) یا تو تبدیل می‌شوند و طبق «اگر شکست خورد» پلن فقط با تأیید تو قید سخت می‌شوند. قواعد موتور در ۴ دور روی همین dev اصلاح شد، پس عدد dev خوش‌بینانه است. برچسب validation وجود ندارد و آزمون واقعی، آزمون مهرشدهٔ beta.1 است.
+
+**خطاهای باقی‌مانده** (۶): C22 در StickHub (خروجی load switch در برابر bulk)، C54 در video (خازن فیلتر LC، دور از U20)، P4 در video (هدر دوپین که در عمل jumper است)، R9 و R11 در video و R1 در ecc83 (مقاومت‌های شبکهٔ آنالوگ).
+
+**یافتهٔ مهم برای F3:** با معیار حلقهٔ بحرانی مبتنی بر intent، placer_v2 در royalblue و video امتیاز حلقه‌ٔ **۰** می‌گیرد: decapها از پین هدف دورند، چون نت‌های تغذیه و زمین صفحه هستند و از HPWL حذف می‌شوند. پس چیزی decap را به IC نزدیک نمی‌کند. ماکروی decap ladder در F3 همین را حل می‌کند.
+
+ساخته‌شده: `placer/intent/` (schema `design_intent.schema.json`، `model` با فرم canonical و hash، `infer` استنتاج قطعی از netlist با پایهٔ پین، نوع پین، شیت و توپولوژی، `validate`، `evaluate`، `review`، CLI `pixi run intent draft|validate|eval|review`)، تعریف نقش‌ها در `intent/LABELS.md`، برچسب dev در `eda-agent/tests/placer/golden/intent/` (اسکریپت `scripts/intent/build_dev_labels.py`)، ابزارهای MCP `placer__intent_draft` و `placer__intent_validate`، ورودی `intent_path` برای `placer__place_board` و `placer__score` (hash intent در `run_report.json`)، معیار حلقهٔ بحرانی از intent، و `pixi run calibrate page|fit` برای کالیبراسیون Pro Score. آزمون‌ها: ۲۸ واحد + ۱۱ کند (همه پاس).
+
+**در انتظار تو:** (۱) بازبینی برچسب‌ها: `.runtime/f2/labels_review.html`؛ (۲) رتبه‌بندی کور کالیبراسیون Pro Score: `.runtime/f2/calibration/calibration.html`. بعد از پاسخ تو، وزن‌ها برازش و Pro Score نسخهٔ ۱ ثبت می‌شود.

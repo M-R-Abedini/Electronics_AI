@@ -1,0 +1,412 @@
+{
+ "board": "stickhub",
+ "source_sha256": "db314ccb436b237e9c53fdc7bb6f7182914f3ad4b2b90e7358d4b5343172ff86",
+ "labelled_by": "Claude (F2), pending user review",
+ "definitions": "eda-agent/src/eda_agent/placer/intent/LABELS.md",
+ "parts": {
+  "C1": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC5 of U1 at 1.8 mm on +5V"
+  },
+  "C2": {
+   "role": "pin_cap",
+   "target": "U1"
+  },
+  "C3": {
+   "role": "regulator_output_cap",
+   "target": "U1",
+   "note": "XR22417 internal 3.3 V regulator output (pin 3V3_OUT)"
+  },
+  "C4": {
+   "role": "regulator_output_cap",
+   "target": "U1"
+  },
+  "C5": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC33 of U1 at 1.4 mm on +3.3V"
+  },
+  "C6": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC33 of U1 at 1.5 mm on +3.3V"
+  },
+  "C7": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC33 of U1 at 1.4 mm on +3.3V"
+  },
+  "C8": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC33 of U1 at 1.5 mm on +3.3V"
+  },
+  "C9": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC33 of U1 at 1.6 mm on +3.3V"
+  },
+  "C10": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC33 of U1 at 1.4 mm on +3.3V"
+  },
+  "C11": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC18 of U1 at 1.8 mm on +1V8"
+  },
+  "C12": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC18 of U1 at 1.5 mm on +1V8"
+  },
+  "C13": {
+   "role": "decap",
+   "target": "U1",
+   "evidence": "expert placement: VCC18 of U1 at 1.4 mm on +1V8"
+  },
+  "C14": {
+   "role": "decap",
+   "target": "J2",
+   "evidence": "expert placement: Pin_1 of J2 at 1.6 mm on +5V",
+   "note": "VBUS bypass of the port connector it sits on"
+  },
+  "C15": {
+   "role": "decap",
+   "target": "J6",
+   "evidence": "expert placement: Pin_1 of J6 at 1.6 mm on +5V"
+  },
+  "C16": {
+   "role": "decap",
+   "target": "J3",
+   "evidence": "expert placement: Pin_1 of J3 at 1.6 mm on +5V"
+  },
+  "C17": {
+   "role": "decap",
+   "target": "J7",
+   "evidence": "expert placement: Pin_1 of J7 at 1.7 mm on +5V"
+  },
+  "C18": {
+   "role": "decap",
+   "target": "J4",
+   "evidence": "expert placement: Pin_1 of J4 at 1.6 mm on +5V"
+  },
+  "C19": {
+   "role": "decap",
+   "target": "J8",
+   "evidence": "expert placement: Pin_1 of J8 at 1.6 mm on +5V"
+  },
+  "C20": {
+   "role": "decap",
+   "target": "J5",
+   "evidence": "expert placement: Pin_1 of J5 at 1.6 mm on +5V"
+  },
+  "C21": {
+   "role": "regulator_input_cap",
+   "target": "U2"
+  },
+  "C22": {
+   "role": "regulator_output_cap",
+   "target": "U2",
+   "note": "load-switch output; the other 22 uF parts are per-port VBUS bulk"
+  },
+  "C23": {
+   "role": "bulk_cap"
+  },
+  "C24": {
+   "role": "bulk_cap"
+  },
+  "C25": {
+   "role": "bulk_cap"
+  },
+  "C26": {
+   "role": "bulk_cap"
+  },
+  "C27": {
+   "role": "bulk_cap"
+  },
+  "C28": {
+   "role": "pin_cap",
+   "target": "U2"
+  },
+  "C29": {
+   "role": "bulk_cap"
+  },
+  "C30": {
+   "role": "bulk_cap"
+  },
+  "C31": {
+   "role": "bulk_cap"
+  },
+  "C32": {
+   "role": "bulk_cap"
+  },
+  "C33": {
+   "role": "bulk_cap"
+  },
+  "C34": {
+   "role": "bulk_cap"
+  },
+  "C35": {
+   "role": "bulk_cap"
+  },
+  "C36": {
+   "role": "bulk_cap"
+  },
+  "C37": {
+   "role": "bulk_cap"
+  },
+  "C38": {
+   "role": "bulk_cap"
+  },
+  "D1": {
+   "role": "esd",
+   "target": "J2",
+   "evidence": "connector on its net"
+  },
+  "D2": {
+   "role": "esd",
+   "target": "J2",
+   "evidence": "connector on its net"
+  },
+  "D3": {
+   "role": "esd",
+   "target": "J3",
+   "evidence": "connector on its net"
+  },
+  "D4": {
+   "role": "esd",
+   "target": "J3",
+   "evidence": "connector on its net"
+  },
+  "D5": {
+   "role": "esd",
+   "target": "J4",
+   "evidence": "connector on its net"
+  },
+  "D6": {
+   "role": "esd",
+   "target": "J4",
+   "evidence": "connector on its net"
+  },
+  "D7": {
+   "role": "esd",
+   "target": "J5",
+   "evidence": "connector on its net"
+  },
+  "D8": {
+   "role": "esd",
+   "target": "J5",
+   "evidence": "connector on its net"
+  },
+  "D9": {
+   "role": "esd",
+   "target": "J6",
+   "evidence": "connector on its net"
+  },
+  "D10": {
+   "role": "esd",
+   "target": "J6",
+   "evidence": "connector on its net"
+  },
+  "D11": {
+   "role": "esd",
+   "target": "J7",
+   "evidence": "connector on its net"
+  },
+  "D12": {
+   "role": "esd",
+   "target": "J7",
+   "evidence": "connector on its net"
+  },
+  "D13": {
+   "role": "esd",
+   "target": "J8",
+   "evidence": "connector on its net"
+  },
+  "D14": {
+   "role": "esd",
+   "target": "J8",
+   "evidence": "connector on its net"
+  },
+  "D15": {
+   "role": "led"
+  },
+  "D16": {
+   "role": "led"
+  },
+  "D17": {
+   "role": "led"
+  },
+  "D18": {
+   "role": "led"
+  },
+  "D19": {
+   "role": "led"
+  },
+  "D20": {
+   "role": "led"
+  },
+  "D21": {
+   "role": "led"
+  },
+  "D22": {
+   "role": "esd",
+   "target": "J1",
+   "evidence": "connector on its net"
+  },
+  "D23": {
+   "role": "esd",
+   "target": "J1",
+   "evidence": "connector on its net"
+  },
+  "D24": {
+   "role": "esd",
+   "target": "J1",
+   "evidence": "expert placement: nearest connector pin on VIN at 2.0 mm (JP1 bridges VIN to J1's VBUS)"
+  },
+  "D25": {
+   "role": "esd",
+   "target": "J8",
+   "evidence": "expert placement: nearest connector pin on +5V at 2.3 mm"
+  },
+  "H1": {
+   "role": "mechanical"
+  },
+  "J1": {
+   "role": "connector"
+  },
+  "J2": {
+   "role": "connector"
+  },
+  "J3": {
+   "role": "connector"
+  },
+  "J4": {
+   "role": "connector"
+  },
+  "J5": {
+   "role": "connector"
+  },
+  "J6": {
+   "role": "connector"
+  },
+  "J7": {
+   "role": "connector"
+  },
+  "J8": {
+   "role": "connector"
+  },
+  "J9": {
+   "role": "connector"
+  },
+  "JP1": {
+   "role": "jumper"
+  },
+  "LOGO1": {
+   "role": "mechanical"
+  },
+  "LOGO2": {
+   "role": "mechanical"
+  },
+  "LOGO3": {
+   "role": "mechanical"
+  },
+  "LOGO4": {
+   "role": "mechanical"
+  },
+  "R1": {
+   "role": "divider_resistor"
+  },
+  "R2": {
+   "role": "divider_resistor"
+  },
+  "R3": {
+   "role": "pull_up"
+  },
+  "R4": {
+   "role": "pull_up"
+  },
+  "R5": {
+   "role": "pull_up"
+  },
+  "R6": {
+   "role": "bias_resistor",
+   "target": "U1"
+  },
+  "R7": {
+   "role": "led_resistor",
+   "target": "D15"
+  },
+  "R8": {
+   "role": "led_resistor",
+   "target": "D16"
+  },
+  "R9": {
+   "role": "led_resistor",
+   "target": "D17"
+  },
+  "R10": {
+   "role": "led_resistor",
+   "target": "D18"
+  },
+  "R11": {
+   "role": "led_resistor",
+   "target": "D19"
+  },
+  "R12": {
+   "role": "led_resistor",
+   "target": "D20"
+  },
+  "R13": {
+   "role": "led_resistor",
+   "target": "D21"
+  },
+  "U1": {
+   "role": "ic"
+  },
+  "U2": {
+   "role": "power_switch"
+  },
+  "Y1": {
+   "role": "crystal",
+   "target": "U1"
+  }
+ },
+ "pairs": [
+  [
+   "/D+",
+   "/D-"
+  ],
+  [
+   "/U1D+",
+   "/U1D-"
+  ],
+  [
+   "/U2D+",
+   "/U2D-"
+  ],
+  [
+   "/U3D+",
+   "/U3D-"
+  ],
+  [
+   "/U4D+",
+   "/U4D-"
+  ],
+  [
+   "/U5D+",
+   "/U5D-"
+  ],
+  [
+   "/U6D+",
+   "/U6D-"
+  ],
+  [
+   "/U7D+",
+   "/U7D-"
+  ]
+ ]
+}

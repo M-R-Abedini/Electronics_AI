@@ -121,11 +121,17 @@ def _greedy_start(pb: problem.PlaceProblem) -> list[tuple[float, float, int]]:
     return out
 
 
-def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, side_policy: str = "expert",
+def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, side_policy: str | None = None,
                 mode: str = "best", seed: int = 0, route: bool = True,
-                router_timeout_s: int | None = None) -> dict:
+                router_timeout_s: int | None = None, intent_path: str | Path | None = None) -> dict:
+    """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""
+    from ..intent.resolve import resolve
+    from ..intent.resolve import side_policy as policy_of
+
     src = Path(board_path).resolve()
     board = read_board(src)
+    intent, intent_info = resolve(board, intent_path)
+    side_policy = policy_of(intent, side_policy)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = (Path(out_dir) if out_dir else RUNTIME_DIR / "place" / f"{board.name}-{stamp}").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -134,8 +140,8 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     routed = (route_check(out_board, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
               if route else None)
     fixed = set(info["fixed"])
-    evaluation = evaluate(placed, routed["metrics"] if routed else None, fixed)
-    page = gallery([Panel(f"{board.name} (expert)", board, evaluate(board, fixed=fixed)),
+    evaluation = evaluate(placed, routed["metrics"] if routed else None, fixed, intent)
+    page = gallery([Panel(f"{board.name} (expert)", board, evaluate(board, fixed=fixed, intent=intent)),
                     Panel(f"{board.name} (placer v2, {mode})",
                           read_board(routed["artifacts"]["routed_board"]) if routed else placed, evaluation,
                           routed["metrics"] if routed else None)],
@@ -145,7 +151,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     if routed:
         gates += [g for g in routed["gates"] if g["name"] != "time_budget_s"]
     rep = run_report.build(
-        kind="place_board", inputs={"board": board.source},
+        kind="place_board", inputs={"board": board.source, "intent": intent_info},
         config={"side_policy": side_policy, "mode": mode, "seed": seed, "w_cross": problem.WEIGHT_SIGNAL * W_CROSS,
                 "sa_moves_per_part": SA_MOVES_PER_PART},
         stages={"place": info, "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
