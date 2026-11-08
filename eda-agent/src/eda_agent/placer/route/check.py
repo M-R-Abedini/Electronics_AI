@@ -10,33 +10,24 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import time
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from .. import report as run_report
-from ..toolchain import RUNTIME_DIR, kicad, sha256_file
+from ..io.kicad import KiCadAdapterError, read_board, run_helper
+from ..ir import plane_zone_layers
+from ..toolchain import RUNTIME_DIR, sha256_file
 from . import drc, dsn
 from .freerouting import RouterConfig, route
 
-HELPER = Path(__file__).resolve().parents[1] / "io" / "kicad_pcbnew_helper.py"
 PROJECT_SIDECARS = (".kicad_pro", ".kicad_dru")  # .kicad_prl is per-user view state
 TIME_BUDGET_S = 300  # plan F0a acceptance: whole path <= 5 minutes on StickHub
 
 
-class RouteCheckError(RuntimeError):
+class RouteCheckError(KiCadAdapterError):
     pass
-
-
-def _helper(*args: str | Path, timeout_s: int = 900) -> None:
-    cmd = [str(kicad().python), "-I", str(HELPER), *map(str, args)]
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
-    if done.returncode != 0:
-        noise = "swig/python detected a memory leak"
-        err = "\n".join(line for line in done.stderr.splitlines() if noise not in line)
-        raise RouteCheckError(f"pcbnew helper '{args[0]}' failed: {err.strip()[-1500:]}")
 
 
 def _load(path: Path) -> dict:
@@ -130,7 +121,13 @@ def classify_unrouted(items: list[dict], finished: dict, stop_reason: str) -> li
 
 def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 config: RouterConfig | None = None, neck_width_um: float | None = None,
-                obstacle_keepouts: bool = True) -> dict:
+                obstacle_keepouts: bool = True, reference_board: str | Path | None = None,
+                router_timeout_s: int | None = None) -> dict:
+    """Route-check ``board``.  ``reference_board`` is the original input whose DRC
+    findings count as pre-existing (architecture 8.1.3); it defaults to ``board``
+    itself, which is right only when ``board`` *is* the designer's file.  A
+    candidate placement must pass its original board here, or violations it
+    created would be excused as pre-existing."""
     started = time.monotonic()
     board = Path(board)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -149,10 +146,15 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
 
     t = time.monotonic()
     source, inputs = stage_input(board, run_dir)
-    reference = drc.run(source, work / "drc_input.json")
+    reference = drc.run_cached(Path(reference_board) if reference_board else Path(board), work / "drc_input.json")
+    inputs["reference_board"] = str(Path(reference_board).resolve()) if reference_board else inputs["board"]["path"]
     t = tick("drc_input", t)
 
-    _helper("prepare", source, work / "prepared.kicad_pcb", work / "board.dsn", work / "prepare.json")
+    ir = read_board(source)
+    keep = plane_zone_layers(ir)
+    (work / "plane_zones.json").write_text(json.dumps(keep, indent=1), encoding="utf-8")
+    run_helper("prepare", source, work / "plane_zones.json", work / "prepared.kicad_pcb", work / "board.dsn",
+               work / "prepare.json")
     prepared = _load(work / "prepare.json")
     if not prepared["dsn_exported"]:
         raise RouteCheckError("KiCad failed to export the Specctra DSN")
@@ -164,6 +166,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
 
     neck = neck_width_um if neck_width_um is not None else round(prepared["min_track_width_mm"] * 1000, 3)
     cfg = replace(config, neck_width_um=neck) if config else RouterConfig(neck_width_um=neck)
+    if router_timeout_s is not None:
+        cfg = replace(cfg, timeout_s=router_timeout_s)
     ses = work / "route.ses"
     routed = route(route_dsn, ses, work / "freerouting", cfg)
     t = tick("freerouting", t)
@@ -172,7 +176,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                               f"stop {routed.stop_reason}); see {work / 'freerouting'}")
 
     out_board = output / f"{board.stem}.routed.kicad_pcb"
-    _helper("finish", source, ses, out_board, work / "finish.json")
+    run_helper("finish", source, ses, out_board, work / "finish.json")
     finished = _load(work / "finish.json")
     for suffix in PROJECT_SIDECARS:
         side = source.with_suffix(suffix)
@@ -205,6 +209,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         "session_sha256": sha256_file(ses),
         "router_passes": routed.passes,
         "router_stop": routed.stop_reason,
+        "deterministic": routed.stop_reason in ("converged", "completed"),
         "seconds_total": total_s,
     }
     gates = [
@@ -222,6 +227,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         config={"router": asdict(cfg), "obstacle_keepouts": obstacle_keepouts},
         stages={
             "prepare": {k: v for k, v in prepared.items() if k != "obstacles"},
+            "layer_roles": [asdict(r) for r in ir.stackup.roles],
             "obstacle_keepouts": {"exported": len(keepouts), "by_kind": _by_kind(prepared["obstacles"]),
                                   "skipped": skipped},
             "freerouting": routed.summary(),

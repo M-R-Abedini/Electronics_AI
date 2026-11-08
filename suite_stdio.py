@@ -44,7 +44,8 @@ tools discover and stage external libraries. si_pi__ tools classify and audit re
 PCB copper, preview qualified physical rules, and cross-probe stored violations.
 Missing geometry or physics data is reported as unknown. supply__ tools audit sourced stock/pricing (unknown is not
 out-of-stock); route__ runs local DSN routing with explicit native-exchange
-limits. suite__ manages disk checkpoints; telemetry__status reports optional
+limits. placer__ inspects and scores KiCad board placements (V2 placer; reads the board, writes
+only a run folder). suite__ manages disk checkpoints; telemetry__status reports optional
 local collection which is off by default. Opaque script/menu writes require
 explicit checkpoint_files on suite_invoke. Discover before declaring a
 capability absent. Inspect the intended project/document before edits: PcbDoc,
@@ -846,6 +847,7 @@ async def serve(options):
         for namespace, module_name, class_name in (
                 ('supply', 'suite_supply_chain', 'SupplyChain'),
                 ('route', 'suite_autoroute', 'AutorouteService'),
+                ('placer', 'eda_agent.placer.mcp', 'PlacerService'),
                 ('telemetry', 'suite_telemetry', 'TelemetryCollector')):
             try:
                 module = importlib.import_module(module_name)

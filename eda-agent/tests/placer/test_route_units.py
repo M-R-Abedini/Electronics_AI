@@ -43,6 +43,8 @@ def test_router_flags_are_the_architecture_configuration():
     assert "--router.neck_width_um=150" in flags
     assert "--router.strict_drc=true" in flags
     assert "--router.optimizer.max_threads=1" in flags
+    assert "--router.job_timeout=00:10:00" in flags
+    assert "--router.job_timeout=01:02:05" in RouterConfig(neck_width_um=150, timeout_s=3725).flags()
 
 
 def test_parse_log_reads_passes_stop_and_pin_violations():
@@ -56,6 +58,11 @@ def test_parse_log_reads_passes_stop_and_pin_violations():
     got = parse_log(log)
     assert got["passes"] == 19 and got["stop_reason"] == "converged" and got["log_unrouted"] == 10
     assert got["pre_existing_violations"] == ["JP1.2 [net VIN] <-> JP1.1 [net Net-(J1-Pin_1)]"]
+
+
+def test_parse_log_reads_graceful_timeout():
+    got = parse_log("Auto-routing pass #1 on board 'a'\nJob 'x' finished with state: TIMED_OUT (elapsed: 1 minute)\n")
+    assert got["stop_reason"] == "timeout"
 
 
 def _v(kind, *descs, severity="error"):

@@ -1,0 +1,18 @@
+[package]
+name = "placer-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Electronics AI placement core (geometry, cost, legalization, annealing)"
+publish = false
+
+[lib]
+name = "placer_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py312"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

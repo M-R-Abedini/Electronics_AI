@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "electronics-ai-placer": {
+      "type": "stdio",
+      "command": "C:\\Users\\mamzi\\AppData\\Local\\pixi\\bin\\pixi.exe",
+      "args": ["run", "-q", "--manifest-path", "D:\\project\\Electronics_AI\\pixi.toml", "placer-mcp"]
+    }
+  }
+}

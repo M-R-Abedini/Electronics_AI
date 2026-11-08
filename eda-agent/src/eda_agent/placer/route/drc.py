@@ -10,13 +10,16 @@ project are honoured, because ``--severity-exclusions`` is not requested.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..toolchain import kicad
+from ..toolchain import RUNTIME_DIR, kicad, sha256_file
 
 _ROUTING = re.compile(r"^(Track|Via|Arc|Blind/buried via|Micro via|Through via)\b")
 _NET = re.compile(r"\[([^\]]*)\]")
@@ -29,10 +32,37 @@ def run(board: Path, out_json: Path, *, refill: bool = True, timeout_s: int = 60
     if refill:
         cmd.append("--refill-zones")
     cmd.append(str(board))
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
+    done = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout_s,
+                          check=False)
     if not out_json.is_file():
         raise RuntimeError(f"kicad-cli drc failed ({done.returncode}): {done.stderr.strip()[:400]}")
     return json.loads(out_json.read_text(encoding="utf-8"))
+
+
+def run_cached(board: Path, out_json: Path) -> dict:
+    """DRC of an input board, cached by the hashes of the board and its project files.
+
+    The input never changes between baselines of one benchmark, and its DRC with
+    zone refill is the slowest step of a route check (about a minute on ecc83).
+    """
+    board = board.resolve()
+    parts = [sha256_file(board)] + [sha256_file(board.with_suffix(s)) for s in (".kicad_pro", ".kicad_dru")
+                                    if board.with_suffix(s).is_file()]
+    key = hashlib.sha256(("|".join(parts) + "|" + kicad().version).encode()).hexdigest()[:32]
+    cache = RUNTIME_DIR / "cache" / "drc" / f"{key}.json"
+    if cache.is_file():
+        shutil.copyfile(cache, out_json)
+        return json.loads(cache.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(prefix="eai_drc_") as tmp:
+        copy = Path(tmp) / board.name  # never run kicad-cli next to the user's file
+        shutil.copyfile(board, copy)
+        for s in (".kicad_pro", ".kicad_dru"):
+            if board.with_suffix(s).is_file():
+                shutil.copyfile(board.with_suffix(s), copy.with_suffix(s))
+        result = run(copy, out_json)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(out_json, cache)
+    return result
 
 
 def _key(v: dict) -> tuple:

@@ -9,6 +9,6 @@ Layers:
     route_check            -- trial routing with Freerouting
 """
 
-from .ir import Board, Footprint, Pad, Rules
+from .ir import Board, Footprint, Pad
 
-__all__ = ["Board", "Footprint", "Pad", "Rules"]
+__all__ = ["Board", "Footprint", "Pad"]

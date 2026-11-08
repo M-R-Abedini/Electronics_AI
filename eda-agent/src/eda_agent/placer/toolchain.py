@@ -72,7 +72,8 @@ def kicad() -> KiCad:
     python = root / "bin" / "python.exe"
     if not python.is_file():
         raise ToolchainError(f"KiCad bundled Python missing: {python}")
-    out = subprocess.run([str(cli), "version"], capture_output=True, text=True, timeout=60, check=False)
+    out = subprocess.run([str(cli), "version"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                         timeout=60, check=False)
     version = out.stdout.strip()
     if version != KICAD_VERSION:
         raise ToolchainError(f"KiCad {KICAD_VERSION} required, found {version or 'unknown'}")
@@ -104,6 +105,7 @@ def freerouting() -> Freerouting:
     if digest != FREEROUTING_SHA256:
         raise ToolchainError(f"Freerouting jar SHA-256 mismatch: {digest}")
     java = _java()
-    out = subprocess.run([str(java), "-version"], capture_output=True, text=True, timeout=60, check=False)
+    out = subprocess.run([str(java), "-version"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                         timeout=60, check=False)
     first = (out.stderr or out.stdout).splitlines()[:1]
     return Freerouting(jar=jar, java=java, java_version=first[0] if first else "unknown", sha256=digest)
