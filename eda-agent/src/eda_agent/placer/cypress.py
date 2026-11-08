@@ -78,6 +78,11 @@ def to_cypress(board: Board, fixed: set[str]) -> dict:
     for o in board.outline:
         xs += [p[0] for p in o.outer]
         ys += [p[1] for p in o.outer]
+    # single-pin nets carry no wirelength and are the likely cause of a segfault in Cypress's RMST op (ecc83)
+    lonely = {n for n, net in nets.items() if len(net["pins"]) < 2}
+    for comp in comps.values():
+        comp["pins"] = {k: v for k, v in comp["pins"].items() if v["net"] not in lonely}
+    nets = {n: net for n, net in nets.items() if n not in lonely}
     return {"name": board.name, "components": comps, "nets": nets, "layers": ["TOP", "BOTTOM"],
             "x_range": [min(xs), max(xs)], "y_range": [min(ys), max(ys)], "fixed": sorted(fixed)}
 

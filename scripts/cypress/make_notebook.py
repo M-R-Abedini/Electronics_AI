@@ -27,7 +27,8 @@ cells = [
 3. When the last cell finishes, `cypress_out.zip` downloads. Send it back.
 
 The build pins Cypress's own stack: Python 3.10, PyTorch 1.13.1 + CUDA 11.7, nvcc 11.7 with gcc 11,
-because Colab's default PyTorch needs C++17 while Cypress compiles as C++14. Every step stops
+because Colab's default PyTorch needs C++17 while Cypress compiles as C++14; numpy stays at 1.23.5
+because Cypress still calls `np.str`, removed in numpy 1.24. Every step stops
 with a clear message if the GPU, CUDA or the CUDA kernels are missing; nothing falls back to the CPU.
 First run takes about 25 minutes (CUDA toolkit download and the build).
 """),
@@ -82,7 +83,7 @@ fi
 export MAMBA_ROOT_PREFIX=/content/mamba
 [ -x /content/env/bin/python ] || /content/bin/micromamba create -y -q -p /content/env -c conda-forge python=3.10 pip
 /content/env/bin/pip install -q torch==1.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
-/content/env/bin/pip install -q "numpy<2" scipy shapely matplotlib cairocffi pyunpack patool pkgconfig \\
+/content/env/bin/pip install -q "numpy==1.23.5" scipy shapely matplotlib cairocffi pyunpack patool pkgconfig \\
     "cmake>=3.21,<3.28" pyyaml
 /content/env/bin/python -c "import torch; assert torch.cuda.is_available(), 'PyTorch sees no CUDA'; print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))"
 """),
