@@ -1,0 +1,33 @@
+﻿id,polar_structure,H1,H2,W1,W2,T1,S1,Er1,Er2,C1,C2,C3,CEr,polar_z0,polar_zdiff,note
+SM01,Surface Microstrip 1B,0.1,,0.1,0.1,0.035,,4.5,,,,,,,,8L/4L thin prepreg
+SM02,Surface Microstrip 1B,0.1,,0.2,0.2,0.035,,4.5,,,,,,,,
+SM03,Surface Microstrip 1B,0.2,,0.3,0.3,0.035,,4.5,,,,,,,,~50 ohm
+SM04,Surface Microstrip 1B,0.2,,0.15,0.15,0.035,,4.5,,,,,,,,
+SM05,Surface Microstrip 1B,0.48,,0.2,0.2,0.035,,4.5,,,,,,,,video/coldfire 4L
+SM06,Surface Microstrip 1B,0.48,,0.9,0.9,0.035,,4.5,,,,,,,,~50 ohm
+SM07,Surface Microstrip 1B,1.51,,0.15,0.15,0.035,,4.5,,,,,,,,StickHub 2L min track
+SM08,Surface Microstrip 1B,1.51,,0.5,0.5,0.035,,4.5,,,,,,,,pic/ecc83 2L
+SM09,Surface Microstrip 1B,1.51,,2.8,2.8,0.035,,4.5,,,,,,,,~50 ohm on 2L
+CM01,Coated Microstrip 1B,0.1,,0.2,0.2,0.035,,4.5,,0.01,0.01,,3.8,,,mask 10 um
+CM02,Coated Microstrip 1B,0.2,,0.3,0.3,0.035,,4.5,,0.01,0.01,,3.8,,,
+CM03,Coated Microstrip 1B,0.48,,0.2,0.2,0.035,,4.5,,0.01,0.01,,3.8,,,
+CM04,Coated Microstrip 1B,1.51,,0.5,0.5,0.035,,4.5,,0.01,0.01,,3.8,,,
+CM05,Coated Microstrip 1B,1.51,,2.8,2.8,0.035,,4.5,,0.01,0.01,,3.8,,,
+CM06,Coated Microstrip 1B,0.2,,0.3,0.3,0.035,,4.5,,0.025,0.025,,3.8,,,mask 25 um
+CM07,Coated Microstrip 1B,1.51,,0.15,0.15,0.035,,4.5,,0.025,0.025,,3.8,,,
+OS01,Offset Stripline 1B1A,0.1,0.335,0.1,0.1,0.035,,4.5,4.5,,,,,,,"royalblue In-layer: 0.1 prepreg below, 0.3 core above"
+OS02,Offset Stripline 1B1A,0.1,0.335,0.15,0.15,0.035,,4.5,4.5,,,,,,,
+OS03,Offset Stripline 1B1A,0.2,0.235,0.15,0.15,0.035,,4.5,4.5,,,,,,,symmetric
+OS04,Offset Stripline 1B1A,0.48,0.515,0.2,0.2,0.035,,4.5,4.5,,,,,,,symmetric 4L inner
+ECSM01,Edge Coupled Surface Microstrip 1B,0.1,,0.125,0.125,0.035,0.2032,4.5,,,,,,,,royalblue USB_DIFF
+ECSM02,Edge Coupled Surface Microstrip 1B,0.1,,0.1,0.1,0.035,0.15,4.5,,,,,,,,
+ECSM03,Edge Coupled Surface Microstrip 1B,0.2,,0.15,0.15,0.035,0.15,4.5,,,,,,,,
+ECSM04,Edge Coupled Surface Microstrip 1B,0.48,,0.2,0.2,0.035,0.25,4.5,,,,,,,,4L default diff
+ECSM05,Edge Coupled Surface Microstrip 1B,1.51,,0.15,0.15,0.035,0.15,4.5,,,,,,,,StickHub USB
+ECSM06,Edge Coupled Surface Microstrip 1B,1.51,,0.5,0.5,0.035,0.2,4.5,,,,,,,,
+ECCM01,Edge Coupled Coated Microstrip 1B,0.1,,0.125,0.125,0.035,0.2032,4.5,,0.01,0.01,0.01,3.8,,,royalblue USB_DIFF with mask
+ECCM02,Edge Coupled Coated Microstrip 1B,1.51,,0.15,0.15,0.035,0.15,4.5,,0.01,0.01,0.01,3.8,,,StickHub USB with mask
+ECCM03,Edge Coupled Coated Microstrip 1B,0.48,,0.2,0.2,0.035,0.25,4.5,,0.01,0.01,0.01,3.8,,,
+ECCM04,Edge Coupled Coated Microstrip 1B,0.2,,0.15,0.15,0.035,0.15,4.5,,0.025,0.025,0.025,3.8,,,mask 25 um
+ECOS01,Edge Coupled Offset Stripline 1B1A,0.1,0.335,0.1,0.1,0.035,0.15,4.5,4.5,,,,,,,8L inner pair
+ECOS02,Edge Coupled Offset Stripline 1B1A,0.2,0.235,0.125,0.125,0.035,0.2,4.5,4.5,,,,,,,symmetric

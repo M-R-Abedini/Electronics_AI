@@ -8,6 +8,7 @@
 //! Python sees one class, `PlacementProblem`, plus the `hpwl` kernel kept from the F0b spike.
 
 pub mod geom;
+pub mod grid_route;
 pub mod problem;
 pub mod sa;
 
@@ -206,10 +207,26 @@ impl PlacementProblem {
     }
 }
 
+/// Grid A* for S6a: `blocked` is nl*ny*nx bytes (layer-major), `via_ok` ny*nx bytes; cells are (x, y, layer).
+#[pyfunction]
+#[pyo3(signature = (nx, ny, nl, blocked, via_ok, starts, goals, via_cost, turn45, turn90, max_expansions=20_000_000))]
+#[allow(clippy::too_many_arguments)]
+fn grid_astar(nx: usize, ny: usize, nl: usize, blocked: &[u8], via_ok: &[u8], starts: Vec<(usize, usize, usize)>,
+              goals: Vec<(usize, usize, usize)>, via_cost: f64, turn45: f64, turn90: f64, max_expansions: usize)
+              -> PyResult<Option<Vec<(usize, usize, usize)>>> {
+    if blocked.len() != nx * ny * nl || via_ok.len() != nx * ny {
+        return Err(pyo3::exceptions::PyValueError::new_err("grid sizes do not match nx, ny, nl"));
+    }
+    let grid = grid_route::Grid { nx, ny, nl, blocked, via_ok };
+    let costs = grid_route::Costs { via: via_cost, turn45, turn90 };
+    Ok(grid_route::astar(&grid, &starts, &goals, &costs, max_expansions))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(hpwl, m)?)?;
+    m.add_function(wrap_pyfunction!(grid_astar, m)?)?;
     m.add_class::<PlacementProblem>()?;
     Ok(())
 }
