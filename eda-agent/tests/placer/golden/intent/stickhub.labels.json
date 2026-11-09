@@ -71,7 +71,7 @@
    "role": "decap",
    "target": "J2",
    "evidence": "expert placement: Pin_1 of J2 at 1.6 mm on +5V",
-   "note": "VBUS bypass of the port connector it sits on"
+   "note": "schematic note: 'ESD caps at connectors / plug'"
   },
   "C15": {
    "role": "decap",
@@ -108,9 +108,8 @@
    "target": "U2"
   },
   "C22": {
-   "role": "regulator_output_cap",
-   "target": "U2",
-   "note": "load-switch output; the other 22 uF parts are per-port VBUS bulk"
+   "role": "bulk_cap",
+   "note": "schematic note over C22..C38: 'Shared VBUS capacitance' (user review 2026-11-09)"
   },
   "C23": {
    "role": "bulk_cap"

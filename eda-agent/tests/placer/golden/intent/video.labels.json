@@ -228,8 +228,9 @@
    "role": "signal_passive"
   },
   "C54": {
-   "role": "bulk_cap",
-   "note": "LC filter output of U20's supply, placed 25 mm from U20: bulk, not a local decap"
+   "role": "decap",
+   "target": "U20",
+   "note": "local decap of U20 pin 8, with L2 forming its LC supply filter (user review 2026-11-09); the expert placed it 25 mm away, a placement weakness, not a different role"
   },
   "C55": {
    "role": "bulk_cap"
@@ -349,7 +350,8 @@
    "role": "connector"
   },
   "P4": {
-   "role": "jumper"
+   "role": "jumper",
+   "note": "two-pin header that works as a jumper on U23's M0-M2 mode pins (user review 2026-11-09)"
   },
   "P5": {
    "role": "connector"
@@ -407,13 +409,17 @@
    "target": "U9"
   },
   "R9": {
-   "role": "signal_passive"
+   "role": "bias_resistor",
+   "target": "U20",
+   "note": "U20 pin 21 BURST ADJ setting network to ground through POT1 (user review 2026-11-09, TDA8501 datasheet)"
   },
   "R10": {
    "role": "series_resistor"
   },
   "R11": {
-   "role": "signal_passive"
+   "role": "signal_passive",
+   "target": "U20",
+   "note": "shunt termination of delay line L6's output to VREF (pin 13), not in series with the signal (user review 2026-11-09, TDA8501 datasheet)"
   },
   "R12": {
    "role": "bias_resistor",

@@ -45,11 +45,10 @@ LABELS: dict[str, dict[str, str]] = {
     "stickhub": {
         "decap": "C1 C5-C13 C14-C20",
         "regulator_output_cap@U1": "C3 C4",
-        "regulator_output_cap@U2": "C22",
         "regulator_input_cap@U2": "C21",
         "pin_cap@U1": "C2",
         "pin_cap@U2": "C28",
-        "bulk_cap": "C23-C27 C29-C38",
+        "bulk_cap": "C22-C27 C29-C38",
         "esd": "D1-D14 D22 D23 D24 D25",
         "led": "D15-D21",
         "mechanical": "H1 LOGO1-LOGO4",
@@ -115,8 +114,10 @@ LABELS: dict[str, dict[str, str]] = {
         "pin_cap@U10": "C6 C7 C16",
         "pin_cap@U9": "C32 C34 C35 C42",
         "pin_cap@U20": "C43 C44 C45 C48 C64",
-        "signal_passive": "C37 C46 C47 C53 L1 L6 POT1 R9 R11 R32 R33 R34",
-        "bulk_cap": "C38 C51 C52 C54 C55 C56 C57 C62 C63 C67 C68 C69",
+        "signal_passive": "C37 C46 C47 C53 L1 L6 POT1 R32 R33 R34",
+        "signal_passive@U20": "R11",
+        "bulk_cap": "C38 C51 C52 C55 C56 C57 C62 C63 C67 C68 C69",
+        "decap@U20": "C54",
         "crystal_load_cap@X1": "C49 C50",
         "crystal_load_cap@X2": "C65 C66",
         "crystal_load_cap@X3": "CV1",
@@ -130,6 +131,7 @@ LABELS: dict[str, dict[str, str]] = {
         "pull_up": "R4 R5 R6 R7 R28 R29 R48 RR1-RR8",
         "bias_resistor@U9": "R8",
         "bias_resistor@U10": "R12 R27",
+        "bias_resistor@U20": "R9",
         "bias_resistor@U8": "R37 R38",
         "led_resistor": "R13",
         "pull_down": "R14 R15",
@@ -154,13 +156,21 @@ LABELS: dict[str, dict[str, str]] = {
 }
 
 NOTES = {
-    ("stickhub", "C14"): "VBUS bypass of the port connector it sits on",
-    ("stickhub", "C22"): "load-switch output; the other 22 uF parts are per-port VBUS bulk",
+    ("stickhub", "C22"): "schematic note over C22..C38: 'Shared VBUS capacitance' (user review 2026-11-09)",
+    ("stickhub", "C14"): "schematic note: 'ESD caps at connectors / plug'",
     ("stickhub", "C3"): "XR22417 internal 3.3 V regulator output (pin 3V3_OUT)",
     ("royalblue54L_feather", "C4"): "nPM1300 VSYS output; C2/C3 sit at PVDD (buck input) on the same net",
     ("royalblue54L_feather", "C11"): "nPM1300 VBAT bypass",
-    ("video", "C54"): "LC filter output of U20's supply, placed 25 mm from U20: bulk, not a local decap",
+    ("video", "C54"): ("local decap of U20 pin 8, with L2 forming its LC supply filter (user review 2026-11-09); "
+                       "the expert placed it 25 mm away, a placement weakness, not a different role"),
+    ("video", "P4"): "two-pin header that works as a jumper on U23's M0-M2 mode pins (user review 2026-11-09)",
+    ("video", "R9"): ("U20 pin 21 BURST ADJ setting network to ground through POT1 (user review 2026-11-09, "
+                      "TDA8501 datasheet)"),
+    ("video", "R11"): ("shunt termination of delay line L6's output to VREF (pin 13), not in series with the signal "
+                       "(user review 2026-11-09, TDA8501 datasheet)"),
     ("pic_programmer", "R1"): "10k/10k RS-232 input dividers with BAT43 clamps",
+    ("ecc83", "R1"): ("bias between U1A's cathode and grid, between the two triodes; not a series resistor in a "
+                      "signal path (user review 2026-11-09)"),
     ("ecc83", "U1"): "ECC83 valve: a discrete active device",
 }
 

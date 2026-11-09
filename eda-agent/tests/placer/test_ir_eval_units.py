@@ -89,10 +89,10 @@ def test_mst_and_crossings():
     assert metrics.crossings(b)["count"] == 1
 
 
-def test_evaluate_reports_uncalibrated_pro_score_without_lint():
+def test_evaluate_reports_calibrated_pro_score_without_lint():
     e = evaluate(_board([_fp("R1", 5, 5), _fp("R2", 12, 12)]))
     ps = e["pro_score"]
-    assert ps["calibrated"] is False and "lint" not in ps["weights_used"]
+    assert ps["version"] == 1 and ps["calibrated"] is True and "lint" not in ps["weights_used"]
     assert 0 <= ps["score"] <= 100
 
 

@@ -35,7 +35,8 @@
    "role": "mechanical"
   },
   "R1": {
-   "role": "signal_passive"
+   "role": "signal_passive",
+   "note": "bias between U1A's cathode and grid, between the two triodes; not a series resistor in a signal path (user review 2026-11-09)"
   },
   "R2": {
    "role": "signal_passive"

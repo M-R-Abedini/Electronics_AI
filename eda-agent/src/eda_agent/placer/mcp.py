@@ -77,7 +77,7 @@ class PlacerService:
              {"board_path": _STRING}, ["board_path"], True),
             ("score",
              ("Evaluate the board's current placement: legality gate (courtyard overlap, outline, keepouts), HPWL, "
-             "ratsnest crossings, RUDY, critical-loop proxies, regularity and Pro Score v0 (uncalibrated). With "
+             "ratsnest crossings, RUDY, critical loops from the design intent, regularity and Pro Score v1. With "
              "route=true it also runs the strict Freerouting route check (about 1 to 5 minutes) and reports DRC "
              "attribution, coverage and every unrouted connection with its cause. Writes run_report.json and an "
              "HTML gallery to a new run folder; never writes the board."),

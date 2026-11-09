@@ -130,7 +130,7 @@ def _rows(panel: Panel) -> list[tuple[str, str]]:
             ("ratsnest crossings", f"{m['crossings']['count']} / {m['crossings']['edges']} edges"),
             ("RUDY peak / over", f"{m['rudy'].get('peak')} / {m['rudy'].get('over_capacity_fraction')}"),
             ("decap pin distance", json.dumps(m["critical_loops"]["decap_pin_distance"])),
-            ("Pro Score v0 (uncalibrated)", f"{ps['score']}  {json.dumps(ps['components'])}"),
+            (f"Pro Score v{ps['version']}", f"{ps['score']}  {json.dumps(ps['components'])}"),
         ]
     if panel.route:
         r = panel.route
