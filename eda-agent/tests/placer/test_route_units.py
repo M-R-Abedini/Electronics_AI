@@ -12,7 +12,7 @@ import pytest
 from eda_agent.placer.ir import Board, CopperLayer, Footprint, Net, NetClass, Outline, Pad
 from eda_agent.placer.route import drc, dsn
 from eda_agent.placer.route import pairs
-from eda_agent.placer.route.fanout import plan_power_tap
+from eda_agent.placer.route.fanout import plan_power_link, plan_power_tap
 from eda_agent.placer.route.check import classify_unrouted
 from eda_agent.placer.route.freerouting import RouterConfig, parse_log
 
@@ -168,6 +168,28 @@ def test_power_tap_can_bend_around_track_keepout():
     track, via = result
     assert np.allclose(track["points"], [(2, 2), (3, 2), (3, 3)])
     assert np.allclose((via["x"], via["y"]), (3, 3))
+
+
+def test_power_link_checks_width_against_keepout_after_search(monkeypatch):
+    core = SimpleNamespace(grid_astar=lambda _nx, _ny, _nl, _blocked, _via, starts, ends, *_: starts + ends)
+    monkeypatch.setitem(sys.modules, "placer_core", core)
+    p = Pad("8", "VCC", (0, 0), (0.4, 0.3), layers=("B.Cu",))
+    q = Pad("1", "VCC", (0, 0), (0.4, 0.3), layers=("B.Cu",))
+    chip = Footprint("U1", "", "", 2, 2, 0, side="B", pads=[p])
+    cap = Footprint("C1", "", "", 4, 2, 0, side="B", pads=[q])
+    board = Board("local-power", [chip, cap], outline=[Outline([(0, 0), (6, 0), (6, 6), (0, 6)])],
+                  copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+                  nets=[Net("VCC", "Power", 2)], netclasses=[NetClass("Power", 0.15, 0.2, 0.5, 0.3)])
+
+    track, = plan_power_link(board, (chip, p), (cap, q), fixed=[])
+    assert track == {"net": "VCC", "layer": "B.Cu", "width": 0.2, "points": [(2, 2), (4, 2)]}
+    core.grid_astar = lambda _nx, _ny, _nl, _blocked, _via, starts, ends, *_: (
+        starts + ends if starts[0][0] > ends[0][0] else None
+    )
+    assert plan_power_link(board, (chip, p), (cap, q), fixed=[]) == [track]
+    board.rule_areas.append({"layers": ["B.Cu"], "polygons": [[(3, 2.06), (3.5, 2.06), (3.5, 3), (3, 3)]],
+                             "keepout": {"tracks": True}})
+    assert plan_power_link(board, (chip, p), (cap, q), fixed=[]) is None
 
 
 def test_keepout_quotes_unusual_layer_names_and_noop_when_empty():

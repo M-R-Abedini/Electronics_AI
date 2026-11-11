@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Short power-pad dogbones to an opposite-side pour on a two-layer board."""
+"""Short power-pad connections to pours and local decoupling pads."""
 
 from __future__ import annotations
 
@@ -12,7 +12,89 @@ from shapely.prepared import prep
 
 from ..eval.legality import board_polygon
 from ..ir import Board, Footprint, Pad
-from .pairs import _copper_separated, _existing_holes, _holes_separated, _outward, pad_layers, pad_polygon
+from .pairs import (
+    PairRule, Window, _breakout, _copper_separated, _existing_holes, _holes_separated,
+    _outward, obstacles, pad_layers, pad_polygon,
+)
+
+
+def _pad_clearances(board: Board, layers: list[str], net: str, clearance: float):
+    for footprint in board.footprints:
+        for pad in footprint.pads:
+            if pad.net == net and pad.kind != "np_thru_hole":
+                continue
+            rules = board.netclass_of(pad.net) if pad.net else None
+            gap = max(clearance, rules.clearance) if rules else clearance
+            yield pad_layers(footprint, pad, layers), pad_polygon(footprint, pad, gap)
+
+
+def plan_power_link(board: Board, source: tuple[Footprint, Pad], destination: tuple[Footprint, Pad], *,
+                    fixed: list[dict], max_length_mm: float = 5.0) -> list[dict] | None:
+    """Connect two specified same-net pads on their common side, without adding vias."""
+    src_fp, src_pad = source
+    dst_fp, dst_pad = destination
+    net = src_pad.net
+    rules = board.netclass_of(net) if net and dst_pad.net == net else None
+    if rules is None:
+        return None
+    layers = [layer.canonical for layer in board.copper_layers]
+    src_layers, dst_layers = pad_layers(src_fp, src_pad, layers), pad_layers(dst_fp, dst_pad, layers)
+    if len(src_layers) != 1 or src_layers != dst_layers:
+        return None
+    layer = src_layers[0]
+    start, end = src_fp.pad_world(src_pad), dst_fp.pad_world(dst_pad)
+    outline = board_polygon(board)
+    if (not math.isfinite(max_length_mm) or math.dist(start, end) > max_length_mm
+            or outline is None or not outline.covers(Point(start)) or not outline.covers(Point(end))):
+        return None
+    if start == end:
+        return []
+
+    import placer_core
+
+    width = max(rules.track_width, board.rules.get("min_track_width", 0))
+    clearance = max(rules.clearance, board.rules.get("min_clearance", 0))
+    rule = PairRule(width, clearance, clearance, rules.via_diameter, rules.via_drill)
+    x0, x1 = sorted((start[0], end[0]))
+    y0, y1 = sorted((start[1], end[1]))
+    win = Window(board, (x0 - max_length_mm, y0 - max_length_mm, x1 + max_length_mm, y1 + max_length_mm), [layer])
+    raw = obstacles(board, win, rule, fixed, skip_pad_nets={net}, skip_copper_nets={net})
+    keepouts = [
+        Polygon(area["polygons"][0], area["polygons"][1:])
+        for area in board.rule_areas if layer in area["layers"] and area["keepout"]["tracks"] and area["polygons"]
+    ]
+    for polygon in keepouts:
+        raw[layer] |= win.raster(polygon)
+    forbidden = keepouts + [g for sides, g in _pad_clearances(board, layers, net, clearance) if layer in sides]
+    forbidden.extend(
+        Polygon(ring) for item in board.obstacles if item["copper"] == layer
+        and not item["overlapping_pads"] and not item.get("net")
+        for ring in item["outlines"] if len(ring) >= 3
+    )
+    edge = board.rules.get("copper_edge_clearance", 0)
+    other_copper = []
+    for item in fixed:
+        if item["net"] != net:
+            other = board.netclass_of(item["net"])
+            other_copper.append((item, max(clearance, other.clearance) if other else clearance))
+
+    # Grid tie-breaking and the exact pad leads can make the two directions differ.
+    for a, b in ((start, end), (end, start)):
+        result = _breakout(win, raw, [layer], [], (a, layer), (b, layer), net, rule, placer_core, False)
+        if result is None:
+            continue
+        tracks, _ = result
+        lines = [LineString(track["points"]) for track in tracks]
+        if sum(line.length for line in lines) > max_length_mm + 1e-6:
+            continue
+        copper = unary_union([line.buffer(width / 2) for line in lines])
+        if not outline.covers(copper.buffer(edge)) or any(copper.intersects(g) for g in forbidden):
+            continue
+        if all(_copper_separated(tracks, [], [item], gap) for item, gap in other_copper):
+            if a == end:
+                return [{**track, "points": track["points"][::-1]} for track in reversed(tracks)]
+            return tracks
+    return None
 
 
 def _candidate_paths(origin: tuple[float, float], angle: float,
@@ -64,17 +146,8 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
         if item["net"] != net:
             other_rules = board.netclass_of(item["net"])
             other.append((item, max(clearance, other_rules.clearance) if other_rules else clearance))
-    pad_obstacles = []
-    solder_pads = []
-    for fp in board.footprints:
-        for candidate in fp.pads:
-            if candidate.kind == "smd":
-                solder_pads.append(pad_polygon(fp, candidate))
-            if candidate.net == net and candidate.kind != "np_thru_hole":
-                continue
-            other_rules = board.netclass_of(candidate.net) if candidate.net else None
-            gap = max(clearance, other_rules.clearance) if other_rules else clearance
-            pad_obstacles.append((pad_layers(fp, candidate, layers), pad_polygon(fp, candidate, gap)))
+    pad_obstacles = list(_pad_clearances(board, layers, net, clearance))
+    solder_pads = [pad_polygon(fp, pad) for fp in board.footprints for pad in fp.pads if pad.kind == "smd"]
     keepouts = [
         (area["layers"], area["keepout"], Polygon(area["polygons"][0], area["polygons"][1:]))
         for area in board.rule_areas if area["polygons"]
