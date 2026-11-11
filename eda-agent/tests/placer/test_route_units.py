@@ -9,9 +9,10 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 
-from eda_agent.placer.ir import Board, CopperLayer, Footprint, Pad
+from eda_agent.placer.ir import Board, CopperLayer, Footprint, Net, NetClass, Outline, Pad
 from eda_agent.placer.route import drc, dsn
 from eda_agent.placer.route import pairs
+from eda_agent.placer.route.fanout import plan_power_tap
 from eda_agent.placer.route.check import classify_unrouted
 from eda_agent.placer.route.freerouting import RouterConfig, parse_log
 
@@ -124,6 +125,29 @@ def test_same_net_via_holes_obey_drill_clearance():
         assert bool(mask[j, i]) == blocked
         via = {"net": "D+", "x": x, "y": 0.5, "drill": 0.3}
         assert pairs._holes_separated([via], holes, 0.25) == (not blocked)
+
+
+def test_power_tap_reaches_matching_pour_and_respects_existing_drill():
+    outline = [(0, 0), (10, 0), (10, 10), (0, 10)]
+    pad = Pad("1", "GND", (0.5, 0), (0.4, 0.3), layers=("B.Cu",))
+    chip = Footprint("U1", "", "", 4, 4, 0, side="B", pads=[pad])
+    board = Board("power", [chip], outline=[Outline(outline)],
+                  copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+                  nets=[Net("GND", "Default", 1)], netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                  zones=[{"net": "GND", "layers": ["F.Cu"], "outline": [outline]}],
+                  rules={"hole_to_hole": 0.25})
+
+    result = plan_power_tap(board, chip, pad, "F.Cu", fixed=[])
+    assert result is not None
+    track, via = result
+    assert track["width"] == 0.2 and track["layer"] == "B.Cu"
+    assert track["points"] == [chip.pad_world(pad), (via["x"], via["y"])]
+    rerouted = plan_power_tap(board, chip, pad, "F.Cu", fixed=[via])
+    assert rerouted is not None
+    assert pairs._holes_separated([rerouted[1]], [(via["x"], via["y"], via["drill"])], 0.25)
+
+    board.zones[0]["net"] = "VCC"
+    assert plan_power_tap(board, chip, pad, "F.Cu", fixed=[]) is None
 
 
 def test_keepout_quotes_unusual_layer_names_and_noop_when_empty():
