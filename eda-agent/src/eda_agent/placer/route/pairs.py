@@ -36,7 +36,15 @@ from ..ir import Board, Footprint, Pad
 GRID_MM = 0.05  # declared: centreline grid
 WINDOW_MM = 6.0  # declared: grid window margin around the terminals
 BREAKOUT_MM = 4.0  # declared: the coupled section starts within this distance of a terminal
+SECTORS, TRY_COMBOS = 8, 12  # declared: start directions per terminal; start/end pairs tried
+MARGIN_MM = GRID_MM  # declared: extra clearance for the grid's quantisation, so DRC sees no near misses
+BREAKOUT_MAX_MM = 6.0  # declared: a leg's uncoupled breakout longer than this is a detour, not a breakout
+TUNE_TARGET, TUNE_HEIGHTS = 0.5, (0.6, 0.45, 0.3, 0.2)  # declared: tune to half the skew limit; bump heights
 VIA_COST, TURN45, TURN90 = 40.0, 2.0, 6.0  # in grid steps (via = 2 mm of detour)
+
+
+class OffsetError(ValueError):
+    pass
 
 
 @dataclass
@@ -223,15 +231,20 @@ def _disk(radius_cells: float) -> np.ndarray:
     return (xx * xx + yy * yy) <= radius_cells * radius_cells + 1e-9
 
 
-def obstacles(board: Board, win: Window, rule: PairRule, own: set[str], extra: list[dict]) -> dict[str, np.ndarray]:
-    """Copper of other nets per layer, grown by the clearance (raw: the space a leg edge may not enter)."""
+def obstacles(board: Board, win: Window, rule: PairRule, extra: list[dict], *, skip_pad_nets: set[str] = frozenset(),
+              skip_pads: set[int] = frozenset(), skip_copper_nets: set[str] = frozenset()) -> dict[str, np.ndarray]:
+    """Everything a copper edge may not enter, per layer, grown by the clearance.
+
+    ``skip_pad_nets`` / ``skip_pads`` (ids of Pad objects) leave out pads the copper may touch;
+    ``skip_copper_nets`` leaves out fixed copper of those nets (an earlier segment of the same leg).
+    """
     copper = [cl.canonical for cl in board.copper_layers]
     per = {lay: [] for lay in win.layers}
     for fp in board.footprints:
         for pad in fp.pads:
-            if pad.net in own:
+            if pad.net in skip_pad_nets or id(pad) in skip_pads:
                 continue
-            g = pad_polygon(fp, pad, rule.clearance)
+            g = pad_polygon(fp, pad, rule.clearance + MARGIN_MM)
             for lay in pad_layers(fp, pad, copper):
                 if lay in per:
                     per[lay].append(g)
@@ -239,19 +252,19 @@ def obstacles(board: Board, win: Window, rule: PairRule, own: set[str], extra: l
                 for geoms in per.values():
                     geoms.append(g)
     for item in extra:  # fixed copper already on the board (macros, earlier pairs)
-        if item.get("net") in own:
+        if item.get("net") in skip_copper_nets:
             continue
         if "points" in item:
-            g = LineString(item["points"]).buffer(item["width"] / 2 + rule.clearance)
+            g = LineString(item["points"]).buffer(item["width"] / 2 + rule.clearance + MARGIN_MM)
             if item["layer"] in per:
                 per[item["layer"]].append(g)
         else:
-            g = Point(item["x"], item["y"]).buffer(item["diameter"] / 2 + rule.clearance)
+            g = Point(item["x"], item["y"]).buffer(item["diameter"] / 2 + rule.clearance + MARGIN_MM)
             for geoms in per.values():
                 geoms.append(g)
     edge = None
     if board.outline:
-        inside = unary_union([Polygon(o.outer, o.holes) for o in board.outline]).buffer(-rule.clearance)
+        inside = unary_union([Polygon(o.outer, o.holes) for o in board.outline]).buffer(-rule.clearance - MARGIN_MM)
         box = Polygon([(win.x0 - 1, win.y0 - 1), (win.x0 + win.nx * win.res + 1, win.y0 - 1),
                        (win.x0 + win.nx * win.res + 1, win.y0 + win.ny * win.res + 1),
                        (win.x0 - 1, win.y0 + win.ny * win.res + 1)])
@@ -288,15 +301,32 @@ def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *, fixed: list[
     return res
 
 
-def _pair_start(win: Window, blocked: np.ndarray, term: Terminal, toward: tuple[float, float]) -> tuple | None:
-    """The free centreline cell nearest the terminal (within BREAKOUT_MM), leaning toward the other end."""
+def _pair_starts(win: Window, blocked: np.ndarray, term: Terminal, toward: tuple[float, float]) -> list[tuple[int, int]]:
+    """Free centreline cells around the terminal (within BREAKOUT_MM): the nearest one in each of 8 directions.
+
+    Cells on every side matter: where the coupled section starts decides which leg runs on which side,
+    so a pair whose pads are in the opposite order at the two ends is solved by starting behind the pads.
+    """
     mx, my = term.mid
     dx, dy = win.X - mx, win.Y - my
     dist = np.hypot(dx, dy)
-    score = dist - 0.5 * (dx * toward[0] + dy * toward[1])
+    score = dist - 0.3 * (dx * toward[0] + dy * toward[1])
     score[blocked | (dist > BREAKOUT_MM)] = np.inf
-    j, i = np.unravel_index(int(np.argmin(score)), score.shape)
-    return None if not np.isfinite(score[j, i]) else (int(i), int(j))
+    sector = (np.floor((np.arctan2(dy, dx) + math.pi) / (2 * math.pi) * SECTORS).astype(int)) % SECTORS
+    out = []
+    for k in range(SECTORS):
+        masked = np.where(sector == k, score, np.inf)
+        flat = int(np.argmin(masked))
+        j, i = np.unravel_index(flat, masked.shape)
+        if np.isfinite(masked[j, i]):
+            out.append((float(masked[j, i]), int(i), int(j)))
+    return [(i, j) for _s, i, j in sorted(out)]
+
+
+def _pos_left(term: Terminal, origin: tuple[float, float], d: tuple[float, float]) -> bool:
+    def left(p):
+        return d[0] * (p[1] - origin[1]) - d[1] * (p[0] - origin[0])
+    return left(term.xy("pos")) >= left(term.xy("neg"))
 
 
 def _cells_to_copper(win: Window, path, layers, net: str, rule: PairRule) -> tuple[list[dict], list[dict]]:
@@ -318,34 +348,146 @@ def _cells_to_copper(win: Window, path, layers, net: str, rule: PairRule) -> tup
 
 
 def _breakout(win: Window, raw: dict[str, np.ndarray], layers, own_copper: list[dict], start: tuple, end: tuple,
-              net: str, rule: PairRule, core) -> tuple[list[dict], list[dict]] | None:
-    """One leg from its pad to its place in the pair, at single-trace width (A*; a via if it must)."""
-    blocked = {}
+              net: str, rule: PairRule, core, allow_via: bool) -> tuple[list[dict], list[dict]] | None:
+    """One leg from its pad to its place in the pair, at single-trace width (A*).
+
+    A via is allowed only when the pad and the coupled section are on different layers: then each leg takes
+    exactly one, as an expert does next to a fine-pitch IC, and the legs may cross on the pad's layer.
+    """
+    grown = {}
     for lay in layers:
         m = raw[lay].copy()
         for item in own_copper:  # the other leg is an obstacle like any other net
             if "points" in item:
                 if item["layer"] != lay:
                     continue
-                g = LineString(item["points"]).buffer(item["width"] / 2 + rule.clearance)
+                g = LineString(item["points"]).buffer(item["width"] / 2 + rule.clearance + MARGIN_MM)
             else:
-                g = Point(item["x"], item["y"]).buffer(item["diameter"] / 2 + rule.clearance)
+                g = Point(item["x"], item["y"]).buffer(item["diameter"] / 2 + rule.clearance + MARGIN_MM)
             m |= win.raster(g)
-        blocked[lay] = ndimage.binary_dilation(m, structure=_disk(rule.width / 2 / win.res))
-    any_raw = np.zeros_like(next(iter(raw.values())))
-    for m in raw.values():
-        any_raw |= m
-    via_ok = ~ndimage.binary_dilation(any_raw, structure=_disk(rule.via_d / 2 / win.res))
+        grown[lay] = m
+    blocked = {lay: ndimage.binary_dilation(m, structure=_disk(rule.width / 2 / win.res)) for lay, m in grown.items()}
+    if allow_via:
+        union = np.zeros((win.ny, win.nx), bool)
+        for m in grown.values():
+            union |= m
+        via_ok = (~ndimage.binary_dilation(union, structure=_disk(rule.via_d / 2 / win.res))).astype(np.uint8)
+    else:
+        via_ok = np.zeros((win.ny, win.nx), np.uint8)
     li = {lay: k for k, lay in enumerate(layers)}
     (si, sj, sl), (ei, ej, el) = start, end
-    for i, j, lay in (start, end):  # an endpoint may sit inside the grown pad of its own net
-        blocked[lay][max(j - 1, 0):j + 2, max(i - 1, 0):i + 2] = False
+    for i, j, lay in (start, end):  # the endpoint cells themselves (a pad centre, a leg end)
+        blocked[lay][j, i] = False
     stack = np.stack([blocked[lay] for lay in layers]).astype(np.uint8)
-    path = core.grid_astar(win.nx, win.ny, len(layers), stack.tobytes(), via_ok.astype(np.uint8).tobytes(),
-                           [(si, sj, li[sl])], [(ei, ej, li[el])], VIA_COST, TURN45, TURN90, 4_000_000)
+    path = core.grid_astar(win.nx, win.ny, len(layers), stack.tobytes(), via_ok.tobytes(),
+                           [(si, sj, li[sl])], [(ei, ej, li[el])], VIA_COST, TURN45, TURN90, 2_000_000)
     if path is None:
         return None
     return _cells_to_copper(win, path, layers, net, rule)
+
+
+def _leg_lengths(tracks: list[dict], nets: dict[str, str]) -> dict[str, float]:
+    out = {"pos": 0.0, "neg": 0.0}
+    for t in tracks:
+        leg = "pos" if t["net"] == nets["pos"] else "neg"
+        out[leg] += LineString(t["points"]).length
+    return out
+
+
+def _breakouts_at(win, leg_raw, layers, term: Terminal, ends, which: int, nets, rule, core, tracks, vias, cl):
+    """Both legs' breakouts at one terminal; if the first one blocks the second, try the other order."""
+    allow_via = term.layer != cl
+    for order in (("pos", "neg"), ("neg", "pos")):
+        t_add, v_add, ok = [], [], True
+        for leg in order:
+            fp, pad = term.pads[leg]
+            pi, pj = win.cell(*fp.pad_world(pad))
+            lay_e, (ex, ey) = ends[leg][which]
+            ei, ej = win.cell(ex, ey)
+            others = [t for t in tracks + vias + t_add + v_add if t["net"] != nets[leg]]
+            got = _breakout(win, leg_raw[leg], layers, others, (pi, pj, term.layer), (ei, ej, lay_e), nets[leg],
+                            rule, core, allow_via)
+            if got is None or sum(LineString(t["points"]).length for t in got[0]) > BREAKOUT_MAX_MM:
+                ok = False
+                break
+            t_add += got[0]
+            v_add += got[1]
+        if ok:
+            counts = {leg: sum(v["net"] == nets[leg] for v in v_add) for leg in ("pos", "neg")}
+            if counts["pos"] == counts["neg"]:
+                return t_add, v_add, None
+    return None, None, f"breakout at {term.refs}"
+
+
+def _tune(win: Window, leg_raw: dict[str, dict[str, np.ndarray]], tracks: list[dict], nets: dict[str, str], rule: PairRule,
+          skew: float) -> tuple[list[dict], float]:
+    """Add length to the shorter leg with rectangular bumps (a small serpentine) until the skew is within limits.
+
+    A bump adds twice its height. It goes on a straight piece of the shorter leg, on the side away from the
+    other leg, and only where its copper keeps the clearance to every obstacle and to the other leg.
+    """
+    ln = _leg_lengths(tracks, nets)
+    short = "pos" if ln["pos"] < ln["neg"] else "neg"
+    other = "neg" if short == "pos" else "pos"
+    raw = leg_raw[short]  # the partner's pads and copper are obstacles for the bumps
+    need = skew - TUNE_TARGET * rule.skew_max
+    if need <= 0:
+        return tracks, skew
+    base = max(3 * rule.width, rule.width + rule.clearance + rule.width)  # bump top length
+    gap = base  # straight copper between bumps
+    tracks = [dict(t) for t in tracks]
+    partner = {lay: np.zeros((win.ny, win.nx), bool) for lay in raw}
+    for t in tracks:
+        if t["net"] == nets[other] and t["layer"] in partner:
+            partner[t["layer"]] |= win.raster(LineString(t["points"]).buffer(t["width"] / 2 + rule.clearance
+                                                                              + MARGIN_MM))
+    cands = []
+    for ti, t in enumerate(tracks):
+        if t["net"] != nets[short]:
+            continue
+        for si, (p, q) in enumerate(itertools.pairwise(t["points"])):
+            cands.append((math.dist(p, q), ti, si))
+    for _length, ti, si in sorted(cands, reverse=True):
+        if need <= 0:
+            break
+        t = tracks[ti]
+        p, q = t["points"][si], t["points"][si + 1]
+        seg_len = math.dist(p, q)
+        n_max = int((seg_len - gap) // (base + gap))
+        if n_max < 1:
+            continue
+        d = _unit(p, q)
+        mid = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+        # away from the partner leg: the side whose normal points from the partner to this segment
+        others_xy = [pt for o in tracks if o["net"] == nets[other] for pt in o["points"]]
+        nrm = (-d[1], d[0])
+        if others_xy:
+            near = min(others_xy, key=lambda pt: math.dist(pt, mid))
+            if (mid[0] - near[0]) * nrm[0] + (mid[1] - near[1]) * nrm[1] < 0:
+                nrm = (-nrm[0], -nrm[1])
+        blocked = ndimage.binary_dilation(raw[t["layer"]] | partner[t["layer"]],
+                                          structure=_disk(rule.width / 2 / win.res))
+        for h in TUNE_HEIGHTS:
+            per = 2 * h
+            n = min(n_max, max(1, math.ceil(need / per)))
+            h_use = min(h, need / (2 * n))
+            pts = [p]
+            start = (seg_len - n * base - (n - 1) * gap) / 2
+            for k in range(n):
+                s0 = start + k * (base + gap)
+                a0 = (p[0] + d[0] * s0, p[1] + d[1] * s0)
+                a1 = (a0[0] + d[0] * base, a0[1] + d[1] * base)
+                pts += [a0, (a0[0] + nrm[0] * h_use, a0[1] + nrm[1] * h_use),
+                        (a1[0] + nrm[0] * h_use, a1[1] + nrm[1] * h_use), a1]
+            pts.append(q)
+            new_geom = LineString(pts).buffer(rule.width / 2).difference(LineString([p, q]).buffer(rule.width / 2 + 1e-3))
+            if (win.raster(new_geom) & blocked).any():
+                continue
+            t["points"] = t["points"][:si] + pts + t["points"][si + 2:]
+            need -= 2 * n * h_use
+            break
+    ln = _leg_lengths(tracks, nets)
+    return tracks, abs(ln["pos"] - ln["neg"])
 
 
 def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixed, core) -> dict:
@@ -353,54 +495,94 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
     ys = [a.mid[1], b.mid[1]]
     win = Window(board, (min(xs) - WINDOW_MM, min(ys) - WINDOW_MM, max(xs) + WINDOW_MM, max(ys) + WINDOW_MM), layers)
     own = {a.pads["pos"][1].net, a.pads["neg"][1].net}
-    raw = obstacles(board, win, rule, own, fixed)
+    term_pads = {id(pad) for term in (a, b) for _fp, pad in term.pads.values()}
+    # coupled section: every pad except the four terminal pads; earlier copper of these nets is not in the way
+    raw = obstacles(board, win, rule, fixed, skip_pads=term_pads, skip_copper_nets=own)
+    # a leg's breakout: everything except its own net, so the partner's pads and copper are obstacles
+    leg_raw = {leg: obstacles(board, win, rule, fixed, skip_pad_nets={term_net}, skip_copper_nets={term_net})
+               for leg, term_net in (("pos", a.pads["pos"][1].net), ("neg", a.pads["neg"][1].net))}
     half = (rule.pitch / 2 + rule.width / 2) / win.res  # centreline to the outer edge of a leg
-    # the coupled section also keeps off the terminals' own pads (a leg must not run over the other leg's pad)
     own_pads = {lay: np.zeros_like(m) for lay, m in raw.items()}
     for term in (a, b):
         for fp, pad in term.pads.values():
-            g = pad_polygon(fp, pad, rule.clearance)
+            g = pad_polygon(fp, pad, rule.clearance + MARGIN_MM)
             for lay in pad_layers(fp, pad, layers):
                 own_pads[lay] |= win.raster(g)
     center_blocked = {lay: ndimage.binary_dilation(m | own_pads[lay], structure=_disk(half)) for lay, m in raw.items()}
-    via_reach = (rule.via_pitch / 2 + rule.via_d / 2) / win.res
-    any_raw = np.zeros_like(next(iter(raw.values())))
-    for lay, m in raw.items():
-        any_raw |= m | own_pads[lay]
-    via_ok = ~ndimage.binary_dilation(any_raw, structure=_disk(via_reach))
     info = {"from": a.refs, "to": b.refs}
     direction = np.subtract(b.mid, a.mid)
     norm = float(np.hypot(*direction)) or 1.0
     toward = (direction[0] / norm, direction[1] / norm)
-    sa = _pair_start(win, center_blocked[a.layer], a, toward)
-    sb = _pair_start(win, center_blocked[b.layer], b, (-toward[0], -toward[1]))
-    if sa is None or sb is None:
-        return {"failed": f"no room for the coupled pair within {BREAKOUT_MM} mm of {a.refs if sa is None else b.refs}",
-                "info": info}
-    li = {lay: k for k, lay in enumerate(layers)}
-    blocked = np.stack([center_blocked[lay] for lay in layers]).astype(np.uint8)
-    path = core.grid_astar(win.nx, win.ny, len(layers), blocked.tobytes(), via_ok.astype(np.uint8).tobytes(),
-                           [(sa[0], sa[1], li[a.layer])], [(sb[0], sb[1], li[b.layer])], VIA_COST, TURN45, TURN90)
-    if path is None:
-        return {"failed": f"no centreline between {a.refs} and {b.refs}", "info": info}
-    tracks, vias, ends = _legs(win, path, layers, a, b, rule)
     nets = {"pos": a.pads["pos"][1].net, "neg": a.pads["neg"][1].net}
-    uncoupled = 0.0
-    for term, which in ((a, 0), (b, -1)):
-        for leg in ("pos", "neg"):
-            fp, pad = term.pads[leg]
-            pi, pj = win.cell(*fp.pad_world(pad))
-            lay_e, (ex, ey) = ends[leg][which]
-            ei, ej = win.cell(ex, ey)
-            others = [t for t in tracks + vias if t["net"] != nets[leg]]
-            got = _breakout(win, raw, layers, others, (pi, pj, term.layer), (ei, ej, lay_e), nets[leg], rule, core)
-            if got is None:
-                return {"failed": f"breakout of {nets[leg]} at {fp.ref} blocked", "info": info}
-            tracks += got[0]
-            vias += got[1]
-            uncoupled += sum(LineString(t["points"]).length for t in got[0])
-    info.update(cells=len(path), layer_changes=sum(1 for p, q in itertools.pairwise(path) if p[2] != q[2]),
-                uncoupled_mm=round(uncoupled, 3))
+    # the coupled section runs on one layer; both are tried, the terminals' own layer first
+    order = sorted(layers, key=lambda lay: (lay != b.layer, lay != a.layer))
+    best, reasons = None, []
+    no_via = np.zeros((win.ny, win.nx), np.uint8).tobytes()
+    for cl in order:
+        starts_a = _pair_starts(win, center_blocked[cl], a, toward)
+        starts_b = _pair_starts(win, center_blocked[cl], b, (-toward[0], -toward[1]))
+        if not starts_a or not starts_b:
+            reasons.append(f"no room for the coupled pair on {cl}")
+            continue
+        blocked = center_blocked[cl].astype(np.uint8).tobytes()
+        combos = []
+        for sa, sb in itertools.product(starts_a, starts_b):
+            pa, pb = win.xy(*sa), win.xy(*sb)
+            d = np.subtract(pb, pa)
+            n = float(np.hypot(*d)) or 1.0
+            d = (d[0] / n, d[1] / n)
+            # legs keep their order on one layer; a terminal on the other layer can swap them before its vias
+            same = (_pos_left(a, pa, d) == _pos_left(b, pb, d)) or a.layer != cl or b.layer != cl
+            combos.append((not same, math.dist(pa, a.mid) + math.dist(pb, b.mid) + n, sa, sb))
+        combos.sort()
+        for _swap, _cost, sa, sb in combos[:TRY_COMBOS]:
+            path = core.grid_astar(win.nx, win.ny, 1, blocked, no_via, [(sa[0], sa[1], 0)], [(sb[0], sb[1], 0)],
+                                   VIA_COST, TURN45, TURN90, 6_000_000)
+            if path is None:
+                reasons.append("centreline")
+                continue
+            try:
+                tracks, vias, ends = _legs(win, path, [cl], a, b, rule)
+            except OffsetError:
+                reasons.append("centreline folds back")
+                continue
+            if b.layer == cl:  # same layer at b: the legs must arrive in the order of b's pads
+                (_l, pos_end), (_l2, neg_end) = ends["pos"][-1], ends["neg"][-1]
+                if math.dist(pos_end, b.xy("pos")) + math.dist(neg_end, b.xy("neg")) > \
+                        math.dist(pos_end, b.xy("neg")) + math.dist(neg_end, b.xy("pos")):
+                    reasons.append("legs arrive in swapped order")
+                    continue
+            uncoupled, ok = 0.0, True
+            for term, which in ((a, 0), (b, -1)):
+                t_add, v_add, why = _breakouts_at(win, leg_raw, layers, term, ends, which, nets, rule, core,
+                                                  tracks, vias, cl)
+                if why:
+                    reasons.append(why)
+                    ok = False
+                    break
+                tracks += t_add
+                vias += v_add
+                uncoupled += sum(LineString(t["points"]).length for t in t_add)
+            if not ok:
+                continue
+            ln = _leg_lengths(tracks, nets)
+            skew = abs(ln["pos"] - ln["neg"])
+            key = (skew > rule.skew_max, len(vias), round(skew, 3), round(ln["pos"] + ln["neg"], 3))
+            if best is None or key < best[0]:
+                best = (key, tracks, vias, path, uncoupled, skew, cl)
+            if skew <= rule.skew_max / 2:
+                break
+        if best is not None and best[0][0] is False:
+            break
+    if best is None:
+        common = max(set(reasons), key=reasons.count) if reasons else "no attempt"
+        return {"failed": f"{a.refs} -> {b.refs}: {common}", "info": info}
+    _key, tracks, vias, path, uncoupled, skew, cl = best
+    raw_skew = skew
+    if skew > rule.skew_max:
+        tracks, skew = _tune(win, leg_raw, tracks, nets, rule, skew)
+    info.update(coupled_layer=cl, cells=len(path), uncoupled_mm=round(uncoupled, 3),
+                skew_before_tuning_mm=round(raw_skew, 3), skew_mm=round(skew, 3))
     return {"failed": None, "info": info, "tracks": tracks, "vias": vias}
 
 
@@ -453,7 +635,10 @@ def _legs(win: Window, path, layers, a: Terminal, b: Terminal, rule: PairRule) -
             line = LineString(pts)
             for leg in ("pos", "neg"):
                 sign = 1 if side_of[leg] == "left" else -1
-                coords = list(line.offset_curve(sign * half, join_style="mitre").coords)
+                off = line.offset_curve(sign * half, join_style="mitre")
+                if off.is_empty or off.geom_type != "LineString":
+                    raise OffsetError("the centreline folds back too tightly to offset")
+                coords = list(off.coords)
                 tracks.append({"layer": layer, "width": rule.width, "net": nets[leg], "points": coords})
                 leg_ends[leg] += [(layer, coords[0]), (layer, coords[-1])]
         else:  # a one-cell run: the legs' places across the direction of travel
