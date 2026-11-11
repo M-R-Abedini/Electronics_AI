@@ -25,20 +25,23 @@ import json
 import math
 import sys
 import tempfile
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .. import report as run_report
 from ..intent import model
 from ..intent.resolve import resolve
 from ..io.kicad import read_board, run_helper
 from ..ir import Board
 from ..macro import Instance, MTrack, MVia
 from ..macro_proof import apply_instance
-from ..toolchain import RUNTIME_DIR
+from ..toolchain import RUNTIME_DIR, sha256_file
 from . import drc
 from .check import route_check
 from .copper import pad_layers
 from .fanout import plan_power_link, plan_power_tap
+from .freerouting import RouterConfig
 from .pairs import route_pair, rule_for
 
 LINK_MAX_MM = 5.0  # declared: a decap farther than this from its pin is a placement problem, not a routing one
@@ -55,7 +58,7 @@ def _segments(tracks: list[dict]) -> list[dict]:
     return out
 
 
-def _route_pairs(board: Board, pairs: list[tuple[str, str]]) -> dict:
+def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict]) -> dict:
     """Route the pairs one after another; a pair that fails goes to the front of the next round.
 
     Measured on StickHub: 6 of 8 pairs route alone but only 4 in netlist order, because an earlier pair
@@ -69,7 +72,7 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]]) -> dict:
         seen.add(tuple(order))
         copper, rows, failed, ok = [], {}, [], []
         for pos, neg in order:
-            res = route_pair(board, pos, neg, rule_for(board, pos), fixed=copper)
+            res = route_pair(board, pos, neg, rule_for(board, pos), fixed=fixed + copper)
             rows[(pos, neg)] = res.summary()
             if res.failed is None:
                 copper += res.tracks + res.vias
@@ -89,11 +92,13 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]]) -> dict:
     return {"copper": best["copper"], "rows": best["rows"], "rounds": rounds}
 
 
-def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, taps: bool = True) -> dict:
+def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, taps: bool = True,
+         power_first: bool = False) -> dict:
     fixed: list[dict] = []
     report: dict = {"pairs": [], "links": [], "taps": []}
     layers = [cl.canonical for cl in board.copper_layers]
-    if pairs:
+
+    def route_confirmed_pairs() -> None:
         confirmed = []
         for claim in intent.get("diff_pairs", []):
             pos, neg = claim["value"]["positive"], claim["value"]["negative"]
@@ -101,10 +106,13 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 report["pairs"].append({"pair": [pos, neg], "routed": False, "failed": "pair not confirmed by the intent"})
             else:
                 confirmed.append((pos, neg))
-        best = _route_pairs(board, confirmed)
-        report["pairs"] += best["rows"]
+        best = _route_pairs(board, confirmed, fixed=fixed)
+        report["pairs"].extend(best["rows"])
         report["pair_rounds"] = best["rounds"]
-        fixed += best["copper"]
+        fixed.extend(best["copper"])
+
+    if pairs and not power_first:
+        route_confirmed_pairs()
     if links:
         for ref in sorted(intent["parts"], key=model.natural_key):
             part = intent["parts"][ref]
@@ -161,6 +169,8 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 if not row["routed"]:
                     row["failed"] = f"no via site within {TAP_MAX_MM} mm" if targets else "pour only on the pad's own layer"
                 report["taps"].append(row)
+    if pairs and power_first:
+        route_confirmed_pairs()
     return {"copper": fixed, "report": report, "taps": tap_items}
 
 
@@ -182,27 +192,62 @@ def _filled(board_file: Path, taps: list[tuple[dict, dict, dict]]) -> list[bool]
         return json.loads(out.read_text(encoding="utf-8"))
 
 
+def _reuse_baseline(path: str | Path, bare: Path, config: RouterConfig) -> dict:
+    report = json.loads(Path(path).read_text(encoding="utf-8"))
+    if report.get("kind") != "route_check" or not report.get("passed"):
+        raise ValueError("C3 baseline must be a passing route-check report")
+    expected = {"board": sha256_file(bare)}
+    for suffix in (".kicad_pro", ".kicad_dru"):
+        sidecar = bare.with_suffix(suffix)
+        if sidecar.is_file():
+            expected[suffix[1:]] = sha256_file(sidecar)
+    actual = {key: value.get("sha256") for key, value in report["inputs"].items()
+              if key in ("board", "kicad_pro", "kicad_dru")}
+    if actual != expected:
+        raise ValueError("C3 baseline board or project rules differ; regenerate the baseline")
+    if report["config"] != {"router": asdict(config), "obstacle_keepouts": True}:
+        raise ValueError("C3 baseline router settings differ; regenerate it with the same settings")
+    tools = run_report.tools()
+    for tool, field in (("kicad", "version"), ("java", "version"), ("freerouting", "sha256")):
+        if report["tools"][tool].get(field) != tools[tool][field]:
+            raise ValueError(f"C3 baseline {tool} differs; regenerate the baseline")
+    return report
+
+
 def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_path: str | None = None,
         pairs: bool = True, links: bool = True, taps: bool = True, c3: bool = False,
-        router_timeout_s: int | None = None, baseline: str | Path | None = None) -> dict:
+        router_timeout_s: int | None = None, baseline: str | Path | None = None,
+        power_first: bool = False) -> dict:
     src = Path(board_path).resolve()
     board = read_board(src)
     intent, intent_info = resolve(board, intent_path)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = (Path(out_dir) if out_dir else RUNTIME_DIR / "s6a" / f"{board.name}-{stamp}").resolve()
-    planned = plan(board, intent, pairs=pairs, links=links, taps=taps)
+    without = None
+    if c3:
+        bare = run_dir / "bare" / src.name
+        apply_instance(src, _instance([]), bare, keep_only=None, strip="tracks")
+        if baseline:
+            config = RouterConfig(neck_width_um=round(board.rules["min_track_width"] * 1000, 3))
+            if router_timeout_s is not None:
+                config = replace(config, timeout_s=router_timeout_s)
+            without = _reuse_baseline(baseline, bare, config)
+    planned = plan(board, intent, pairs=pairs, links=links, taps=taps, power_first=power_first)
     copper, report = planned["copper"], planned["report"]
     out = run_dir / "s6a" / src.name
     apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
-    if planned["taps"]:  # KiCad decides whether each tap's via is on filled copper
-        hits = _filled(out, planned["taps"])
-        dead = [(row, track, via) for (row, track, via), ok in zip(planned["taps"], hits, strict=True) if not ok]
+    live_taps = planned["taps"]
+    while live_taps:
+        hits = _filled(out, live_taps)
+        dead = [(row, track, via) for (row, track, via), ok in zip(live_taps, hits, strict=True) if not ok]
+        if not dead:
+            break
         for row, track, via in dead:
             row.update(routed=False, failed="via is not on filled copper after the refill")
             copper.remove(track)
             copper.remove(via)
-        if dead:
-            apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
+        live_taps = [item for item in live_taps if item[0]["routed"]]
+        apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
     rep = drc.run(out, run_dir / "s6a" / "drc.json")
     nets = {c["net"] for c in copper}
     touching = [v for v in rep.get("violations", [])
@@ -216,13 +261,9 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
                                    for v in touching],
               "report": report,
               "config": {"link_max_mm": LINK_MAX_MM, "tap_max_mm": TAP_MAX_MM, "pairs": pairs, "links": links,
-                         "taps": taps}}
+                         "taps": taps, "power_first": power_first}}
     if c3:
-        if baseline:  # the same placement's route check without S6a, from an earlier run of this command
-            without = json.loads(Path(baseline).read_text(encoding="utf-8"))
-        else:
-            bare = run_dir / "bare" / src.name
-            apply_instance(src, _instance([]), bare, keep_only=None, strip="tracks")
+        if without is None:
             without = route_check(bare, out_dir=run_dir / "route_without", reference_board=src,
                                   router_timeout_s=router_timeout_s)
         with_ = route_check(out, out_dir=run_dir / "route_with", reference_board=src,
@@ -232,11 +273,22 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
             m = r["metrics"]
             return {"coverage": m["coverage"], "unrouted": m["unrouted"], "denominator": m["denominator"],
                     "router_stop": m["router_stop"],
-                    "drc_router_caused": next(g["value"] for g in r["gates"] if g["name"] == "drc_router_caused")}
+                    "drc_router_caused": r["stages"]["drc"]["router_caused"],
+                    "drc_new_non_routing": r["stages"]["drc"]["new_non_routing"]}
 
         a, b = pick(without), pick(with_)
-        result["c3"] = {"without": a, "with": b, "gate": {"name": "coverage_with_s6a >= without",
-                                                          "passed": b["coverage"] >= a["coverage"]}}
+        comparable = a["denominator"] == b["denominator"] and all(
+            not r["drc_router_caused"] and not r["drc_new_non_routing"] for r in (a, b)
+        )
+        result["c3"] = {"without": a, "with": b, "comparable": comparable,
+                        "gate": {"name": "coverage_with_s6a >= without",
+                                 "passed": comparable and b["coverage"] >= a["coverage"]}}
+        if live_taps:
+            routed_file = Path(with_["artifacts"]["routed_board"])
+            hits = _filled(routed_file, live_taps)
+            for (row, _track, _via), ok in zip(live_taps, hits, strict=True):
+                row["filled_after_ses"] = ok
+            result["c3"]["tap_fill_after_ses"] = {"passed": all(hits), "filled": sum(hits), "total": len(hits)}
     (run_dir / "s6a_report.json").write_text(json.dumps(result, indent=1, ensure_ascii=False), encoding="utf-8")
     result["report_file"] = str(run_dir / "s6a_report.json")
     return result
@@ -252,17 +304,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--c3", action="store_true", help="route-check with and without the S6a copper (about 10 minutes)")
     ap.add_argument("--route-timeout", type=int)
     ap.add_argument("--baseline", help="route_without/run_report.json of an earlier --c3 run on the same board")
+    ap.add_argument("--power-first", action="store_true", help="reserve local supply copper before routing the pairs")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     res = run(args.board, args.out, intent_path=args.intent, pairs=not args.no_pairs, links=not args.no_links,
-              taps=not args.no_taps, c3=args.c3, router_timeout_s=args.route_timeout, baseline=args.baseline)
+              taps=not args.no_taps, c3=args.c3, router_timeout_s=args.route_timeout, baseline=args.baseline,
+              power_first=args.power_first)
     brief = {k: res[k] for k in ("counts", "copper", "s6a_board", "report_file")}
     brief["drc_touching_s6a"] = len(res["drc_touching_s6a"])
     brief["failed"] = {k: [r for r in res["report"][k] if not r.get("routed")][:12] for k in ("pairs", "links", "taps")}
     if "c3" in res:
         brief["c3"] = res["c3"]
     print(json.dumps(brief, indent=1, ensure_ascii=False))
-    return 0 if not res["drc_touching_s6a"] and res.get("c3", {}).get("gate", {}).get("passed", True) else 1
+    c3_result = res.get("c3", {})
+    passed = (not res["drc_touching_s6a"] and c3_result.get("gate", {}).get("passed", True)
+              and c3_result.get("tap_fill_after_ses", {}).get("passed", True))
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

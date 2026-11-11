@@ -315,10 +315,15 @@ def test_power_tap_reaches_an_inner_plane_on_a_four_layer_board():
 
     track, via = plan_power_tap(board, chip, pad, "In1.Cu", fixed=[])
     assert track["layer"] == "F.Cu" and via["layers"] == ["F.Cu", "B.Cu"]
+    blocker = {"net": "OTHER", "layer": "In2.Cu", "width": 0.2,
+               "points": [(via["x"], 2), (via["x"], 6)]}
+    alternative = plan_power_tap(board, chip, pad, "In1.Cu", fixed=[blocker])
+    assert alternative is not None
+    assert abs(alternative[1]["x"] - via["x"]) >= 0.5 - 1e-6
     assert plan_power_tap(board, chip, pad, "F.Cu", fixed=[]) is None  # the pad's own layer is not a tap target
 
 
-def test_s6a_selects_links_and_taps_from_the_intent_only():
+def test_s6a_selects_links_and_taps_from_the_intent_only(monkeypatch):
     from eda_agent.placer.route import s6a
 
     outline = [(0, 0), (20, 0), (20, 20), (0, 20)]
@@ -344,10 +349,49 @@ def test_s6a_selects_links_and_taps_from_the_intent_only():
         "U1": {"role": claim("ic")},
         "C1": {"role": claim("decap"), "target": claim({"ref": "U1", "net": "+3V3", "pins": ["1"]})},
         "C2": {"role": claim("decap"), "target": claim({"ref": None, "net": "+3V3", "candidates": ["U1"]}, 0.3)},
-    }, "diff_pairs": []}
-    planned = s6a.plan(board, intent)
+    }, "diff_pairs": [claim({"positive": "USB+", "negative": "USB-"})]}
+    reserved = []
+
+    def route_pairs(_board, pairs, *, fixed):
+        assert pairs == [("USB+", "USB-")]
+        reserved.extend(fixed)
+        return {"copper": [], "rows": [], "rounds": []}
+
+    monkeypatch.setattr(s6a, "_route_pairs", route_pairs)
+    planned = s6a.plan(board, intent, power_first=True)
     report = planned["report"]
     assert [(r["cap"], r["routed"]) for r in report["links"]] == [("C1", True)]  # C2's target is not settled
     assert [(r["ref"], r["pad"], r["routed"]) for r in report["taps"]] == [("U1", "2", True)]  # only U1 is active
     tracks = s6a._segments([c for c in planned["copper"] if "points" in c])
     assert s6a.TAP_MAX_MM == 2.0 and tracks and all(len(t["points"]) == 2 for t in tracks)
+    assert {item["net"] for item in reserved} == {"+3V3", "GND"}
+    assert any("drill" in item for item in reserved)
+    reserved.clear()
+    s6a.plan(board, intent)
+    assert not reserved
+
+
+def test_s6a_rejects_baseline_with_different_board_or_timeout(tmp_path, monkeypatch):
+    import json
+    from dataclasses import asdict
+
+    from eda_agent.placer.route import s6a
+    from eda_agent.placer.toolchain import sha256_file
+
+    bare = tmp_path / "bare.kicad_pcb"
+    bare.write_text("(pcb test)", encoding="utf-8")
+    config = RouterConfig(neck_width_um=150, timeout_s=300)
+    tools = {"kicad": {"version": "10"}, "java": {"version": "25"}, "freerouting": {"sha256": "router"}}
+    monkeypatch.setattr(s6a.run_report, "tools", lambda: tools)
+    baseline = tmp_path / "run_report.json"
+    baseline.write_text(json.dumps({
+        "kind": "route_check", "passed": True, "tools": tools,
+        "inputs": {"board": {"sha256": sha256_file(bare)}},
+        "config": {"router": asdict(config), "obstacle_keepouts": True},
+    }), encoding="utf-8")
+    assert s6a._reuse_baseline(baseline, bare, config)["passed"]
+    with pytest.raises(ValueError, match="router settings differ"):
+        s6a._reuse_baseline(baseline, bare, RouterConfig(neck_width_um=150, timeout_s=600))
+    bare.write_text("(pcb different)", encoding="utf-8")
+    with pytest.raises(ValueError, match="board or project rules differ"):
+        s6a._reuse_baseline(baseline, bare, config)

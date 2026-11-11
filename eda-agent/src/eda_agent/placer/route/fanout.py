@@ -194,6 +194,9 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
         via = {"net": net, "x": vx, "y": vy, "diameter": diameter, "drill": drill, "layers": list(outer)}
         if not holes_separated([via], holes, board.rules.get("hole_to_hole", 0)):
             continue
-        if all(copper_separated([track], [via], [item], gap) for item, gap in other):
+        # The writer needs the two end layers, but a through via crosses every
+        # copper layer when checking its clearance to existing routing.
+        via_span = {**via, "layers": layers}
+        if all(copper_separated([track], [via_span], [item], gap) for item, gap in other):
             return track, via
     return None
