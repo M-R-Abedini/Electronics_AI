@@ -150,6 +150,26 @@ def test_power_tap_reaches_matching_pour_and_respects_existing_drill():
     assert plan_power_tap(board, chip, pad, "F.Cu", fixed=[]) is None
 
 
+def test_power_tap_can_bend_around_track_keepout():
+    outline = [(0, 0), (6, 0), (6, 6), (0, 6)]
+    pour = [(2.74, 2.74), (3.26, 2.74), (3.26, 3.26), (2.74, 3.26)]
+    blocked = [(2.18, 2.18), (2.48, 2.18), (2.48, 2.48), (2.18, 2.48)]
+    pad = Pad("1", "GND", (0.5, 0), (0.4, 0.3), layers=("B.Cu",))
+    chip = Footprint("U1", "", "", 1.5, 2, 0, side="B", pads=[pad])
+    board = Board("bent-tap", [chip], outline=[Outline(outline)],
+                  copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+                  nets=[Net("GND", "Default", 1)], netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                  zones=[{"net": "GND", "layers": ["F.Cu"], "outline": [pour]}],
+                  rule_areas=[{"layers": ["B.Cu"], "polygons": [blocked],
+                               "keepout": {"tracks": True, "vias": False}}])
+
+    result = plan_power_tap(board, chip, pad, "F.Cu", fixed=[])
+    assert result is not None
+    track, via = result
+    assert np.allclose(track["points"], [(2, 2), (3, 2), (3, 3)])
+    assert np.allclose((via["x"], via["y"]), (3, 3))
+
+
 def test_keepout_quotes_unusual_layer_names_and_noop_when_empty():
     k = dsn.Keepout("m", "Top Layer", ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0)))
     assert '(polygon "Top Layer" 0' in dsn.keepout_text(k, 1000.0)

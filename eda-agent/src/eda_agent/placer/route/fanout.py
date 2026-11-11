@@ -4,18 +4,38 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
+from shapely.prepared import prep
 
 from ..eval.legality import board_polygon
 from ..ir import Board, Footprint, Pad
 from .pairs import _copper_separated, _existing_holes, _holes_separated, _outward, pad_layers, pad_polygon
 
 
+def _candidate_paths(origin: tuple[float, float], angle: float,
+                     max_length_mm: float) -> Iterator[list[tuple[float, float]]]:
+    def advance(point: tuple[float, float], direction: float, steps: int) -> tuple[float, float]:
+        return point[0] + steps / 20 * math.cos(direction), point[1] + steps / 20 * math.sin(direction)
+
+    max_steps = int(max_length_mm * 20 + 1e-9)
+    for steps in range(8, max_steps + 1):
+        for turn in (0, 15, -15, 30, -30, 45, -45, 60, -60):
+            yield [origin, advance(origin, angle + math.radians(turn), steps)]
+    for steps in range(14, max_steps + 1):
+        for first_steps in range(8, min(25, steps - 5), 2):
+            for departure in (0, 15, -15, 30, -30):
+                direction = angle + math.radians(departure)
+                knee = advance(origin, direction, first_steps)
+                for bend in (45, -45, 90, -90):
+                    yield [origin, knee, advance(knee, direction + math.radians(bend), steps - first_steps)]
+
+
 def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: str, *,
                    fixed: list[dict], max_length_mm: float = 2.0) -> tuple[dict, dict] | None:
-    """Plan a trace and through via for an SMD pad. KiCad refill checks pour connectivity."""
+    """Plan a track polyline and through via. Emit one track per consecutive pair of points."""
     layers = [layer.canonical for layer in board.copper_layers]
     outer = ("F.Cu", "B.Cu")
     source = pad_layers(footprint, pad, layers)
@@ -65,33 +85,32 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
         for ring in item["outlines"] if len(ring) >= 3
     ]
 
-    x, y = footprint.pad_world(pad)
+    layer = source[0]
+    track_obstacles = prep(unary_union(
+        [g for lays, g in pad_obstacles if layer in lays]
+        + [g for lays, flags, g in keepouts if layer in lays and flags["tracks"]]
+        + [g for copper, g in graphics if copper == layer]
+    ))
+    via_obstacles = prep(unary_union(
+        solder_pads + [g for _, g in pad_obstacles]
+        + [g for _, flags, g in keepouts if flags["vias"]]
+        + [g for _, g in graphics]
+    ))
+    origin = footprint.pad_world(pad)
     dx, dy = _outward(footprint, pad)
     angle = math.atan2(dy, dx)
-    for step in range(8, int(max_length_mm * 20 + 1e-9) + 1):
-        for turn in (0, 15, -15, 30, -30, 45, -45, 60, -60):
-            direction = angle + math.radians(turn)
-            vx, vy = x + step / 20 * math.cos(direction), y + step / 20 * math.sin(direction)
-            via_shape = Point(vx, vy).buffer(diameter / 2)
-            line = LineString([(x, y), (vx, vy)])
-            track_shape = line.buffer(width / 2)
-            if not target.covers(via_shape) or not outline.covers(via_shape.buffer(edge) | track_shape.buffer(edge)):
-                continue
-            if any(via_shape.intersects(g) for g in solder_pads):
-                continue
-            if any((source[0] in lays and track_shape.intersects(g)) or via_shape.intersects(g)
-                   for lays, g in pad_obstacles):
-                continue
-            if any((source[0] in lays and flags["tracks"] and track_shape.intersects(g))
-                   or (flags["vias"] and via_shape.intersects(g)) for lays, flags, g in keepouts):
-                continue
-            if any((layer == source[0] and track_shape.intersects(g)) or via_shape.intersects(g)
-                   for layer, g in graphics):
-                continue
-            track = {"net": net, "layer": source[0], "width": width, "points": [(x, y), (vx, vy)]}
-            via = {"net": net, "x": vx, "y": vy, "diameter": diameter, "drill": drill, "layers": list(outer)}
-            if not _holes_separated([via], holes, board.rules.get("hole_to_hole", 0)):
-                continue
-            if all(_copper_separated([track], [via], [item], gap) for item, gap in other):
-                return track, via
+    for points in _candidate_paths(origin, angle, max_length_mm):
+        vx, vy = points[-1]
+        via_shape = Point(vx, vy).buffer(diameter / 2)
+        if not target.covers(via_shape) or via_obstacles.intersects(via_shape):
+            continue
+        track_shape = LineString(points).buffer(width / 2)
+        if track_obstacles.intersects(track_shape) or not outline.covers(via_shape.buffer(edge) | track_shape.buffer(edge)):
+            continue
+        track = {"net": net, "layer": layer, "width": width, "points": points}
+        via = {"net": net, "x": vx, "y": vy, "diameter": diameter, "drill": drill, "layers": list(outer)}
+        if not _holes_separated([via], holes, board.rules.get("hole_to_hole", 0)):
+            continue
+        if all(_copper_separated([track], [via], [item], gap) for item, gap in other):
+            return track, via
     return None
