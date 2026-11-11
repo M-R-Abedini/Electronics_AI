@@ -289,15 +289,28 @@ def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *, fixed: list[
         return res
     layers = [cl.canonical for cl in board.copper_layers if cl.canonical in ("F.Cu", "B.Cu")]  # outer layers
     fixed = list(fixed or [])
+    tracks, vias = [], []
     for a, b in itertools.pairwise(terms):
         seg = _route_segment(board, a, b, rule, layers, fixed, placer_core)
         res.segments.append(seg["info"])
         if seg["failed"]:
             res.failed = seg["failed"]
             return res
-        res.tracks += seg["tracks"]
-        res.vias += seg["vias"]
+        tracks.extend(seg["tracks"])
+        vias.extend(seg["vias"])
         fixed += seg["tracks"] + seg["vias"]
+
+    lengths = _leg_lengths(tracks, {"pos": pos, "neg": neg})
+    skew = abs(lengths["pos"] - lengths["neg"])
+    pos_vias = sum(v["net"] == pos for v in vias)
+    neg_vias = sum(v["net"] == neg for v in vias)
+    if skew > rule.skew_max + 1e-9:
+        res.failed = f"pair skew {skew:.6g} mm exceeds {rule.skew_max:.6g} mm"
+    elif pos_vias != neg_vias:
+        res.failed = f"unequal via counts ({pos_vias} vs {neg_vias})"
+    else:
+        res.tracks = tracks
+        res.vias = vias
     return res
 
 
@@ -575,7 +588,7 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
         if best is not None and best[0][0] is False:
             break
     if best is None:
-        common = max(set(reasons), key=reasons.count) if reasons else "no attempt"
+        common = max(reasons, key=reasons.count) if reasons else "no attempt"
         return {"failed": f"{a.refs} -> {b.refs}: {common}", "info": info}
     _key, tracks, vias, path, uncoupled, skew, cl = best
     raw_skew = skew

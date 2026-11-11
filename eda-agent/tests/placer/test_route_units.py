@@ -3,7 +3,14 @@
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
+import pytest
+
+from eda_agent.placer.ir import Board
 from eda_agent.placer.route import drc, dsn
+from eda_agent.placer.route import pairs
 from eda_agent.placer.route.check import classify_unrouted
 from eda_agent.placer.route.freerouting import RouterConfig, parse_log
 
@@ -27,6 +34,43 @@ def test_keepout_inserted_before_via_with_y_negated():
     assert '(keepout "mask_a" (polygon F.Cu 0 1000 -2000 1500 -2000 1500 -2250))' in out
     assert out.index("(keepout") < out.index('(via "Via')
     assert out.replace(dsn.keepout_text(k, 1000.0), "") == DSN
+
+
+@pytest.mark.parametrize(("last_failure", "skew", "neg_vias", "error"), [
+    ("breakout blocked", 0.0, 1, "breakout blocked"),
+    (None, 0.1504, 1, "pair skew"),
+    (None, 0.0, 0, "unequal via counts"),
+    (None, 0.1, 1, None),
+])
+def test_pair_only_exposes_copper_for_a_complete_pair(monkeypatch, last_failure, skew, neg_vias, error):
+    monkeypatch.setitem(sys.modules, "placer_core", ModuleType("placer_core"))
+    monkeypatch.setattr(pairs, "terminals", lambda *_: [1, 2, 3])
+    monkeypatch.setattr(pairs, "chain", lambda terms: terms)
+
+    def segment(_board, start, end, *_):
+        info = {"from": start, "to": end}
+        if end == 3 and last_failure:
+            return {"failed": last_failure, "info": info}
+        length = 1.0 + (skew if end == 3 else 0.0)
+        return {
+            "failed": None,
+            "info": info,
+            "tracks": [
+                {"net": "D+", "points": [(0, 0), (length, 0)]},
+                {"net": "D-", "points": [(0, 1), (1, 1)]},
+            ],
+            "vias": ([{"net": "D+"}] + [{"net": "D-"}] * neg_vias) if end == 3 else [],
+        }
+
+    monkeypatch.setattr(pairs, "_route_segment", segment)
+    result = pairs.route_pair(Board("pair", []), "D+", "D-", pairs.PairRule(0.15, 0.15, 0.15, 0.5, 0.3))
+    assert len(result.segments) == 2
+    if error:
+        assert result.failed is not None and error in result.failed
+        assert not result.tracks and not result.vias
+    else:
+        assert result.failed is None
+        assert len(result.tracks) == 4 and len(result.vias) == 2
 
 
 def test_keepout_quotes_unusual_layer_names_and_noop_when_empty():
