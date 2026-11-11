@@ -57,6 +57,7 @@ class PairRule:
     via_d: float
     via_drill: float
     skew_max: float = 0.15
+    max_vias_per_leg: int = 2  # architecture 7.1, short differential pairs
 
     @property
     def pitch(self) -> float:  # leg centre to leg centre
@@ -299,11 +300,25 @@ def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *, fixed: list[
     if 2 * len(terms) != total_pads:
         res.failed = f"{total_pads - 2 * len(terms)} pair pad(s) have no matched terminal"
         return res
+    result = _route_order(board, terms, pos, neg, rule, fixed or [], placer_core)
+    if result.failed is not None and len(terms) == 3:
+        # One bounded alternative for connector, IC, and protection terminal.
+        alternate = _route_order(board, [terms[0], terms[2], terms[1]], pos, neg, rule, fixed or [], placer_core)
+        if alternate.failed is None:
+            return alternate
+    return result
+
+
+def _route_order(board: Board, terms: list[Terminal], pos: str, neg: str,
+                 rule: PairRule, fixed: list[dict], core) -> PairRoute:
+    res = PairRoute(pos, neg)
     layers = [cl.canonical for cl in board.copper_layers if cl.canonical in ("F.Cu", "B.Cu")]  # outer layers
-    fixed = list(fixed or [])
+    fixed = list(fixed)
+    holes = _existing_holes(board, fixed)
+    hole_clearance = board.rules.get("hole_to_hole", 0.0)
     tracks, vias = [], []
     for a, b in itertools.pairwise(terms):
-        seg = _route_segment(board, a, b, rule, layers, fixed, placer_core)
+        seg = _route_segment(board, a, b, rule, layers, fixed, core)
         res.segments.append(seg["info"])
         if seg["failed"]:
             res.failed = seg["failed"]
@@ -320,6 +335,10 @@ def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *, fixed: list[
         res.failed = f"pair skew {skew:.6g} mm exceeds {rule.skew_max:.6g} mm"
     elif pos_vias != neg_vias:
         res.failed = f"unequal via counts ({pos_vias} vs {neg_vias})"
+    elif pos_vias > rule.max_vias_per_leg:
+        res.failed = f"{pos_vias} vias per leg exceeds {rule.max_vias_per_leg}"
+    elif not _holes_separated(vias, holes, hole_clearance):
+        res.failed = "via holes violate drill clearance"
     elif not _copper_separated(
         [t for t in tracks if t["net"] == pos],
         [v for v in vias if v["net"] == pos],
@@ -394,8 +413,40 @@ def _copper_separated(tracks: list[dict], vias: list[dict], other: list[dict], c
     return True
 
 
+def _existing_holes(board: Board, copper: list[dict]) -> list[tuple[float, float, float]]:
+    # Use the larger drill dimension as a conservative bound for slotted pads.
+    pads = [(x, y, max(pad.drill)) for fp in board.footprints for pad, (x, y) in fp.pads_world() if pad.drill]
+    return pads + [(v["x"], v["y"], v["drill"]) for v in copper if "drill" in v]
+
+
+def _holes_separated(vias: list[dict], holes: list[tuple[float, float, float]], clearance: float) -> bool:
+    existing = list(holes)
+    for via in vias:
+        x, y, drill = via["x"], via["y"], via["drill"]
+        if any(math.hypot(x - px, y - py) < (drill + pd) / 2 + clearance - 1e-6
+               for px, py, pd in existing):
+            return False
+        existing.append((x, y, drill))
+    return True
+
+
+def _block_drills(win: Window, mask: np.ndarray, holes: list[tuple[float, float, float]],
+                  diameter: float, clearance: float) -> None:
+    for x, y, drill in holes:
+        radius = (diameter + drill) / 2 + clearance
+        i0, j0 = win.cell(x - radius, y - radius)
+        i1, j1 = win.cell(x + radius, y + radius)
+        i0, j0 = max(0, i0), max(0, j0)
+        i1, j1 = min(win.nx - 1, i1), min(win.ny - 1, j1)
+        if i0 > i1 or j0 > j1:
+            continue
+        area = np.s_[j0:j1 + 1, i0:i1 + 1]
+        mask[area] |= (win.X[area] - x) ** 2 + (win.Y[area] - y) ** 2 < (radius - 1e-6) ** 2
+
+
 def _breakout(win: Window, raw: dict[str, np.ndarray], layers, own_copper: list[dict], start: tuple, end: tuple,
-              net: str, rule: PairRule, core, allow_via: bool) -> tuple[list[dict], list[dict]] | None:
+              net: str, rule: PairRule, core, allow_via: bool, *,
+              blocked_drills: np.ndarray | None = None) -> tuple[list[dict], list[dict]] | None:
     """One leg from its pad to its place in the pair, at single-trace width (A*).
 
     A via is allowed only when the pad and the coupled section are on different layers: then each leg takes
@@ -418,7 +469,10 @@ def _breakout(win: Window, raw: dict[str, np.ndarray], layers, own_copper: list[
         union = np.zeros((win.ny, win.nx), bool)
         for m in grown.values():
             union |= m
-        via_ok = (~ndimage.binary_dilation(union, structure=_disk(rule.via_d / 2 / win.res))).astype(np.uint8)
+        via_blocked = ndimage.binary_dilation(union, structure=_disk(rule.via_d / 2 / win.res))
+        if blocked_drills is not None:
+            via_blocked |= blocked_drills
+        via_ok = (~via_blocked).astype(np.uint8)
     else:
         via_ok = np.zeros((win.ny, win.nx), np.uint8)
     li = {lay: k for k, lay in enumerate(layers)}
@@ -460,7 +514,8 @@ def _leg_lengths(tracks: list[dict], nets: dict[str, str]) -> dict[str, float]:
     return out
 
 
-def _breakouts_at(win, leg_raw, layers, term: Terminal, ends, which: int, nets, rule, core, tracks, vias, cl):
+def _breakouts_at(win, leg_raw, layers, term: Terminal, ends, which: int, nets, rule, core, tracks, vias, cl,
+                  blocked_drills: np.ndarray, hole_clearance: float):
     """Both legs' breakouts at one terminal; if the first one blocks the second, try the other order."""
     allow_via = term.layer != cl
     for order in (("pos", "neg"), ("neg", "pos")):
@@ -469,8 +524,12 @@ def _breakouts_at(win, leg_raw, layers, term: Terminal, ends, which: int, nets, 
             fp, pad = term.pads[leg]
             lay_e, end_xy = ends[leg][which]
             others = [t for t in tracks + vias + t_add + v_add if t["net"] != nets[leg]]
+            via_mask = blocked_drills.copy() if allow_via else None
+            if via_mask is not None:
+                holes = [(v["x"], v["y"], v["drill"]) for v in vias + v_add]
+                _block_drills(win, via_mask, holes, rule.via_drill, hole_clearance)
             got = _breakout(win, leg_raw[leg], layers, others, (fp.pad_world(pad), term.layer), (end_xy, lay_e), nets[leg],
-                            rule, core, allow_via)
+                            rule, core, allow_via, blocked_drills=via_mask)
             if got is None or sum(LineString(t["points"]).length for t in got[0]) > BREAKOUT_MAX_MM:
                 ok = False
                 break
@@ -577,6 +636,9 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
     xs = [a.mid[0], b.mid[0]]
     ys = [a.mid[1], b.mid[1]]
     win = Window(board, (min(xs) - WINDOW_MM, min(ys) - WINDOW_MM, max(xs) + WINDOW_MM, max(ys) + WINDOW_MM), layers)
+    blocked_drills = np.zeros((win.ny, win.nx), bool)
+    hole_clearance = board.rules.get("hole_to_hole", 0.0)
+    _block_drills(win, blocked_drills, _existing_holes(board, fixed), rule.via_drill, hole_clearance)
     own = {a.pads["pos"][1].net, a.pads["neg"][1].net}
     term_pads = {id(pad) for term in (a, b) for _fp, pad in term.pads.values()}
     # coupled section: every pad except the four terminal pads; earlier copper of these nets is not in the way
@@ -638,7 +700,7 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
             uncoupled, ok = 0.0, True
             for term, which in ((a, 0), (b, -1)):
                 t_add, v_add, why = _breakouts_at(win, leg_raw, layers, term, ends, which, nets, rule, core,
-                                                  tracks, vias, cl)
+                                                  tracks, vias, cl, blocked_drills, hole_clearance)
                 if why:
                     reasons.append(why)
                     ok = False

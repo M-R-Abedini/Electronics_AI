@@ -37,13 +37,14 @@ def test_keepout_inserted_before_via_with_y_negated():
     assert out.replace(dsn.keepout_text(k, 1000.0), "") == DSN
 
 
-@pytest.mark.parametrize(("last_failure", "skew", "neg_vias", "error"), [
-    ("breakout blocked", 0.0, 1, "breakout blocked"),
-    (None, 0.1504, 1, "pair skew"),
-    (None, 0.0, 0, "unequal via counts"),
-    (None, 0.1, 1, None),
+@pytest.mark.parametrize(("last_failure", "skew", "neg_vias", "max_vias", "error"), [
+    ("breakout blocked", 0.0, 1, 2, "breakout blocked"),
+    (None, 0.1504, 1, 2, "pair skew"),
+    (None, 0.0, 0, 2, "unequal via counts"),
+    (None, 0.0, 1, 0, "vias per leg"),
+    (None, 0.1, 1, 2, None),
 ])
-def test_pair_only_exposes_copper_for_a_complete_pair(monkeypatch, last_failure, skew, neg_vias, error):
+def test_pair_only_exposes_copper_for_a_complete_pair(monkeypatch, last_failure, skew, neg_vias, max_vias, error):
     monkeypatch.setitem(sys.modules, "placer_core", ModuleType("placer_core"))
     monkeypatch.setattr(pairs, "terminals", lambda *_: [1, 2, 3])
     monkeypatch.setattr(pairs, "chain", lambda terms: terms)
@@ -61,7 +62,7 @@ def test_pair_only_exposes_copper_for_a_complete_pair(monkeypatch, last_failure,
                 {"net": "D-", "layer": "F.Cu", "width": 0.15, "points": [(0, 1), (1, 1)]},
             ],
             "vias": [
-                {"net": net, "x": 1, "y": y, "diameter": 0.5, "layers": ["F.Cu", "B.Cu"]}
+                {"net": net, "x": 1, "y": y, "diameter": 0.5, "drill": 0.3, "layers": ["F.Cu", "B.Cu"]}
                 for net, y in ([("D+", 0)] + [("D-", 1)] * neg_vias)
             ] if end == 3 else [],
         }
@@ -74,7 +75,8 @@ def test_pair_only_exposes_copper_for_a_complete_pair(monkeypatch, last_failure,
         ])
         for i in (1, 2, 3)
     ]
-    result = pairs.route_pair(Board("pair", parts), "D+", "D-", pairs.PairRule(0.15, 0.15, 0.15, 0.5, 0.3))
+    rule = pairs.PairRule(0.15, 0.15, 0.15, 0.5, 0.3, max_vias_per_leg=max_vias)
+    result = pairs.route_pair(Board("pair", parts), "D+", "D-", rule)
     assert len(result.segments) == 2
     if error:
         assert result.failed is not None and error in result.failed
@@ -109,6 +111,19 @@ def test_breakout_joins_exact_endpoints_and_checks_partner_clearance():
 
     partner = {"net": "D-", "layer": layer, "width": 0.15, "points": [(0, 0.49), (1, 0.49)]}
     assert pairs._breakout(win, raw, [layer], [partner], start, end, "D+", rule, core, False) is None
+
+
+def test_same_net_via_holes_obey_drill_clearance():
+    win = pairs.Window(Board("pair", []), (0, 0, 2, 2), ["F.Cu"])
+    mask = np.zeros_like(win.X, dtype=bool)
+    holes = [(0.5, 0.5, 0.3)]
+    pairs._block_drills(win, mask, holes, 0.3, 0.25)
+
+    for x, blocked in [(1.0, True), (1.05, False), (1.1, False)]:
+        i, j = win.cell(x, 0.5)
+        assert bool(mask[j, i]) == blocked
+        via = {"net": "D+", "x": x, "y": 0.5, "drill": 0.3}
+        assert pairs._holes_separated([via], holes, 0.25) == (not blocked)
 
 
 def test_keepout_quotes_unusual_layer_names_and_noop_when_empty():
