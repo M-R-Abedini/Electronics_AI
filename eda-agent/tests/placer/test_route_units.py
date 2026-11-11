@@ -8,12 +8,18 @@ from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
-
-from eda_agent.placer.ir import Board, CopperLayer, Footprint, Net, NetClass, Outline, Pad
-from eda_agent.placer.route import drc, dsn
-from eda_agent.placer.route import pairs
-from eda_agent.placer.route.fanout import plan_power_link, plan_power_tap
+from eda_agent.placer.ir import (
+    Board,
+    CopperLayer,
+    Footprint,
+    Net,
+    NetClass,
+    Outline,
+    Pad,
+)
+from eda_agent.placer.route import drc, dsn, pairs
 from eda_agent.placer.route.check import classify_unrouted
+from eda_agent.placer.route.fanout import plan_power_link, plan_power_tap
 from eda_agent.placer.route.freerouting import RouterConfig, parse_log
 
 DSN = """(pcb x.dsn
@@ -296,3 +302,52 @@ def test_dsn_layer_type_and_wire_keepout():
     assert "(layer In1.Cu (type power))" in out and "(layer F.Cu (type signal))" in out
     k = dsn.add_wire_keepouts(DSN, [dsn.Keepout("mz", "F.Cu", ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0)))])
     assert '(wire_keepout "mz" (polygon F.Cu 0' in k and "(keepout " not in k
+
+
+def test_power_tap_reaches_an_inner_plane_on_a_four_layer_board():
+    outline = [(0, 0), (10, 0), (10, 10), (0, 10)]
+    pad = Pad("1", "GND", (0.5, 0), (0.4, 0.3), layers=("F.Cu",))
+    chip = Footprint("U1", "", "", 4, 4, 0, side="F", pads=[pad])
+    layers = [CopperLayer(n, n, i) for i, n in enumerate(("F.Cu", "In1.Cu", "In2.Cu", "B.Cu"))]
+    board = Board("power4", [chip], outline=[Outline(outline)], copper_layers=layers,
+                  nets=[Net("GND", "Default", 1)], netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                  zones=[{"net": "GND", "layers": ["In1.Cu"], "outline": [outline]}], rules={"hole_to_hole": 0.25})
+
+    track, via = plan_power_tap(board, chip, pad, "In1.Cu", fixed=[])
+    assert track["layer"] == "F.Cu" and via["layers"] == ["F.Cu", "B.Cu"]
+    assert plan_power_tap(board, chip, pad, "F.Cu", fixed=[]) is None  # the pad's own layer is not a tap target
+
+
+def test_s6a_selects_links_and_taps_from_the_intent_only():
+    from eda_agent.placer.route import s6a
+
+    outline = [(0, 0), (20, 0), (20, 20), (0, 20)]
+    vdd = Pad("1", "+3V3", (-1.0, 0), (0.4, 0.3), layers=("F.Cu",))
+    gnd = Pad("2", "GND", (1.0, 0), (0.4, 0.3), layers=("F.Cu",))
+    chip = Footprint("U1", "", "", 8, 10, 0, side="F", pads=[vdd, gnd])
+    cap = Footprint("C1", "", "", 5, 10, 0, side="F",
+                    pads=[Pad("1", "+3V3", (0.5, 0), (0.4, 0.4), layers=("F.Cu",)),
+                          Pad("2", "GND", (-0.5, 0), (0.4, 0.4), layers=("F.Cu",))])
+    other = Footprint("C2", "", "", 5, 14, 0, side="F",
+                      pads=[Pad("1", "+3V3", (0.5, 0), (0.4, 0.4), layers=("F.Cu",)),
+                            Pad("2", "GND", (-0.5, 0), (0.4, 0.4), layers=("F.Cu",))])
+    board = Board("s6a", [chip, cap, other], outline=[Outline(outline)],
+                  copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+                  nets=[Net("GND", "Default", 3), Net("+3V3", "Default", 3)],
+                  netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                  zones=[{"net": "GND", "layers": ["B.Cu"], "outline": [outline]}], rules={"hole_to_hole": 0.25})
+
+    def claim(value, confidence=0.9):
+        return {"value": value, "source": {"kind": "motif"}, "confidence": confidence, "confirmed_by_user": False}
+
+    intent = {"parts": {
+        "U1": {"role": claim("ic")},
+        "C1": {"role": claim("decap"), "target": claim({"ref": "U1", "net": "+3V3", "pins": ["1"]})},
+        "C2": {"role": claim("decap"), "target": claim({"ref": None, "net": "+3V3", "candidates": ["U1"]}, 0.3)},
+    }, "diff_pairs": []}
+    planned = s6a.plan(board, intent)
+    report = planned["report"]
+    assert [(r["cap"], r["routed"]) for r in report["links"]] == [("C1", True)]  # C2's target is not settled
+    assert [(r["ref"], r["pad"], r["routed"]) for r in report["taps"]] == [("U1", "2", True)]  # only U1 is active
+    tracks = s6a._segments([c for c in planned["copper"] if "points" in c])
+    assert s6a.TAP_MAX_MM == 2.0 and tracks and all(len(t["points"]) == 2 for t in tracks)

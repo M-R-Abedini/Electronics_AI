@@ -710,6 +710,36 @@ def macro_apply(board_path, spec_json, out_board, out_json):
     del removed
 
 
+def filled_hits(board_path, points_json, out_json):
+    """For each {x, y, radius, net, layer}: is the whole disc on filled copper of that net on that layer?
+
+    The fill is rebuilt first, so the answer is about the copper a fab would get (S6a tap check)."""
+    board = pcbnew.LoadBoard(board_path)
+    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    with open(points_json, encoding="utf-8") as fh:
+        points = json.load(fh)
+    names = {board.GetLayerName(layer): layer for layer in board.GetEnabledLayers().CuStack()}
+    names.update({pcbnew.BOARD.GetStandardLayerName(layer): layer for layer in board.GetEnabledLayers().CuStack()})
+    out = []
+    for p in points:
+        layer = names.get(p["layer"])
+        hit = False
+        if layer is not None:
+            r = float(p.get("radius", 0.0))
+            probes = [(p["x"], p["y"])] + [(p["x"] + dx * r, p["y"] + dy * r)
+                                             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))]
+            for zone in board.Zones():
+                if zone.GetIsRuleArea() or zone.GetNetname() != p["net"] or not zone.IsOnLayer(layer):
+                    continue
+                if all(zone.HitTestFilledArea(layer, _vec(q), 0) for q in probes):
+                    hit = True
+                    break
+        out.append(hit)
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump(out, fh)
+
+
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
-    {"prepare": prepare, "finish": finish, "dump": dump, "place": place, "macro_apply": macro_apply}[_cmd](*_args)
+    {"prepare": prepare, "finish": finish, "dump": dump, "place": place, "macro_apply": macro_apply,
+     "filled_hits": filled_hits}[_cmd](*_args)

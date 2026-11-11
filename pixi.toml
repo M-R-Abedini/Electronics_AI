@@ -27,6 +27,7 @@ macro-proof = { cmd = "python -m eda_agent.placer.macro_proof", env = { PYTHONPA
 intent = { cmd = "python -m eda_agent.placer.intent", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
 calibrate = { cmd = "python -m eda_agent.placer.eval.calibrate", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
 impedance = { cmd = "python -m eda_agent.placer.impedance_golden", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
+s6a = { cmd = "python -m eda_agent.placer.route.s6a", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
 cypress = { cmd = "python -m eda_agent.placer.cypress", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
 place = { cmd = "python -m eda_agent.placer.place", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }
 roundtrip = { cmd = "python -m eda_agent.placer.io.roundtrip", env = { PYTHONPATH = "$PIXI_PROJECT_ROOT/eda-agent/src" } }

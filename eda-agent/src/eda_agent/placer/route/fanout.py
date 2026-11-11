@@ -12,10 +12,15 @@ from shapely.prepared import prep
 
 from ..eval.legality import board_polygon
 from ..ir import Board, Footprint, Pad
-from .pairs import (
-    PairRule, Window, _breakout, _copper_separated, _existing_holes, _holes_separated,
-    _outward, obstacles, pad_layers, pad_polygon,
+from .copper import (
+    copper_separated,
+    existing_holes,
+    holes_separated,
+    outward,
+    pad_layers,
+    pad_polygon,
 )
+from .pairs import PairRule, Window, obstacles, trace_path
 
 
 def _pad_clearances(board: Board, layers: list[str], net: str, clearance: float):
@@ -80,7 +85,7 @@ def plan_power_link(board: Board, source: tuple[Footprint, Pad], destination: tu
 
     # Grid tie-breaking and the exact pad leads can make the two directions differ.
     for a, b in ((start, end), (end, start)):
-        result = _breakout(win, raw, [layer], [], (a, layer), (b, layer), net, rule, placer_core, False)
+        result = trace_path(win, raw, [layer], [], (a, layer), (b, layer), net, rule, placer_core, False)
         if result is None:
             continue
         tracks, _ = result
@@ -90,7 +95,7 @@ def plan_power_link(board: Board, source: tuple[Footprint, Pad], destination: tu
         copper = unary_union([line.buffer(width / 2) for line in lines])
         if not outline.covers(copper.buffer(edge)) or any(copper.intersects(g) for g in forbidden):
             continue
-        if all(_copper_separated(tracks, [], [item], gap) for item, gap in other_copper):
+        if all(copper_separated(tracks, [], [item], gap) for item, gap in other_copper):
             if a == end:
                 return [{**track, "points": track["points"][::-1]} for track in reversed(tracks)]
             return tracks
@@ -117,11 +122,16 @@ def _candidate_paths(origin: tuple[float, float], angle: float,
 
 def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: str, *,
                    fixed: list[dict], max_length_mm: float = 2.0) -> tuple[dict, dict] | None:
-    """Plan a track polyline and through via. Emit one track per consecutive pair of points."""
+    """Plan a track polyline and through via. Emit one track per consecutive pair of points.
+
+    The via is planned inside the pour's outline. Whether it lands on filled copper is KiCad's call after
+    the refill: ``s6a.plan`` drops a tap whose via the fill does not reach (``filled_hits``)."""
     layers = [layer.canonical for layer in board.copper_layers]
     outer = ("F.Cu", "B.Cu")
     source = pad_layers(footprint, pad, layers)
-    if set(layers) != set(outer) or pad.kind != "smd" or len(source) != 1 or {source[0], target_layer} != set(outer):
+    # the pad is on an outer layer; the pour may be on any other layer (a through via reaches inner planes too)
+    if (not set(outer) <= set(layers) or pad.kind != "smd" or len(source) != 1 or source[0] not in outer
+            or target_layer == source[0] or target_layer not in layers):
         return None
     net = pad.net
     rules = board.netclass_of(net) if net else None
@@ -140,7 +150,7 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
     drill = max(rules.via_drill, board.rules.get("min_through_drill", 0))
     clearance = max(rules.clearance, board.rules.get("min_clearance", 0))
     edge = board.rules.get("copper_edge_clearance", 0)
-    holes = _existing_holes(board, fixed)
+    holes = existing_holes(board, fixed)
     other = []
     for item in fixed:
         if item["net"] != net:
@@ -170,7 +180,7 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
         + [g for _, g in graphics]
     ))
     origin = footprint.pad_world(pad)
-    dx, dy = _outward(footprint, pad)
+    dx, dy = outward(footprint, pad)
     angle = math.atan2(dy, dx)
     for points in _candidate_paths(origin, angle, max_length_mm):
         vx, vy = points[-1]
@@ -182,8 +192,8 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
             continue
         track = {"net": net, "layer": layer, "width": width, "points": points}
         via = {"net": net, "x": vx, "y": vy, "diameter": diameter, "drill": drill, "layers": list(outer)}
-        if not _holes_separated([via], holes, board.rules.get("hole_to_hole", 0)):
+        if not holes_separated([via], holes, board.rules.get("hole_to_hole", 0)):
             continue
-        if all(_copper_separated([track], [via], [item], gap) for item, gap in other):
+        if all(copper_separated([track], [via], [item], gap) for item, gap in other):
             return track, via
     return None
