@@ -658,6 +658,7 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
             info.update(direct_layer=a.layer, uncoupled_mm=round(uncoupled, 3), skew_mm=round(skew, 3))
             return {"failed": None, "info": info, "tracks": tracks, "vias": []}
         common = max(reasons, key=reasons.count) if reasons else "no attempt"
+        info["attempts"] = {r: reasons.count(r) for r in sorted(set(reasons))}  # every reason, for the report
         return {"failed": f"{a.refs} -> {b.refs}: {common}", "info": info}
     _key, tracks, vias, path, uncoupled, skew, cl = best
     raw_skew = skew

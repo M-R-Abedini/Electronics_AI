@@ -43,6 +43,7 @@ from .pairs import route_pair, rule_for
 
 LINK_MAX_MM = 5.0  # declared: a decap farther than this from its pin is a placement problem, not a routing one
 TAP_MAX_MM = 2.0  # declared: dogbone length; one value for every pad (no per-pad budgets)
+PAIR_ROUNDS = 6  # declared: orderings tried for the pairs (failed pairs move to the front)
 ACTIVE_ROLES = ("ic", "converter_ic", "linear_regulator", "power_switch")
 
 
@@ -54,20 +55,56 @@ def _segments(tracks: list[dict]) -> list[dict]:
     return out
 
 
+def _route_pairs(board: Board, pairs: list[tuple[str, str]]) -> dict:
+    """Route the pairs one after another; a pair that fails goes to the front of the next round.
+
+    Measured on StickHub: 6 of 8 pairs route alone but only 4 in netlist order, because an earlier pair
+    takes the channel a later one needs.  Rounds stop when a round routes everything, repeats an order
+    already tried, or after ``PAIR_ROUNDS``.  The best round wins (most pairs, then least copper).
+    """
+    order, seen, best, rounds = list(pairs), set(), None, []
+    for _ in range(PAIR_ROUNDS):
+        if tuple(order) in seen:
+            break
+        seen.add(tuple(order))
+        copper, rows, failed, ok = [], {}, [], []
+        for pos, neg in order:
+            res = route_pair(board, pos, neg, rule_for(board, pos), fixed=copper)
+            rows[(pos, neg)] = res.summary()
+            if res.failed is None:
+                copper += res.tracks + res.vias
+                ok.append((pos, neg))
+            else:
+                failed.append((pos, neg))
+        length = sum(sum(r["length_mm"].values()) for r in rows.values())
+        rounds.append({"order": [p for p, _n in order], "routed": len(ok)})
+        key = (len(ok), -length)
+        if best is None or key > best["key"]:
+            best = {"key": key, "copper": copper, "rows": [rows[p] for p in pairs]}
+        if not failed:
+            break
+        order = failed + ok
+    if best is None:
+        return {"copper": [], "rows": [], "rounds": rounds}
+    return {"copper": best["copper"], "rows": best["rows"], "rounds": rounds}
+
+
 def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, taps: bool = True) -> dict:
     fixed: list[dict] = []
     report: dict = {"pairs": [], "links": [], "taps": []}
     layers = [cl.canonical for cl in board.copper_layers]
     if pairs:
+        confirmed = []
         for claim in intent.get("diff_pairs", []):
             pos, neg = claim["value"]["positive"], claim["value"]["negative"]
             if model.is_uncertain(claim):
                 report["pairs"].append({"pair": [pos, neg], "routed": False, "failed": "pair not confirmed by the intent"})
-                continue
-            res = route_pair(board, pos, neg, rule_for(board, pos), fixed=fixed)
-            report["pairs"].append(res.summary())
-            if res.failed is None:
-                fixed += res.tracks + res.vias
+            else:
+                confirmed.append((pos, neg))
+        best = _route_pairs(board, confirmed)
+        report["pairs"] += best["rows"]
+        report["pair_rounds"] = best["rounds"]
+        fixed += best["copper"]
     if links:
         for ref in sorted(intent["parts"], key=model.natural_key):
             part = intent["parts"][ref]
@@ -147,7 +184,7 @@ def _filled(board_file: Path, taps: list[tuple[dict, dict, dict]]) -> list[bool]
 
 def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_path: str | None = None,
         pairs: bool = True, links: bool = True, taps: bool = True, c3: bool = False,
-        router_timeout_s: int | None = None) -> dict:
+        router_timeout_s: int | None = None, baseline: str | Path | None = None) -> dict:
     src = Path(board_path).resolve()
     board = read_board(src)
     intent, intent_info = resolve(board, intent_path)
@@ -171,7 +208,8 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
     touching = [v for v in rep.get("violations", [])
                 if nets & {drc.item_net(i.get("description", "")) for i in v.get("items", [])}
                 and any(drc.is_routing_item(i.get("description", "")) for i in v.get("items", []))]
-    counts = {k: {"planned": len(v), "routed": sum(bool(r.get("routed")) for r in v)} for k, v in report.items()}
+    counts = {k: {"planned": len(report[k]), "routed": sum(bool(r.get("routed")) for r in report[k])}
+              for k in ("pairs", "links", "taps")}
     result = {"board": str(src), "intent": intent_info, "s6a_board": str(out), "counts": counts,
               "copper": {"tracks": sum("points" in c for c in copper), "vias": sum("points" not in c for c in copper)},
               "drc_touching_s6a": [{"type": v["type"], "items": [i.get("description", "") for i in v.get("items", [])]}
@@ -180,10 +218,13 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
               "config": {"link_max_mm": LINK_MAX_MM, "tap_max_mm": TAP_MAX_MM, "pairs": pairs, "links": links,
                          "taps": taps}}
     if c3:
-        bare = run_dir / "bare" / src.name
-        apply_instance(src, _instance([]), bare, keep_only=None, strip="tracks")
-        without = route_check(bare, out_dir=run_dir / "route_without", reference_board=src,
-                              router_timeout_s=router_timeout_s)
+        if baseline:  # the same placement's route check without S6a, from an earlier run of this command
+            without = json.loads(Path(baseline).read_text(encoding="utf-8"))
+        else:
+            bare = run_dir / "bare" / src.name
+            apply_instance(src, _instance([]), bare, keep_only=None, strip="tracks")
+            without = route_check(bare, out_dir=run_dir / "route_without", reference_board=src,
+                                  router_timeout_s=router_timeout_s)
         with_ = route_check(out, out_dir=run_dir / "route_with", reference_board=src,
                             router_timeout_s=router_timeout_s)
 
@@ -210,13 +251,14 @@ def main(argv: list[str] | None = None) -> int:
         ap.add_argument(f"--no-{name}", action="store_true")
     ap.add_argument("--c3", action="store_true", help="route-check with and without the S6a copper (about 10 minutes)")
     ap.add_argument("--route-timeout", type=int)
+    ap.add_argument("--baseline", help="route_without/run_report.json of an earlier --c3 run on the same board")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     res = run(args.board, args.out, intent_path=args.intent, pairs=not args.no_pairs, links=not args.no_links,
-              taps=not args.no_taps, c3=args.c3, router_timeout_s=args.route_timeout)
+              taps=not args.no_taps, c3=args.c3, router_timeout_s=args.route_timeout, baseline=args.baseline)
     brief = {k: res[k] for k in ("counts", "copper", "s6a_board", "report_file")}
     brief["drc_touching_s6a"] = len(res["drc_touching_s6a"])
-    brief["failed"] = {k: [r for r in v if not r.get("routed")][:12] for k, v in res["report"].items()}
+    brief["failed"] = {k: [r for r in res["report"][k] if not r.get("routed")][:12] for k in ("pairs", "links", "taps")}
     if "c3" in res:
         brief["c3"] = res["c3"]
     print(json.dumps(brief, indent=1, ensure_ascii=False))
