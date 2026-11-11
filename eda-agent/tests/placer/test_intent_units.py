@@ -18,6 +18,7 @@ from pathlib import Path
 
 import jsonschema
 import pytest
+from eda_agent.placer.eval.metrics import critical_loops_intent
 from eda_agent.placer.intent import infer, model, validate
 from eda_agent.placer.ir import (
     Board,
@@ -40,6 +41,16 @@ def _fp(ref, value, lib, pins, x=0.0, sheet="/"):
             for i, (net, fn, pt) in enumerate(pins)]
     return Footprint(ref, value, f"lib:{lib}", x, 0.0, 0.0, "F", pads=pads, courtyard=Courtyard("file", [BOX]),
                      uuid="u-" + ref, sheet=sheet)
+
+
+def test_decap_distance_uses_declared_target_pin():
+    chip = _fp("U1", "MCU", "QFN", [("+3V3", "VDD1", "power_in"), ("+3V3", "VDD2", "power_in")])
+    cap = _fp("C1", "100nF", "C_0402", [("+3V3", None, "passive")])
+    board = Board("pin-target", [chip, cap])
+    target = {"ref": "U1", "net": "+3V3", "pins": ["2"]}
+    intent = {"parts": {"C1": {"role": {"value": "decap"}, "target": {"value": target}}}}
+
+    assert critical_loops_intent(board, intent)["decap_pin_distance"]["median_mm"] == 0.4
 
 
 def _board() -> Board:

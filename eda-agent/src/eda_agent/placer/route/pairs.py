@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -37,8 +38,9 @@ GRID_MM = 0.05  # declared: centreline grid
 WINDOW_MM = 6.0  # declared: grid window margin around the terminals
 BREAKOUT_MM = 4.0  # declared: the coupled section starts within this distance of a terminal
 SECTORS, TRY_COMBOS = 8, 12  # declared: start directions per terminal; start/end pairs tried
-MARGIN_MM = GRID_MM  # declared: extra clearance for the grid's quantisation, so DRC sees no near misses
+MARGIN_MM = GRID_MM / 2  # search cushion; copper still requires exact clearance and KiCad DRC
 BREAKOUT_MAX_MM = 6.0  # declared: a leg's uncoupled breakout longer than this is a detour, not a breakout
+DIRECT_TERMINAL_MM = 2.0  # short connector-to-protection links can share a layer without a coupled section
 TUNE_TARGET, TUNE_HEIGHTS = 0.5, (0.6, 0.45, 0.3, 0.2)  # declared: tune to half the skew limit; bump heights
 VIA_COST, TURN45, TURN90 = 40.0, 2.0, 6.0  # in grid steps (via = 2 mm of detour)
 
@@ -154,6 +156,7 @@ def terminals(board: Board, pos: str, neg: str, *, near_mm: float = 2.0) -> list
     copper = [cl.canonical for cl in board.copper_layers]
     pads = {leg: [(fp, p) for fp in board.footprints for p in fp.pads if p.net == net]
             for leg, net in (("pos", pos), ("neg", neg))}
+    by_part = {leg: Counter(fp.ref for fp, _pad in items) for leg, items in pads.items()}
     used: set[int] = set()
     out = []
     cands = []
@@ -165,7 +168,8 @@ def terminals(board: Board, pos: str, neg: str, *, near_mm: float = 2.0) -> list
                 continue
             (xa, ya), (xb, yb) = fp_a.pad_world(pa), fp_b.pad_world(pb)
             d = math.hypot(xa - xb, ya - yb)
-            if d <= near_mm:
+            unique_on_part = fp_a.ref == fp_b.ref and by_part["pos"][fp_a.ref] == by_part["neg"][fp_b.ref] == 1
+            if d <= near_mm or unique_on_part:
                 cands.append((d, fp_a.ref != fp_b.ref, id(pa), id(pb), fp_a, pa, fp_b, pb, common[0]))
     for d, _two_parts, ia, ib, fp_a, pa, fp_b, pb, layer in sorted(cands, key=lambda c: (c[1], c[0])):
         if ia in used or ib in used:
@@ -262,6 +266,10 @@ def obstacles(board: Board, win: Window, rule: PairRule, extra: list[dict], *, s
             g = Point(item["x"], item["y"]).buffer(item["diameter"] / 2 + rule.clearance + MARGIN_MM)
             for geoms in per.values():
                 geoms.append(g)
+    for row in board.obstacles:
+        layer = row["copper"]
+        if layer in per and not row["overlapping_pads"] and not row.get("net"):
+            per[layer].extend(Polygon(ring) for ring in row["outlines"] if len(ring) >= 3)
     edge = None
     if board.outline:
         inside = unary_union([Polygon(o.outer, o.holes) for o in board.outline]).buffer(-rule.clearance - MARGIN_MM)
@@ -287,6 +295,10 @@ def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *, fixed: list[
     if len(terms) < 2:
         res.failed = f"found {len(terms)} side-by-side terminal(s); need 2"
         return res
+    total_pads = sum(pad.net in (pos, neg) for fp in board.footprints for pad in fp.pads)
+    if 2 * len(terms) != total_pads:
+        res.failed = f"{total_pads - 2 * len(terms)} pair pad(s) have no matched terminal"
+        return res
     layers = [cl.canonical for cl in board.copper_layers if cl.canonical in ("F.Cu", "B.Cu")]  # outer layers
     fixed = list(fixed or [])
     tracks, vias = [], []
@@ -308,6 +320,13 @@ def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *, fixed: list[
         res.failed = f"pair skew {skew:.6g} mm exceeds {rule.skew_max:.6g} mm"
     elif pos_vias != neg_vias:
         res.failed = f"unequal via counts ({pos_vias} vs {neg_vias})"
+    elif not _copper_separated(
+        [t for t in tracks if t["net"] == pos],
+        [v for v in vias if v["net"] == pos],
+        [item for item in tracks + vias if item["net"] == neg],
+        rule.clearance,
+    ):
+        res.failed = "pair legs violate copper clearance"
     else:
         res.tracks = tracks
         res.vias = vias
@@ -360,6 +379,21 @@ def _cells_to_copper(win: Window, path, layers, net: str, rule: PairRule) -> tup
     return tracks, vias
 
 
+def _copper_separated(tracks: list[dict], vias: list[dict], other: list[dict], clearance: float) -> bool:
+    def shape(item):
+        if "points" in item:
+            return LineString(item["points"]), item["width"] / 2, {item["layer"]}
+        return Point(item["x"], item["y"]), item["diameter"] / 2, set(item["layers"])
+
+    obstacles = [shape(item) for item in other]
+    for item in tracks + vias:
+        geom, radius, layers = shape(item)
+        for obstacle, other_radius, other_layers in obstacles:
+            if layers & other_layers and geom.distance(obstacle) < radius + other_radius + clearance - 1e-6:
+                return False
+    return True
+
+
 def _breakout(win: Window, raw: dict[str, np.ndarray], layers, own_copper: list[dict], start: tuple, end: tuple,
               net: str, rule: PairRule, core, allow_via: bool) -> tuple[list[dict], list[dict]] | None:
     """One leg from its pad to its place in the pair, at single-trace width (A*).
@@ -388,15 +422,34 @@ def _breakout(win: Window, raw: dict[str, np.ndarray], layers, own_copper: list[
     else:
         via_ok = np.zeros((win.ny, win.nx), np.uint8)
     li = {lay: k for k, lay in enumerate(layers)}
-    (si, sj, sl), (ei, ej, el) = start, end
-    for i, j, lay in (start, end):  # the endpoint cells themselves (a pad centre, a leg end)
+    (start_xy, sl), (end_xy, el) = start, end
+    si, sj = win.cell(*start_xy)
+    ei, ej = win.cell(*end_xy)
+    for i, j, lay in ((si, sj, sl), (ei, ej, el)):
         blocked[lay][j, i] = False
     stack = np.stack([blocked[lay] for lay in layers]).astype(np.uint8)
     path = core.grid_astar(win.nx, win.ny, len(layers), stack.tobytes(), via_ok.tobytes(),
                            [(si, sj, li[sl])], [(ei, ej, li[el])], VIA_COST, TURN45, TURN90, 2_000_000)
     if path is None:
         return None
-    return _cells_to_copper(win, path, layers, net, rule)
+    tracks, vias = _cells_to_copper(win, path, layers, net, rule)
+    if not tracks and not vias:
+        if start_xy != end_xy:
+            tracks.append({"layer": sl, "width": rule.width, "net": net, "points": [start_xy, end_xy]})
+    else:
+        first, last = (tracks[0], tracks[-1]) if tracks else (None, None)
+        for track, index, layer, grid_xy, actual in (
+            (first, 0, sl, win.xy(si, sj), start_xy), (last, -1, el, win.xy(ei, ej), end_xy),
+        ):
+            if grid_xy == actual:
+                continue
+            if track is not None and track["layer"] == layer and track["points"][index] == grid_xy:
+                track["points"][index] = actual
+            else:
+                tracks.append({"layer": layer, "width": rule.width, "net": net, "points": [grid_xy, actual]})
+    if not _copper_separated(tracks, vias, own_copper, rule.clearance):
+        return None
+    return tracks, vias
 
 
 def _leg_lengths(tracks: list[dict], nets: dict[str, str]) -> dict[str, float]:
@@ -414,11 +467,9 @@ def _breakouts_at(win, leg_raw, layers, term: Terminal, ends, which: int, nets, 
         t_add, v_add, ok = [], [], True
         for leg in order:
             fp, pad = term.pads[leg]
-            pi, pj = win.cell(*fp.pad_world(pad))
-            lay_e, (ex, ey) = ends[leg][which]
-            ei, ej = win.cell(ex, ey)
+            lay_e, end_xy = ends[leg][which]
             others = [t for t in tracks + vias + t_add + v_add if t["net"] != nets[leg]]
-            got = _breakout(win, leg_raw[leg], layers, others, (pi, pj, term.layer), (ei, ej, lay_e), nets[leg],
+            got = _breakout(win, leg_raw[leg], layers, others, (fp.pad_world(pad), term.layer), (end_xy, lay_e), nets[leg],
                             rule, core, allow_via)
             if got is None or sum(LineString(t["points"]).length for t in got[0]) > BREAKOUT_MAX_MM:
                 ok = False
@@ -501,6 +552,25 @@ def _tune(win: Window, leg_raw: dict[str, dict[str, np.ndarray]], tracks: list[d
             break
     ln = _leg_lengths(tracks, nets)
     return tracks, abs(ln["pos"] - ln["neg"])
+
+
+def _direct_terminal_link(win, leg_raw, a: Terminal, b: Terminal, nets, rule: PairRule, core):
+    if a.layer != b.layer or any(math.dist(a.xy(leg), b.xy(leg)) > DIRECT_TERMINAL_MM for leg in nets):
+        return None
+    for order in (("pos", "neg"), ("neg", "pos")):
+        tracks = []
+        for leg in order:
+            result = _breakout(win, leg_raw[leg], [a.layer], tracks, (a.xy(leg), a.layer),
+                               (b.xy(leg), b.layer), nets[leg], rule, core, False)
+            if result is None:
+                break
+            tracks.extend(result[0])
+        else:
+            lengths = _leg_lengths(tracks, nets)
+            skew = abs(lengths["pos"] - lengths["neg"])
+            if max(lengths.values()) <= DIRECT_TERMINAL_MM and skew <= rule.skew_max:
+                return tracks, sum(lengths.values()), skew
+    return None
 
 
 def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixed, core) -> dict:
@@ -588,6 +658,11 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
         if best is not None and best[0][0] is False:
             break
     if best is None:
+        direct = _direct_terminal_link(win, leg_raw, a, b, nets, rule, core)
+        if direct is not None:
+            tracks, uncoupled, skew = direct
+            info.update(direct_layer=a.layer, uncoupled_mm=round(uncoupled, 3), skew_mm=round(skew, 3))
+            return {"failed": None, "info": info, "tracks": tracks, "vias": []}
         common = max(reasons, key=reasons.count) if reasons else "no attempt"
         return {"failed": f"{a.refs} -> {b.refs}: {common}", "info": info}
     _key, tracks, vias, path, uncoupled, skew, cl = best

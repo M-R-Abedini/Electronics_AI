@@ -155,11 +155,12 @@ def critical_loops_intent(board: Board, intent: dict) -> dict:
     fps = {fp.ref: fp for fp in board.footprints}
     parts = intent.get("parts", {})
 
-    def pins(ref: str, net: str) -> list[tuple[float, float]]:
+    def pins(ref: str, net: str, numbers: set[str]) -> list[tuple[float, float]]:
         fp = fps.get(ref)
-        return [pos for pad, pos in fp.pads_world() if pad.net == net] if fp else []
+        return [pos for pad, pos in fp.pads_world()
+                if pad.net == net and (not numbers or pad.number in numbers)] if fp else []
 
-    def nearest(ref: str, targets: list[str], net: str | None = None) -> float | None:
+    def nearest(ref: str, targets: list[str], net: str | None, numbers: set[str]) -> float | None:
         fp = fps.get(ref)
         if fp is None:
             return None
@@ -168,7 +169,7 @@ def critical_loops_intent(board: Board, intent: dict) -> dict:
             if not pad.net or is_ground_net(pad.net) or (net and pad.net != net):
                 continue
             for t in targets:
-                for a, b in pins(t, pad.net):
+                for a, b in pins(t, pad.net, numbers):
                     d = math.hypot(a - x, b - y)
                     best = d if best is None or d < best else best
         return best
@@ -180,7 +181,8 @@ def critical_loops_intent(board: Board, intent: dict) -> dict:
         targets = [tv["ref"]] if tv.get("ref") else list(tv.get("candidates", []))
         if not targets:
             continue
-        d = nearest(ref, targets, tv.get("net"))
+        numbers = set(tv.get("pins", ())) if tv.get("ref") else set()
+        d = nearest(ref, targets, tv.get("net"), numbers)
         if d is None:
             continue
         if role == "decap":

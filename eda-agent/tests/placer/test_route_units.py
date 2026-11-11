@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
+import numpy as np
 import pytest
 
-from eda_agent.placer.ir import Board
+from eda_agent.placer.ir import Board, CopperLayer, Footprint, Pad
 from eda_agent.placer.route import drc, dsn
 from eda_agent.placer.route import pairs
 from eda_agent.placer.route.check import classify_unrouted
@@ -56,14 +57,24 @@ def test_pair_only_exposes_copper_for_a_complete_pair(monkeypatch, last_failure,
             "failed": None,
             "info": info,
             "tracks": [
-                {"net": "D+", "points": [(0, 0), (length, 0)]},
-                {"net": "D-", "points": [(0, 1), (1, 1)]},
+                {"net": "D+", "layer": "F.Cu", "width": 0.15, "points": [(0, 0), (length, 0)]},
+                {"net": "D-", "layer": "F.Cu", "width": 0.15, "points": [(0, 1), (1, 1)]},
             ],
-            "vias": ([{"net": "D+"}] + [{"net": "D-"}] * neg_vias) if end == 3 else [],
+            "vias": [
+                {"net": net, "x": 1, "y": y, "diameter": 0.5, "layers": ["F.Cu", "B.Cu"]}
+                for net, y in ([("D+", 0)] + [("D-", 1)] * neg_vias)
+            ] if end == 3 else [],
         }
 
     monkeypatch.setattr(pairs, "_route_segment", segment)
-    result = pairs.route_pair(Board("pair", []), "D+", "D-", pairs.PairRule(0.15, 0.15, 0.15, 0.5, 0.3))
+    parts = [
+        Footprint(f"J{i}", "", "", 0, i, 0, pads=[
+            Pad("1", "D+", (0, 0), (0.3, 0.3)),
+            Pad("2", "D-", (2.54, 0), (0.3, 0.3)),
+        ])
+        for i in (1, 2, 3)
+    ]
+    result = pairs.route_pair(Board("pair", parts), "D+", "D-", pairs.PairRule(0.15, 0.15, 0.15, 0.5, 0.3))
     assert len(result.segments) == 2
     if error:
         assert result.failed is not None and error in result.failed
@@ -71,6 +82,33 @@ def test_pair_only_exposes_copper_for_a_complete_pair(monkeypatch, last_failure,
     else:
         assert result.failed is None
         assert len(result.tracks) == 4 and len(result.vias) == 2
+
+
+def test_pair_keeps_wide_connector_terminals():
+    connector = Footprint("J1", "", "", 0, 0, 0, pads=[
+        Pad("2", "D-", (0, 0), (0.8, 0.8)),
+        Pad("3", "D+", (2.54, 0), (0.8, 0.8)),
+    ])
+    board = Board("pair", [connector], copper_layers=[CopperLayer("F.Cu", "F.Cu", 0)])
+    assert [t.refs for t in pairs.terminals(board, "D+", "D-")] == ["J1"]
+
+
+def test_breakout_joins_exact_endpoints_and_checks_partner_clearance():
+    layer = "F.Cu"
+    win = pairs.Window(Board("pair", []), (0, 0, 1, 1), [layer])
+    raw = {layer: np.zeros_like(win.X, dtype=bool)}
+    core = SimpleNamespace(grid_astar=lambda _nx, _ny, _nl, _blocked, _via, starts, ends, *_: starts + ends)
+    start, end = ((0.012, 0.21), layer), ((0.823, 0.21), layer)
+    rule = pairs.PairRule(0.15, 0.15, 0.15, 0.5, 0.3)
+
+    result = pairs._breakout(win, raw, [layer], [], start, end, "D+", rule, core, False)
+    assert result is not None
+    tracks, vias = result
+    assert not vias
+    assert tracks[0]["points"] == [start[0], end[0]]
+
+    partner = {"net": "D-", "layer": layer, "width": 0.15, "points": [(0, 0.49), (1, 0.49)]}
+    assert pairs._breakout(win, raw, [layer], [partner], start, end, "D+", rule, core, False) is None
 
 
 def test_keepout_quotes_unusual_layer_names_and_noop_when_empty():
