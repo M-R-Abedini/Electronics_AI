@@ -413,3 +413,29 @@ def test_s6a_rejects_baseline_with_different_board_or_timeout(tmp_path, monkeypa
     bare.write_text("(pcb different)", encoding="utf-8")
     with pytest.raises(ValueError, match="board or project rules differ"):
         s6a._reuse_baseline(baseline, bare, config)
+
+
+def test_pair_combinations_reach_every_end_place_early():
+    from eda_agent.placer.route.pairs import _spread
+
+    # cost order alone would spend the first six tries on end place "x" (StickHub /U7D never saw "y")
+    combos = [(False, float(k), ("a", k), "x") for k in range(6)] + [(False, 10.0, ("a", 0), "y")]
+    order = _spread(combos)
+    assert sorted(order) == sorted(combos)
+    assert order[0][3] == "x" and order[0][1] == 0.0  # the cheapest combination stays first
+    assert "y" in {c[3] for c in order[:3]}  # every other try goes to a new end place
+
+
+def test_exits_reports_a_pad_closed_in_by_copper():
+    part = Footprint("R1", "", "", 5, 5, 0, pads=[Pad("1", "VCC", (0, 0), (0.5, 0.5))])
+    board = Board("exits", [part])
+    rule = pairs.PairRule(0.15, 0.15, 0.15, 0.5, 0.3)
+    win = pairs.Window(board, (0, 0, 10, 10), ["F.Cu"])
+    exits = pairs.Exits(board, win, rule, [], {"D+", "D-"}, np.zeros((win.ny, win.nx), bool))
+    ring = [(3, 3), (7, 3), (7, 7), (3, 7), (3, 3)]
+
+    def track(points):
+        return {"net": "D+", "layer": "F.Cu", "width": 0.15, "points": points}
+
+    assert exits.closed_in([track(ring)], []) == ["R1-1"]
+    assert exits.closed_in([track(ring[:4])], []) == []  # one side open: the pad still has its way out

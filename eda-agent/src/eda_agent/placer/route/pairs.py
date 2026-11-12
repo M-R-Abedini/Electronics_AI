@@ -40,7 +40,7 @@ from .copper import pad_layers, pad_polygon
 GRID_MM = 0.05  # declared: centreline grid
 WINDOW_MM = 6.0  # declared: grid window margin around the terminals
 BREAKOUT_MM = 4.0  # declared: the coupled section starts within this distance of a terminal
-SECTORS, TRY_COMBOS = 8, 12  # declared: start directions per terminal; start/end pairs tried
+SECTORS, TRY_COMBOS = 8, 16  # declared: start directions per terminal; start/end pairs tried
 TUNE_CANDIDATES = 4  # bounded alternatives if the best raw candidate cannot be tuned
 COARSE_GRID_MM, COARSE_SECTORS, COARSE_COMBOS = 0.075, 12, 24
 MARGIN_MM = GRID_MM / 2  # search cushion; copper still requires exact clearance and KiCad DRC
@@ -253,6 +253,92 @@ def obstacles(board: Board, win: Window, rule: PairRule, extra: list[dict], *, s
     return out
 
 
+class Exits:
+    """Which pads can still be reached by a trace once a pair's copper is locked.
+
+    A locked pair is a wall on its layer.  On StickHub the router then left 12 supply connections
+    unrouted that it had routed without the pairs (gate C3): a pair ran around a corner of the hub IC
+    and closed a pin and its capacitor into a pocket.  So a candidate is judged like this: the free
+    room for a trace centre (both outer layers, joined where a via fits) is split into connected
+    regions; a pad that could reach the largest region before the candidate must still reach it after.
+    """
+
+    def __init__(self, board: Board, win: Window, rule: PairRule, fixed: list[dict], own_nets: set[str],
+                 blocked_drills: np.ndarray):
+        self.win, self.rule, self.blocked_drills = win, rule, blocked_drills
+        self.raw = obstacles(board, win, rule, fixed)
+        self.grow = _disk(rule.width / 2 / win.res)
+        self.via_grow = _disk(rule.via_d / 2 / win.res)
+        reach = rule.clearance + MARGIN_MM + rule.width / 2 + 2 * win.res  # just outside a pad's own halo
+        self.pads: list[tuple[str, dict[str, np.ndarray]]] = []
+        for fp in board.footprints:
+            for pad in fp.pads:
+                if not pad.net or pad.net in own_nets or pad.kind == "np_thru_hole":
+                    continue
+                x, y = fp.pad_world(pad)
+                i, j = win.cell(x, y)
+                if not (0 <= i < win.nx and 0 <= j < win.ny):
+                    continue
+                ring = win.raster(pad_polygon(fp, pad, reach))
+                self.pads.append((f"{fp.ref}-{pad.number}", {lay: np.flatnonzero(ring)
+                                                           for lay in pad_layers(fp, pad, win.layers)}))
+        main = self._main(self.raw)
+        self.before = [self._reaches(main, cells) for _name, cells in self.pads]
+
+    def _main(self, raw: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Per layer, the free trace-centre cells that belong to the largest region."""
+        free = {lay: ~ndimage.binary_dilation(m, structure=self.grow) for lay, m in raw.items()}
+        labels, offset = {}, 0
+        for lay, m in free.items():
+            lab, n = ndimage.label(m, structure=np.ones((3, 3), bool))
+            labels[lay] = np.where(lab > 0, lab + offset, 0)
+            offset += n
+        parent = list(range(offset + 1))
+
+        def find(k: int) -> int:
+            while parent[k] != k:
+                parent[k] = parent[parent[k]]
+                k = parent[k]
+            return k
+
+        lays = list(labels)
+        if len(lays) > 1:
+            union = np.zeros((self.win.ny, self.win.nx), bool)
+            for m in raw.values():
+                union |= m
+            via_ok = ~ndimage.binary_dilation(union, structure=self.via_grow) & ~self.blocked_drills
+            for la, lb in itertools.pairwise(lays):
+                both = via_ok & (labels[la] > 0) & (labels[lb] > 0)
+                for x, y in set(zip(labels[la][both].tolist(), labels[lb][both].tolist(), strict=True)):
+                    parent[find(x)] = find(y)
+        root = np.array([find(k) for k in range(offset + 1)])
+        sizes = np.zeros(offset + 1, np.int64)
+        for lab in labels.values():
+            sizes += np.bincount(root[lab].ravel(), minlength=offset + 1)
+        sizes[0] = 0
+        best = int(np.argmax(sizes))
+        return {lay: (root[lab] == best) & (lab > 0) for lay, lab in labels.items()}
+
+    @staticmethod
+    def _reaches(main: dict[str, np.ndarray], cells: dict[str, np.ndarray]) -> bool:
+        return any(main[lay].ravel()[idx].any() for lay, idx in cells.items() if lay in main)
+
+    def closed_in(self, tracks: list[dict], vias: list[dict]) -> list[str]:
+        """Pads that the given copper cuts off from the largest free region."""
+        grow = self.rule.clearance + MARGIN_MM
+        raw = {lay: m.copy() for lay, m in self.raw.items()}
+        for t in tracks:
+            if t["layer"] in raw:
+                raw[t["layer"]] |= self.win.raster(LineString(t["points"]).buffer(t["width"] / 2 + grow))
+        for v in vias:
+            g = self.win.raster(Point(v["x"], v["y"]).buffer(v["diameter"] / 2 + grow))
+            for m in raw.values():
+                m |= g
+        main = self._main(raw)
+        return [name for (name, cells), was in zip(self.pads, self.before, strict=True)
+                if was and not self._reaches(main, cells)]
+
+
 # --------------------------------------------------------------------------- routing
 def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *,
                fixed: list[dict] | None = None, retry_coarse: bool = False) -> PairRoute:
@@ -353,6 +439,25 @@ def _pair_starts(win: Window, blocked: np.ndarray, term: Terminal, toward: tuple
         if np.isfinite(masked[j, i]):
             out.append((float(masked[j, i]), int(i), int(j)))
     return [(i, j) for _s, i, j in sorted(out)]
+
+
+def _spread(combos: list[tuple]) -> list[tuple]:
+    """Order the start/end combinations: cheapest first, but every other try goes to an end place not tried yet.
+
+    Sorted by cost alone, the first dozen combinations were one end place with a dozen near-identical
+    starts (StickHub ``/U7D``: the entry beside the connector pads, the one the expert used, was never tried).
+    """
+    fresh, rest, seen = [], [], set()
+    for combo in sorted(combos):
+        if combo[3] not in seen:
+            seen.add(combo[3])
+            fresh.append(combo)
+        else:
+            rest.append(combo)
+    out = []
+    for k in range(max(len(fresh), len(rest))):
+        out += fresh[k:k + 1] + rest[k:k + 1]
+    return out
 
 
 def _pos_left(term: Terminal, origin: tuple[float, float], d: tuple[float, float]) -> bool:
@@ -619,7 +724,15 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
     nets = {"pos": a.pads["pos"][1].net, "neg": a.pads["neg"][1].net}
     # the coupled section runs on one layer; both are tried, the terminals' own layer first
     order = sorted(layers, key=lambda lay: (lay != b.layer, lay != a.layer))
+    # pads a couple of millimetres apart on one layer (connector pin to its protection part) are joined
+    # pad to pad, as an expert does: no vias, nothing shorter exists
+    direct = _direct_terminal_link(win, leg_raw, a, b, nets, rule, core)
+    if direct is not None:
+        tracks, uncoupled, skew = direct
+        info.update(direct_layer=a.layer, uncoupled_mm=round(uncoupled, 3), skew_mm=round(skew, 3))
+        return {"failed": None, "info": info, "tracks": tracks, "vias": []}
     candidates, reasons = [], []
+    exits = Exits(board, win, rule, fixed, own, blocked_drills)
     no_via = np.zeros((win.ny, win.nx), np.uint8).tobytes()
     for cl in order:
         starts_a = _pair_starts(win, center_blocked[cl], a, toward, sectors)
@@ -637,8 +750,7 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
             # legs keep their order on one layer; a terminal on the other layer can swap them before its vias
             same = (_pos_left(a, pa, d) == _pos_left(b, pb, d)) or a.layer != cl or b.layer != cl
             combos.append((not same, math.dist(pa, a.mid) + math.dist(pb, b.mid) + n, sa, sb))
-        combos.sort()
-        for _swap, _cost, sa, sb in combos[:try_combos]:
+        for _swap, _cost, sa, sb in _spread(combos)[:try_combos]:
             path = core.grid_astar(win.nx, win.ny, 1, blocked, no_via, [(sa[0], sa[1], 0)], [(sb[0], sb[1], 0)],
                                    VIA_COST, TURN45, TURN90, 6_000_000)
             if path is None:
@@ -668,6 +780,10 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
                 uncoupled += sum(LineString(t["points"]).length for t in t_add)
             if not ok:
                 continue
+            closed = exits.closed_in(tracks, vias)
+            if closed:
+                reasons.append(f"closes in {closed[0]}")
+                continue
             ln = _leg_lengths(tracks, nets)
             skew = abs(ln["pos"] - ln["neg"])
             key = (skew > rule.skew_max, len(vias), round(skew, 3), round(ln["pos"] + ln["neg"], 3))
@@ -679,11 +795,6 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
         if candidates and not candidates[0][0][0]:
             break
     if not candidates:
-        direct = _direct_terminal_link(win, leg_raw, a, b, nets, rule, core)
-        if direct is not None:
-            tracks, uncoupled, skew = direct
-            info.update(direct_layer=a.layer, uncoupled_mm=round(uncoupled, 3), skew_mm=round(skew, 3))
-            return {"failed": None, "info": info, "tracks": tracks, "vias": []}
         common = max(reasons, key=reasons.count) if reasons else "no attempt"
         info["attempts"] = {r: reasons.count(r) for r in sorted(set(reasons))}  # every reason, for the report
         return {"failed": f"{a.refs} -> {b.refs}: {common}", "info": info}
