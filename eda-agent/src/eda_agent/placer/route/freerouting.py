@@ -68,6 +68,8 @@ class RouterResult:
     stop_reason: str = "unknown"
     pre_existing_violations: list[str] = field(default_factory=list)
     log_unrouted: int | None = None
+    pass_unrouted: list[int] = field(default_factory=list)
+    internal_violations: int = 0
 
     def summary(self) -> dict:
         data = asdict(self)
@@ -76,6 +78,9 @@ class RouterResult:
 
 
 _PASS = re.compile(r"Auto-routing pass #(\d+)")
+_PASS_DONE = re.compile(r"Auto-routing pass #(\d+) .*?completed in ([\d.]+) seconds with score [\d.]+ \((\d+) unrouted")
+_INTERNAL = re.compile(r"Board has (\d+) pre-existing clearance violation")
+SETTLE_PASSES = 3  # full passes without beating the best count before a cut-off run counts as settled
 KILL_MARGIN_S = 180  # hard kill only if Freerouting ignores its own job timeout
 _TIMED_OUT = re.compile(r"finished with state: TIMED_OUT|completed with timeout")
 _CONVERGED = re.compile(r"has not improved by more than [\d.]+ points since pass #\d+")
@@ -83,8 +88,27 @@ _FINAL = re.compile(r"Auto-routing stage completed:.*?\((\d+) unrouted")
 _PIN_VIOLATION = re.compile(r"^\s+- (\S+ \[net [^\]]*\] <-> \S+ \[net [^\]]*\])", re.MULTILINE)
 
 
+def pass_history(text: str) -> list[int]:
+    """Unrouted count after each full pass; the zero-second pass that restores the best board is not one."""
+    rows: dict[int, int] = {}
+    for number, seconds, unrouted in _PASS_DONE.findall(text):
+        if float(seconds) > 0:
+            rows[int(number)] = int(unrouted)
+    return [rows[k] for k in sorted(rows)]
+
+
+def settled(stop_reason: str, history: list[int], final_unrouted: int | None = None) -> bool:
+    """Converged, fully routed, or SETTLE_PASSES full passes in a row that did not beat the best so far."""
+    if stop_reason in ("converged", "completed") or final_unrouted == 0:
+        return True
+    if len(history) <= SETTLE_PASSES:
+        return False
+    return min(history[-SETTLE_PASSES:]) >= min(history[:-SETTLE_PASSES])
+
+
 def parse_log(text: str) -> dict:
     passes = [int(m) for m in _PASS.findall(text)]
+    internal = _INTERNAL.search(text)
     final = _FINAL.search(text)
     if _TIMED_OUT.search(text):
         reason = "timeout"
@@ -99,6 +123,8 @@ def parse_log(text: str) -> dict:
         "stop_reason": reason,
         "log_unrouted": int(final.group(1)) if final else None,
         "pre_existing_violations": sorted(set(_PIN_VIOLATION.findall(text))),
+        "pass_unrouted": pass_history(text),
+        "internal_violations": int(internal.group(1)) if internal else 0,
     }
 
 

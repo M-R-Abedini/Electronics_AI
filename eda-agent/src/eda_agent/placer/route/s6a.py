@@ -46,6 +46,7 @@ from .pairs import route_pair, rule_for
 
 LINK_MAX_MM = 5.0  # declared: a decap farther than this from its pin is a placement problem, not a routing one
 TAP_MAX_MM = 2.0  # declared: dogbone length; one value for every pad (no per-pad budgets)
+C3_MARGIN = 0.005  # plan 4.2 gate 2: 0.5 percentage points, until a per-board noise figure is measured
 PAIR_ROUNDS = 6  # declared: orderings tried for the pairs (failed pairs move to the front)
 ACTIVE_ROLES = ("ic", "converter_ic", "linear_regulator", "power_switch")
 
@@ -270,20 +271,8 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
         with_ = route_check(out, out_dir=run_dir / "route_with", reference_board=src,
                             router_timeout_s=router_timeout_s)
 
-        def pick(r):
-            m = r["metrics"]
-            return {"coverage": m["coverage"], "unrouted": m["unrouted"], "denominator": m["denominator"],
-                    "router_stop": m["router_stop"],
-                    "drc_router_caused": r["stages"]["drc"]["router_caused"],
-                    "drc_new_non_routing": r["stages"]["drc"]["new_non_routing"]}
-
-        a, b = pick(without), pick(with_)
-        comparable = a["denominator"] == b["denominator"] and all(
-            not r["drc_router_caused"] and not r["drc_new_non_routing"] for r in (a, b)
-        )
-        result["c3"] = {"without": a, "with": b, "comparable": comparable,
-                        "gate": {"name": "coverage_with_s6a >= without",
-                                 "passed": comparable and b["coverage"] >= a["coverage"]}}
+        a, b = c3_side(without), c3_side(with_)
+        result["c3"] = {"without": a, "with": b, **c3_verdict(a, b)}
         if live_taps:
             routed_file = Path(with_["artifacts"]["routed_board"])
             hits = _filled(routed_file, live_taps)
@@ -293,6 +282,38 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
     (run_dir / "s6a_report.json").write_text(json.dumps(result, indent=1, ensure_ascii=False), encoding="utf-8")
     result["report_file"] = str(run_dir / "s6a_report.json")
     return result
+
+
+def c3_side(r: dict) -> dict:
+    m = r["metrics"]
+    return {"coverage": m["coverage"], "unrouted": m["unrouted"], "denominator": m["denominator"],
+            "router_stop": m["router_stop"], "router_passes": m.get("router_passes"),
+            "pass_unrouted": m.get("pass_unrouted", []),
+            "settled": m.get("settled", m["router_stop"] in ("converged", "completed")),
+            "router_internal_violations": m.get("router_internal_violations", 0),
+            "drc_router_caused": r["stages"]["drc"]["router_caused"],
+            "drc_new_non_routing": r["stages"]["drc"]["new_non_routing"]}
+
+
+def c3_verdict(a: dict, b: dict, margin: float = C3_MARGIN) -> dict:
+    """Gate C3 for one board; ``a`` is the run without S6a copper, ``b`` the run with it.
+
+    The runs compare when both settled, or when the baseline settled and the S6a
+    run, cut off in the same budget, is already ahead by more than the margin.
+    Anything else is inconclusive: ``passed`` is then None, never True.
+    """
+    clean = a["denominator"] == b["denominator"] and all(
+        not r["drc_router_caused"] and not r["drc_new_non_routing"] for r in (a, b))
+    basis = None
+    if clean and a["settled"] and b["settled"]:
+        basis = "both_settled"
+    elif clean and a["settled"] and b["coverage"] >= a["coverage"] + margin:
+        basis = "baseline_settled_and_s6a_ahead"
+    passed = None if basis is None else b["coverage"] >= a["coverage"] - (margin if basis == "both_settled" else 0)
+    status = "inconclusive" if passed is None else "passed" if passed else "failed"
+    return {"comparable": basis is not None, "basis": basis,
+            "gate": {"name": "coverage_with_s6a >= without", "passed": passed, "status": status,
+                     "margin": margin}}
 
 
 def main(argv: list[str] | None = None) -> int:

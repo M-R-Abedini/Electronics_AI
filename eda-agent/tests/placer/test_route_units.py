@@ -439,3 +439,37 @@ def test_exits_reports_a_pad_closed_in_by_copper():
 
     assert exits.closed_in([track(ring)], []) == ["R1-1"]
     assert exits.closed_in([track(ring[:4])], []) == []  # one side open: the pad still has its way out
+
+
+def _pass_line(number, seconds, unrouted):
+    return (f"Auto-routing pass #{number} on board 'x' was completed in {seconds} seconds "
+            f"with score 700.00 ({unrouted} unrouted and 0 violations), using 1 CPU seconds\n")
+
+
+def test_pass_history_skips_the_restore_pass_and_settled_needs_three_flat_passes():
+    from eda_agent.placer.route.freerouting import pass_history, settled
+
+    log = "".join(_pass_line(n, "200.00", u) for n, u in enumerate((502, 323, 315, 327), 1)) + _pass_line(5, "0.00", 315)
+    assert pass_history(log + log) == [502, 323, 315, 327]  # stdout and file log repeat the same lines
+    assert not settled("timeout", [502, 323, 315, 327])  # one pass since the best count
+    assert settled("timeout", [502, 323, 315, 327, 328, 315])  # three passes that did not beat 315
+    assert not settled("timeout", [253, 257, 247, 234])
+    assert settled("converged", [10]) and settled("timeout", [5, 0], 0)
+    assert parse_log("Board has 119 pre-existing clearance violation(s) in the loaded design")["internal_violations"] == 119
+
+
+def test_c3_verdict_is_inconclusive_unless_the_runs_compare():
+    from eda_agent.placer.route.s6a import c3_verdict
+
+    def side(coverage, settled_, drc=0):
+        return {"coverage": coverage, "denominator": 1458, "settled": settled_,
+                "drc_router_caused": drc, "drc_new_non_routing": 0}
+
+    cut = c3_verdict(side(0.784, False), side(0.8436, False))
+    assert cut["comparable"] is False and cut["gate"]["passed"] is None and cut["gate"]["status"] == "inconclusive"
+    ahead = c3_verdict(side(0.784, True), side(0.8436, False))
+    assert ahead["basis"] == "baseline_settled_and_s6a_ahead" and ahead["gate"]["passed"] is True
+    assert c3_verdict(side(0.784, True), side(0.786, False))["gate"]["passed"] is None  # ahead by less than the margin
+    assert c3_verdict(side(0.784, True), side(0.8436, False, drc=1))["gate"]["passed"] is None
+    assert c3_verdict(side(0.9646, True), side(0.9602, True))["gate"]["status"] == "passed"  # within 0.5 pp
+    assert c3_verdict(side(0.9646, True), side(0.8982, True))["gate"]["status"] == "failed"

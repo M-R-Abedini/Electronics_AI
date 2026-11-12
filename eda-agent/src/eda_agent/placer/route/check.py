@@ -21,6 +21,7 @@ from ..ir import plane_zone_layers, power_layers
 from ..toolchain import RUNTIME_DIR, sha256_file
 from . import drc, dsn
 from .freerouting import RouterConfig, route
+from .freerouting import settled as freerouting_settled
 
 PROJECT_SIDECARS = (".kicad_pro", ".kicad_dru")  # .kicad_prl is per-user view state
 MACRO_ZONE_PREFIX = "eai-macro"
@@ -219,6 +220,9 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         "router_passes": routed.passes,
         "router_stop": routed.stop_reason,
         "deterministic": routed.stop_reason in ("converged", "completed"),
+        "pass_unrouted": routed.pass_unrouted,
+        "settled": freerouting_settled(routed.stop_reason, routed.pass_unrouted, unrouted),
+        "router_internal_violations": routed.internal_violations,
         "seconds_total": total_s,
     }
     gates = [
