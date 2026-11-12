@@ -58,7 +58,7 @@ def _segments(tracks: list[dict]) -> list[dict]:
     return out
 
 
-def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict]) -> dict:
+def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict], retry_coarse: bool = False) -> dict:
     """Route the pairs one after another; a pair that fails goes to the front of the next round.
 
     Measured on StickHub: 6 of 8 pairs route alone but only 4 in netlist order, because an earlier pair
@@ -72,7 +72,7 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict
         seen.add(tuple(order))
         copper, rows, failed, ok = [], {}, [], []
         for pos, neg in order:
-            res = route_pair(board, pos, neg, rule_for(board, pos), fixed=fixed + copper)
+            res = route_pair(board, pos, neg, rule_for(board, pos), fixed=fixed + copper, retry_coarse=retry_coarse)
             rows[(pos, neg)] = res.summary()
             if res.failed is None:
                 copper += res.tracks + res.vias
@@ -93,7 +93,7 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict
 
 
 def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, taps: bool = True,
-         power_first: bool = False) -> dict:
+         power_first: bool = False, retry_coarse: bool = False) -> dict:
     fixed: list[dict] = []
     report: dict = {"pairs": [], "links": [], "taps": []}
     layers = [cl.canonical for cl in board.copper_layers]
@@ -106,7 +106,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 report["pairs"].append({"pair": [pos, neg], "routed": False, "failed": "pair not confirmed by the intent"})
             else:
                 confirmed.append((pos, neg))
-        best = _route_pairs(board, confirmed, fixed=fixed)
+        best = _route_pairs(board, confirmed, fixed=fixed, retry_coarse=retry_coarse)
         report["pairs"].extend(best["rows"])
         report["pair_rounds"] = best["rounds"]
         fixed.extend(best["copper"])
@@ -217,7 +217,7 @@ def _reuse_baseline(path: str | Path, bare: Path, config: RouterConfig) -> dict:
 def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_path: str | None = None,
         pairs: bool = True, links: bool = True, taps: bool = True, c3: bool = False,
         router_timeout_s: int | None = None, baseline: str | Path | None = None,
-        power_first: bool = False) -> dict:
+        power_first: bool = False, retry_coarse: bool = False) -> dict:
     src = Path(board_path).resolve()
     board = read_board(src)
     intent, intent_info = resolve(board, intent_path)
@@ -232,7 +232,8 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
             if router_timeout_s is not None:
                 config = replace(config, timeout_s=router_timeout_s)
             without = _reuse_baseline(baseline, bare, config)
-    planned = plan(board, intent, pairs=pairs, links=links, taps=taps, power_first=power_first)
+    planned = plan(board, intent, pairs=pairs, links=links, taps=taps,
+                   power_first=power_first, retry_coarse=retry_coarse)
     copper, report = planned["copper"], planned["report"]
     out = run_dir / "s6a" / src.name
     apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
@@ -261,7 +262,7 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
                                    for v in touching],
               "report": report,
               "config": {"link_max_mm": LINK_MAX_MM, "tap_max_mm": TAP_MAX_MM, "pairs": pairs, "links": links,
-                         "taps": taps, "power_first": power_first}}
+                         "taps": taps, "power_first": power_first, "retry_coarse": retry_coarse}}
     if c3:
         if without is None:
             without = route_check(bare, out_dir=run_dir / "route_without", reference_board=src,
@@ -305,11 +306,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--route-timeout", type=int)
     ap.add_argument("--baseline", help="route_without/run_report.json of an earlier --c3 run on the same board")
     ap.add_argument("--power-first", action="store_true", help="reserve local supply copper before routing the pairs")
+    ap.add_argument("--coarse-retry", action="store_true", help="try a second grid for failed pairs; slower benchmark")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     res = run(args.board, args.out, intent_path=args.intent, pairs=not args.no_pairs, links=not args.no_links,
               taps=not args.no_taps, c3=args.c3, router_timeout_s=args.route_timeout, baseline=args.baseline,
-              power_first=args.power_first)
+              power_first=args.power_first, retry_coarse=args.coarse_retry)
     brief = {k: res[k] for k in ("counts", "copper", "s6a_board", "report_file")}
     brief["drc_touching_s6a"] = len(res["drc_touching_s6a"])
     brief["failed"] = {k: [r for r in res["report"][k] if not r.get("routed")][:12] for k in ("pairs", "links", "taps")}

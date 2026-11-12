@@ -20,9 +20,11 @@ list until the command returns.  Querying a SWIG proxy after ``Remove`` without
 that reference is what broke the previous helper.
 """
 
+import hashlib
 import json
 import math
 import sys
+from uuid import NAMESPACE_URL, uuid5
 
 import pcbnew
 
@@ -627,7 +629,11 @@ def _vec(pt):
     return pcbnew.VECTOR2I(pcbnew.FromMM(float(pt[0])), pcbnew.FromMM(float(pt[1])))
 
 
-def _add_copper(board, spec, lock):
+def _add_copper(board, spec, lock, seed):
+    def identify(item, kind, index):
+        identity = uuid5(NAMESPACE_URL, f"electronics-ai/copper/{seed}/{kind}/{index}")
+        item.SetUuidDirect(pcbnew.KIID(str(identity)))
+
     added = {"tracks": 0, "vias": 0, "zones": 0}
     for t in spec.get("tracks", []):
         item = pcbnew.PCB_ARC(board) if len(t["points"]) == 3 else pcbnew.PCB_TRACK(board)
@@ -639,6 +645,7 @@ def _add_copper(board, spec, lock):
         item.SetLayer(board.GetLayerID(t["layer"]))
         item.SetNet(board.FindNet(t["net"]))
         item.SetLocked(lock)
+        identify(item, "tracks", added["tracks"])
         board.Add(item)
         added["tracks"] += 1
     for v in spec.get("vias", []):
@@ -650,6 +657,7 @@ def _add_copper(board, spec, lock):
         via.SetDrill(pcbnew.FromMM(float(v["drill"])))
         via.SetNet(board.FindNet(v["net"]))
         via.SetLocked(lock)
+        identify(via, "vias", added["vias"])
         board.Add(via)
         added["vias"] += 1
     for z in spec.get("zones", []):
@@ -669,6 +677,7 @@ def _add_copper(board, spec, lock):
         zone.SetZoneName(z.get("name", ""))
         zone.SetAssignedPriority(int(z.get("priority", 0)))
         zone.SetLocked(lock)
+        identify(zone, "zones", added["zones"])
         board.Add(zone)
         added["zones"] += 1
     return added
@@ -701,7 +710,10 @@ def macro_apply(board_path, spec_json, out_board, out_json):
             flipped += 1
         fp.SetOrientationDegrees(float(pose["rotation"]))
         fp.SetPosition(_vec((pose["x"], pose["y"])))
-    added = _add_copper(board, spec, bool(spec.get("lock", True)))
+    with open(board_path, "rb") as source:
+        identity = hashlib.file_digest(source, "sha256")
+    identity.update(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    added = _add_copper(board, spec, bool(spec.get("lock", True)), identity.hexdigest())
     if spec.get("fill", True):
         pcbnew.ZONE_FILLER(board).Fill(board.Zones())
     pcbnew.SaveBoard(out_board, board)

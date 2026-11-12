@@ -23,7 +23,7 @@ from __future__ import annotations
 import itertools
 import math
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import shapely
@@ -41,6 +41,8 @@ GRID_MM = 0.05  # declared: centreline grid
 WINDOW_MM = 6.0  # declared: grid window margin around the terminals
 BREAKOUT_MM = 4.0  # declared: the coupled section starts within this distance of a terminal
 SECTORS, TRY_COMBOS = 8, 12  # declared: start directions per terminal; start/end pairs tried
+TUNE_CANDIDATES = 4  # bounded alternatives if the best raw candidate cannot be tuned
+COARSE_GRID_MM, COARSE_SECTORS, COARSE_COMBOS = 0.075, 12, 24
 MARGIN_MM = GRID_MM / 2  # search cushion; copper still requires exact clearance and KiCad DRC
 BREAKOUT_MAX_MM = 6.0  # declared: a leg's uncoupled breakout longer than this is a detour, not a breakout
 DIRECT_TERMINAL_MM = 2.0  # short connector-to-protection links can share a layer without a coupled section
@@ -252,7 +254,8 @@ def obstacles(board: Board, win: Window, rule: PairRule, extra: list[dict], *, s
 
 
 # --------------------------------------------------------------------------- routing
-def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *, fixed: list[dict] | None = None) -> PairRoute:
+def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *,
+               fixed: list[dict] | None = None, retry_coarse: bool = False) -> PairRoute:
     import placer_core
 
     res = PairRoute(pos, neg)
@@ -270,19 +273,32 @@ def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *, fixed: list[
         alternate = _route_order(board, [terms[0], terms[2], terms[1]], pos, neg, rule, fixed or [], placer_core)
         if alternate.failed is None:
             return alternate
+    if result.failed is not None and retry_coarse:
+        coarse = _route_order(board, terms, pos, neg, rule, fixed or [], placer_core, coarse=True)
+        if coarse.failed is None:
+            return coarse
+        if len(terms) > 2 and coarse.failed.startswith("pair skew"):
+            balanced = _route_order(
+                board, terms, pos, neg, rule, fixed or [], placer_core,
+                coarse=True, segment_skew=rule.skew_max / (len(terms) - 1),
+            )
+            if balanced.failed is None:
+                return balanced
     return result
 
 
 def _route_order(board: Board, terms: list[Terminal], pos: str, neg: str,
-                 rule: PairRule, fixed: list[dict], core) -> PairRoute:
+                 rule: PairRule, fixed: list[dict], core, *, coarse: bool = False,
+                 segment_skew: float | None = None) -> PairRoute:
     res = PairRoute(pos, neg)
     layers = [cl.canonical for cl in board.copper_layers if cl.canonical in ("F.Cu", "B.Cu")]  # outer layers
     fixed = list(fixed)
     holes = _existing_holes(board, fixed)
     hole_clearance = board.rules.get("hole_to_hole", 0.0)
     tracks, vias = [], []
+    segment_rule = rule if segment_skew is None else replace(rule, skew_max=segment_skew)
     for a, b in itertools.pairwise(terms):
-        seg = _route_segment(board, a, b, rule, layers, fixed, core)
+        seg = _route_segment(board, a, b, segment_rule, layers, fixed, core, coarse)
         res.segments.append(seg["info"])
         if seg["failed"]:
             res.failed = seg["failed"]
@@ -316,8 +332,9 @@ def _route_order(board: Board, terms: list[Terminal], pos: str, neg: str,
     return res
 
 
-def _pair_starts(win: Window, blocked: np.ndarray, term: Terminal, toward: tuple[float, float]) -> list[tuple[int, int]]:
-    """Free centreline cells around the terminal (within BREAKOUT_MM): the nearest one in each of 8 directions.
+def _pair_starts(win: Window, blocked: np.ndarray, term: Terminal, toward: tuple[float, float],
+                 sectors: int = SECTORS) -> list[tuple[int, int]]:
+    """Free centreline cells within BREAKOUT_MM, taking the nearest one in each sector.
 
     Cells on every side matter: where the coupled section starts decides which leg runs on which side,
     so a pair whose pads are in the opposite order at the two ends is solved by starting behind the pads.
@@ -327,9 +344,9 @@ def _pair_starts(win: Window, blocked: np.ndarray, term: Terminal, toward: tuple
     dist = np.hypot(dx, dy)
     score = dist - 0.3 * (dx * toward[0] + dy * toward[1])
     score[blocked | (dist > BREAKOUT_MM)] = np.inf
-    sector = (np.floor((np.arctan2(dy, dx) + math.pi) / (2 * math.pi) * SECTORS).astype(int)) % SECTORS
+    sector = (np.floor((np.arctan2(dy, dx) + math.pi) / (2 * math.pi) * sectors).astype(int)) % sectors
     out = []
-    for k in range(SECTORS):
+    for k in range(sectors):
         masked = np.where(sector == k, score, np.inf)
         flat = int(np.argmin(masked))
         j, i = np.unravel_index(flat, masked.shape)
@@ -502,10 +519,12 @@ def _tune(win: Window, leg_raw: dict[str, dict[str, np.ndarray]], tracks: list[d
             continue
         for si, (p, q) in enumerate(itertools.pairwise(t["points"])):
             cands.append((math.dist(p, q), ti, si))
-    for _length, ti, si in sorted(cands, reverse=True):
+    insertions: dict[int, list[tuple[int, int]]] = {}
+    for _length, ti, original_index in sorted(cands, reverse=True):
         if need <= 0:
             break
         t = tracks[ti]
+        si = original_index + sum(count for index, count in insertions.get(ti, []) if index < original_index)
         p, q = t["points"][si], t["points"][si + 1]
         seg_len = math.dist(p, q)
         n_max = int((seg_len - gap) // (base + gap))
@@ -539,6 +558,7 @@ def _tune(win: Window, leg_raw: dict[str, dict[str, np.ndarray]], tracks: list[d
             if (win.raster(new_geom) & blocked).any():
                 continue
             t["points"] = t["points"][:si] + pts + t["points"][si + 2:]
+            insertions.setdefault(ti, []).append((original_index, len(pts) - 2))
             need -= 2 * n * h_use
             break
     ln = _leg_lengths(tracks, nets)
@@ -564,10 +584,14 @@ def _direct_terminal_link(win, leg_raw, a: Terminal, b: Terminal, nets, rule: Pa
     return None
 
 
-def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixed, core) -> dict:
+def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixed, core, coarse=False) -> dict:
     xs = [a.mid[0], b.mid[0]]
     ys = [a.mid[1], b.mid[1]]
-    win = Window(board, (min(xs) - WINDOW_MM, min(ys) - WINDOW_MM, max(xs) + WINDOW_MM, max(ys) + WINDOW_MM), layers)
+    res = COARSE_GRID_MM if coarse else GRID_MM
+    sectors = COARSE_SECTORS if coarse else SECTORS
+    try_combos = COARSE_COMBOS if coarse else TRY_COMBOS
+    win = Window(board, (min(xs) - WINDOW_MM, min(ys) - WINDOW_MM, max(xs) + WINDOW_MM, max(ys) + WINDOW_MM),
+                 layers, res=res)
     blocked_drills = np.zeros((win.ny, win.nx), bool)
     hole_clearance = board.rules.get("hole_to_hole", 0.0)
     _block_drills(win, blocked_drills, _existing_holes(board, fixed), rule.via_drill, hole_clearance)
@@ -587,17 +611,19 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
                 own_pads[lay] |= win.raster(g)
     center_blocked = {lay: ndimage.binary_dilation(m | own_pads[lay], structure=_disk(half)) for lay, m in raw.items()}
     info = {"from": a.refs, "to": b.refs}
+    if coarse:
+        info["grid_mm"] = res
     direction = np.subtract(b.mid, a.mid)
     norm = float(np.hypot(*direction)) or 1.0
     toward = (direction[0] / norm, direction[1] / norm)
     nets = {"pos": a.pads["pos"][1].net, "neg": a.pads["neg"][1].net}
     # the coupled section runs on one layer; both are tried, the terminals' own layer first
     order = sorted(layers, key=lambda lay: (lay != b.layer, lay != a.layer))
-    best, reasons = None, []
+    candidates, reasons = [], []
     no_via = np.zeros((win.ny, win.nx), np.uint8).tobytes()
     for cl in order:
-        starts_a = _pair_starts(win, center_blocked[cl], a, toward)
-        starts_b = _pair_starts(win, center_blocked[cl], b, (-toward[0], -toward[1]))
+        starts_a = _pair_starts(win, center_blocked[cl], a, toward, sectors)
+        starts_b = _pair_starts(win, center_blocked[cl], b, (-toward[0], -toward[1]), sectors)
         if not starts_a or not starts_b:
             reasons.append(f"no room for the coupled pair on {cl}")
             continue
@@ -612,7 +638,7 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
             same = (_pos_left(a, pa, d) == _pos_left(b, pb, d)) or a.layer != cl or b.layer != cl
             combos.append((not same, math.dist(pa, a.mid) + math.dist(pb, b.mid) + n, sa, sb))
         combos.sort()
-        for _swap, _cost, sa, sb in combos[:TRY_COMBOS]:
+        for _swap, _cost, sa, sb in combos[:try_combos]:
             path = core.grid_astar(win.nx, win.ny, 1, blocked, no_via, [(sa[0], sa[1], 0)], [(sb[0], sb[1], 0)],
                                    VIA_COST, TURN45, TURN90, 6_000_000)
             if path is None:
@@ -645,13 +671,14 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
             ln = _leg_lengths(tracks, nets)
             skew = abs(ln["pos"] - ln["neg"])
             key = (skew > rule.skew_max, len(vias), round(skew, 3), round(ln["pos"] + ln["neg"], 3))
-            if best is None or key < best[0]:
-                best = (key, tracks, vias, path, uncoupled, skew, cl)
+            candidates.append((key, tracks, vias, path, uncoupled, skew, cl))
+            candidates.sort(key=lambda candidate: candidate[0])
+            del candidates[TUNE_CANDIDATES:]
             if skew <= rule.skew_max / 2:
                 break
-        if best is not None and best[0][0] is False:
+        if candidates and not candidates[0][0][0]:
             break
-    if best is None:
+    if not candidates:
         direct = _direct_terminal_link(win, leg_raw, a, b, nets, rule, core)
         if direct is not None:
             tracks, uncoupled, skew = direct
@@ -660,10 +687,18 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
         common = max(reasons, key=reasons.count) if reasons else "no attempt"
         info["attempts"] = {r: reasons.count(r) for r in sorted(set(reasons))}  # every reason, for the report
         return {"failed": f"{a.refs} -> {b.refs}: {common}", "info": info}
-    _key, tracks, vias, path, uncoupled, skew, cl = best
-    raw_skew = skew
-    if skew > rule.skew_max:
-        tracks, skew = _tune(win, leg_raw, tracks, nets, rule, skew)
+    _key, tracks, vias, path, uncoupled, raw_skew, cl = candidates[0]
+    skew = raw_skew
+    if raw_skew > rule.skew_max:
+        for index, candidate in enumerate(candidates):
+            _key, trial, trial_vias, trial_path, trial_uncoupled, trial_raw, trial_layer = candidate
+            tuned, trial_skew = _tune(win, leg_raw, trial, nets, rule, trial_raw)
+            if index == 0:
+                tracks, skew = tuned, trial_skew
+            if trial_skew <= rule.skew_max:
+                tracks, vias, path, uncoupled = tuned, trial_vias, trial_path, trial_uncoupled
+                skew, raw_skew, cl = trial_skew, trial_raw, trial_layer
+                break
     info.update(coupled_layer=cl, cells=len(path), uncoupled_mm=round(uncoupled, 3),
                 skew_before_tuning_mm=round(raw_skew, 3), skew_mm=round(skew, 3))
     return {"failed": None, "info": info, "tracks": tracks, "vias": vias}

@@ -133,6 +133,23 @@ def test_same_net_via_holes_obey_drill_clearance():
         assert pairs._holes_separated([via], holes, 0.25) == (not blocked)
 
 
+def test_tuning_can_extend_two_segments_of_one_track():
+    layer = "F.Cu"
+    win = pairs.Window(Board("tune", []), (0, 0, 15, 10), [layer])
+    mask = np.zeros_like(win.X, dtype=bool)
+    tracks = [
+        {"net": "P", "layer": layer, "width": 0.15, "points": [(1, 2), (5, 2), (5, 5)]},
+        {"net": "N", "layer": layer, "width": 0.15, "points": [(1, 8), (12.5, 8)]},
+    ]
+    rule = pairs.PairRule(0.15, 0.15, 0.15, 0.5, 0.3)
+    tuned, skew = pairs._tune(win, {"pos": {layer: mask}, "neg": {layer: mask}},
+                              tracks, {"pos": "P", "neg": "N"}, rule, 4.5)
+
+    assert skew <= rule.skew_max
+    assert tuned[0]["points"][0] == (1, 2) and tuned[0]["points"][-1] == (5, 5)
+    assert any(x != 5 and y > 2 for x, y in tuned[0]["points"])
+
+
 def test_power_tap_reaches_matching_pour_and_respects_existing_drill():
     outline = [(0, 0), (10, 0), (10, 10), (0, 10)]
     pad = Pad("1", "GND", (0.5, 0), (0.4, 0.3), layers=("B.Cu",))
@@ -352,8 +369,9 @@ def test_s6a_selects_links_and_taps_from_the_intent_only(monkeypatch):
     }, "diff_pairs": [claim({"positive": "USB+", "negative": "USB-"})]}
     reserved = []
 
-    def route_pairs(_board, pairs, *, fixed):
+    def route_pairs(_board, pairs, *, fixed, retry_coarse):
         assert pairs == [("USB+", "USB-")]
+        assert retry_coarse is False
         reserved.extend(fixed)
         return {"copper": [], "rows": [], "rounds": []}
 
