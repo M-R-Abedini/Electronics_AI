@@ -309,16 +309,19 @@ def read_schematic_document_info(path: str | Path) -> dict[str, Any]:
     return info
 
 
-def read_schematic_components(path: str | Path) -> list[dict[str, Any]]:
+def read_schematic_components(
+    path: str | Path, *, records: list[dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     """Extract placed components (with designators) from a .SchDoc.
 
-    Returns a list of ``{designator, lib_reference, description,
+    Returns a list of ``{owner_index, designator, lib_reference, description,
     library_path, unique_id, x, y}``: the fields a headless BOM/review
     needs. Designators are joined to components via the OwnerIndex scheme
     (owner index = record position counting from the first post-header
     record). Coordinates are the raw SchDoc internal units (1/100 mil).
     """
-    records = read_schdoc_records(path)
+    if records is None:
+        records = read_schdoc_records(path)
 
     # Altium OwnerIndex counts records from the first one AFTER the header
     # (record[0]). So the record at file position ``p`` (p >= 1) has owner
@@ -356,6 +359,7 @@ def read_schematic_components(path: str | Path) -> list[dict[str, Any]]:
         rec = comp_by_owner_index[owner_index]
         params = params_by_owner.get(owner_index, {})
         out.append({
+            "owner_index": owner_index,
             "designator": designator_by_owner.get(owner_index, ""),
             "lib_reference": rec.get("LibReference", ""),
             "description": rec.get("ComponentDescription", ""),

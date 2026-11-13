@@ -252,7 +252,7 @@ class Inference:
     def supply_pins(self, ref: str, net: str) -> int:
         """Pins of ``ref`` that draw supply from ``net`` (power-input type or a supply pin name)."""
         return sum(1 for p in self.f.fp[ref].pads if p.net == net and pin_type(p) != "power_out"
-                   and (pin_type(p) == "power_in" or POWER_FN.match(fn(p))))
+                   and (pin_type(p) in ("power", "power_in") or POWER_FN.match(fn(p))))
 
     def loads(self, net: str) -> list[str]:
         """ICs that draw supply from ``net`` (ESD arrays only clamp it)."""
