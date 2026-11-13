@@ -150,7 +150,7 @@ def _stats(v: list[float]) -> dict:
             "max_mm": round(s[-1], 3)}
 
 
-def critical_loops_intent(board: Board, intent: dict) -> dict:
+def critical_loops_intent(board: Board, intent: dict, *, resolved_by_ref: dict[str, float] | None = None) -> dict:
     """Distances that the roles in ``intent`` make critical, measured pad to pad on the same net."""
     from ..intent import model
 
@@ -192,6 +192,8 @@ def critical_loops_intent(board: Board, intent: dict) -> dict:
             unsettled += tv.get("ref") is None
             if tv.get("ref") and not model.is_uncertain(part["role"]) and not model.is_uncertain(part.get("target")):
                 resolved_decap.append(d)
+                if resolved_by_ref is not None:
+                    resolved_by_ref[ref] = d
         elif role == "crystal_load_cap":
             load.append(d)
         elif role == "crystal":

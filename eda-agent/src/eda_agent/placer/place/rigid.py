@@ -147,17 +147,33 @@ def corridors(board: Board, macros: dict[int, Macro]) -> dict:
                                              for r in rows), "rows": rows}
 
 
+def _corridor_objective(audit: dict) -> tuple[set[tuple], int]:
+    clear = set()
+    blockers = 0
+    for row in audit["rows"]:
+        if row["track_keepout"] or row["outside_outline"]:
+            continue
+        if row["blocked_by"]:
+            blockers += len(row["blocked_by"])
+        else:
+            clear.add((row["net"], row["side"], *row["blocks"]))
+    return clear, blockers
+
+
 def clear_blockers(board: Board, macros: dict[int, Macro], fixed: set[str], intent: dict, audit: dict,
                    *, max_trials: int) -> tuple[Board, dict]:
     """Improve the blocked-corridor objective with bounded moves of independent footprints."""
     original_clear = audit["clear"]
     protected = fixed | {p.ref for macro in macros.values() for p in macro.parts}
-    refs = sorted({ref for row in audit["rows"] for ref in row["blocked_by"]} - protected)
+    refs = sorted({ref for row in audit["rows"] if not (row["track_keepout"] or row["outside_outline"])
+                   for ref in row["blocked_by"]} - protected)
     if not refs:
         return board, {**audit, "before_clear": original_clear, "trials": 0, "moved": []}
     board = board.copy()
     tail = critical_loops_intent(board, intent)["resolved_decap_pin_distance"]
     cross = crossings(board)["count"]
+    clear, blockers = _corridor_objective(audit)
+    before_blockers = blockers
     trials, moved = 0, []
     for ref in refs:
         fp = board.fp(ref)
@@ -174,15 +190,19 @@ def clear_blockers(board: Board, macros: dict[int, Macro], fixed: set[str], inte
             trials += 1
             fp.x, fp.y = round(x + dx, 4), round(y + dy, 4)
             proposed = corridors(board, macros)
-            if proposed["clear"] > audit["clear"] and not any(not f.fixed for f in check(board, fixed=fixed)):
+            next_clear, next_blockers = _corridor_objective(proposed)
+            improves = clear <= next_clear and (clear != next_clear or next_blockers < blockers)
+            if improves and not any(not f.fixed for f in check(board, fixed=fixed)):
                 distance = critical_loops_intent(board, intent)["resolved_decap_pin_distance"]
                 next_cross = crossings(board)["count"]
                 if (distance["n"] >= tail["n"] and distance.get("p90_mm", math.inf) <= tail.get("p90_mm", math.inf)
                         and next_cross <= cross):
                     audit, tail, cross = proposed, distance, next_cross
+                    clear, blockers = next_clear, next_blockers
                     moved.append(ref)
                     break
             fp.x, fp.y = x, y
         if trials >= max_trials:
             break
-    return board, {**audit, "before_clear": original_clear, "trials": trials, "moved": moved}
+    return board, {**audit, "before_clear": original_clear, "before_blockers": before_blockers,
+                   "after_blockers": blockers, "trials": trials, "moved": moved}

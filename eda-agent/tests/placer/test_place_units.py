@@ -21,7 +21,15 @@ from eda_agent.placer.ir import (
     Pad,
     derive,
 )
-from eda_agent.placer.place import blocks, escape, mechanical, pipeline, problem, rigid
+from eda_agent.placer.place import (
+    blocks,
+    decap,
+    escape,
+    mechanical,
+    pipeline,
+    problem,
+    rigid,
+)
 from eda_agent.placer.place.pipeline import _compare_floorplans, solve
 
 BOX = [(-1.0, -0.6), (1.0, -0.6), (1.0, 0.6), (-1.0, 0.6)]
@@ -42,6 +50,25 @@ def _board():
               board_area_mm2=400.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
               netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)], nets=[Net(n, "Default", 3) for n in nets])
     return derive(b)
+
+
+def test_decap_refinement_moves_only_resolved_unlocked_capacitor():
+    board = _board()
+    board.footprints = [board.fp("U1"), board.fp("R1")]
+    board.reindex()
+    intent = {"parts": {"R1": {"role": model.claim("decap", "board", 1),
+                               "target": model.claim({"ref": "U1", "net": "A", "pins": ["1"]}, "board", 1)}}}
+    before = board.placement()
+    result, report = decap.refine(board, intent, {"U1"})
+    assert report["moved"] == ["R1"]
+    assert report["after"]["p90_mm"] < report["before"]["p90_mm"]
+    assert board.placement() == before
+    assert result.fp("U1").position == board.fp("U1").position
+    assert not evaluate(result, intent=intent)["legality"]["strict_violations"]
+    locked, report = decap.refine(board, intent, {"U1", "R1"})
+    assert locked is board and not report["trials"]
+    rejected, report = decap.refine(board, intent, {"U1"}, preserve_escapes=lambda _: False)
+    assert rejected is board and not report["moved"] and report["trials"] > 0
 
 
 def test_rust_cost_matches_python_reference():
@@ -105,7 +132,7 @@ def test_floorplan_can_select_reservations_without_blocks(monkeypatch):
         placed = board.copy()
         placed.name = {(False, False): "baseline", (True, False): "blocks",
                        (False, True): "reserve", (True, True): "combined"}[floorplan, reserve]
-        return placed, {"strict_violations": 0, "illegal_after_s5": [], "s4_failed": [], "seconds_s0_s5": 0}
+        return placed, {"strict_violations": 0, "illegal_after_s5": [], "s4_failed": [], "seconds_s0_s5": 0, "fixed": {}}
 
     monkeypatch.setattr(pipeline, "_solve", solve_variant)
     monkeypatch.setattr(pipeline, "_floorplan_metrics", lambda b, _: {
@@ -178,6 +205,14 @@ def test_rigid_corridor_detects_obstructed_same_side_ports():
     assert improved.fp("R1").position == placed.fp("R1").position
     _, locked_report = rigid.clear_blockers(placed, macros, {"U1"}, {}, rigid.corridors(placed, macros), max_trials=8)
     assert locked_report["clear"] == 0 and locked_report["trials"] == 0
+
+    # Clearing one obstacle should make progress even while another blocks the same strip.
+    second = _fp("R9", 13.0, 10.0, [])
+    placed.footprints.append(second)
+    placed.reindex()
+    _, partial = rigid.clear_blockers(placed, macros, {"R9"}, {}, rigid.corridors(placed, macros), max_trials=8)
+    assert partial["clear"] == 0 and partial["moved"] == ["U1"]
+    assert partial["before_blockers"] == 2 and partial["after_blockers"] == 1
 
 
 def test_escape_reservation_selects_only_the_crowded_bank():
