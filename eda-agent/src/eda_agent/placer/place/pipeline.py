@@ -33,10 +33,12 @@ MODES = ("analytical", "sa_only")
 W_CROSS = 2.0  # declared: cost of one pin-pair crossing in mm of wirelength
 LEGALIZE_STEP_MM = 0.2
 LEGALIZE_RETRIES = 2
+MAX_CORRIDOR_TRIALS = 24
 
 
 def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None,
-               floorplan: bool = False, reserve: bool = False, rigid_blocks: bool = False) -> tuple:
+               floorplan: bool = False, reserve: bool = False, rigid_blocks: bool = False,
+               budget_divisor: int = 1) -> tuple:
     """S1 to S5 on the IR with one global stage; returns (placed board, stage report)."""
     t0 = time.monotonic()
     timings: dict[str, float] = {}
@@ -52,7 +54,7 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         if macros:
             solver_pb, retained = rigid.collapse(pb, macros)
     if mode == "analytical":
-        s3 = analytical.global_place(solver_pb)
+        s3 = analytical.global_place(solver_pb, max_iters=analytical.MAX_ITERS // budget_divisor)
         start = s3.poses
         s3_info = {"iterations": s3.iterations, "overflow": s3.overflow, "wa_wirelength": s3.wirelength}
     elif mode == "sa_only":
@@ -80,7 +82,7 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
     after_legalize = core.cost()
     timings["s4"] = round(time.monotonic() - t, 2)
     t = time.monotonic()
-    iters = min(SA_MAX_MOVES, max(SA_MIN_MOVES, SA_MOVES_PER_PART * movable))
+    iters = min(SA_MAX_MOVES, max(SA_MIN_MOVES, SA_MOVES_PER_PART * movable)) // budget_divisor
     sa = core.anneal(iters, seed, max(diag * 0.15, 1.0), 0.05) if not failed else {"skipped": "illegal start"}
     timings["s5"] = round(time.monotonic() - t, 2)
     illegal = core.illegal_parts()
@@ -96,13 +98,25 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         "seconds_s0_s5": round(time.monotonic() - t0, 2),
     }
     if macros:
+        corridor_info = rigid.corridors(placed, macros)
+        if not (failed or illegal or violations):
+            placed, corridor_info = rigid.clear_blockers(placed, macros, set(pb.fixed), intent, corridor_info,
+                                                          max_trials=MAX_CORRIDOR_TRIALS)
+            if corridor_info["moved"]:
+                poses = core.positions()
+                moved = set(corridor_info["moved"])
+                core.set_positions([(*placed.fp(ref).position, pose[2]) if ref in moved else pose
+                                    for ref, pose in zip(solver_pb.refs, poses, strict=True)])
+                info["cost_final"] = core.cost()
         info["rigid_macros"] = {"members": [[p.ref for p in m.parts] for m in macros.values()],
-                                "corridors": rigid.corridors(placed, macros)}
+                                "corridors": corridor_info}
+        info["seconds_s0_s5"] = round(time.monotonic() - t0, 2)
+    info["iteration_budget"] = {"analytical": analytical.MAX_ITERS // budget_divisor, "annealing": iters}
     return placed, info
 
 
 def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None, floorplan: bool,
-           reserve: bool = False, rigid_blocks: bool = False) -> tuple:
+           reserve: bool = False, rigid_blocks: bool = False, budget_divisor: int = 1) -> tuple:
     """S1 to S5.  ``best`` (default) runs both global stages and keeps the legal result of lower cost.
 
     DG-F1 evidence: the analytical start won on ecc83 and pic_programmer, the
@@ -111,10 +125,11 @@ def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None
     """
     if mode != "best":
         return _solve_one(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                          floorplan=floorplan, reserve=reserve, rigid_blocks=rigid_blocks)
+                          floorplan=floorplan, reserve=reserve, rigid_blocks=rigid_blocks, budget_divisor=budget_divisor)
     t0 = time.monotonic()
     results = [(m, *_solve_one(board, side_policy=side_policy, mode=m, seed=seed, intent=intent,
-                               floorplan=floorplan, reserve=reserve, rigid_blocks=rigid_blocks))
+                               floorplan=floorplan, reserve=reserve, rigid_blocks=rigid_blocks,
+                               budget_divisor=budget_divisor))
                for m in MODES]
 
     def rank(item):
@@ -137,7 +152,6 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
     original = board
     board, anchors = mechanical.anchor(board, intent or {})
     use_floorplan = bool(floorplan and intent)
-    placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=False)
     boxes = {fp.ref: problem.local_box(fp) for fp in board.footprints}
     exits = escape.envelopes(board, intent or {}, boxes)
 
@@ -146,6 +160,17 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         return escape.audit(candidate, exits, flipped=flipped)
 
     selected = escape.select_reservations(exits) if use_floorplan else {}
+    modes = []
+    if use_floorplan:
+        modes.append(("blocks", True, False))
+        if intent.get("blocks"):
+            modes.append(("rigid", True, False))
+        if selected:
+            modes.extend([("reserve", False, True), ("combined", True, True)])
+    divisor = len(modes) + 1
+    budget = {"budget_divisor": divisor} if divisor > 1 else {}
+    placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                         floorplan=False, **budget)
     variant = "baseline"
     audit = measure(placed)
     comparisons = {}
@@ -153,12 +178,9 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         baseline, baseline_info = placed, info
         base_metrics = _floorplan_metrics(baseline, intent)
         rank = _floorplan_rank(info, base_metrics, audit)
-        modes = [("blocks", True, False), ("rigid", True, False)] if intent.get("blocks") else [("blocks", True, False)]
-        if selected:
-            modes.extend([("reserve", False, True), ("combined", True, True)])
         for name, use_blocks, reserve in modes:
             other, other_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                                       floorplan=use_blocks, reserve=reserve, rigid_blocks=name == "rigid")
+                                       floorplan=use_blocks, reserve=reserve, rigid_blocks=name == "rigid", **budget)
             guard = _compare_floorplans(other, other_info, baseline, baseline_info, intent, base_metrics=base_metrics)
             other_audit = measure(other)
             other_rank = _floorplan_rank(other_info, guard["candidate"], other_audit)
@@ -175,7 +197,7 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
     info["floorplan"] = {"requested": use_floorplan, "reservations_used": reservations_used,
                          "reserved_pad_count": sum(map(len, selected.values())) if reservations_used else 0,
                          "selected_variant": variant, "quality_guard": comparisons.get(variant),
-                         "comparisons": comparisons, "escape": audit}
+                         "comparisons": comparisons, "escape": audit, "iteration_budget_divisor": divisor}
     for row in anchors:
         ref = row["ref"]
         placed.fp(ref).locked = original.fp(ref).locked

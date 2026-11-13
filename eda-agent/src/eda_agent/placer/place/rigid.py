@@ -10,7 +10,8 @@ from shapely import STRtree
 from shapely.geometry import LineString, Polygon
 from shapely.ops import unary_union
 
-from ..eval.legality import board_polygon, courtyard_polygon
+from ..eval.legality import board_polygon, check, courtyard_polygon
+from ..eval.metrics import critical_loops_intent, crossings
 from ..geometry import box_overlap_area, rotated_box, transform
 from ..ir import Board, is_ground_net
 from ..macro import Macro, MacroPart, Port, Transform, instantiate, to_local
@@ -144,3 +145,44 @@ def corridors(board: Board, macros: dict[int, Macro]) -> dict:
                      "outside_outline": outline is None or not outline.covers(strip)})
     return {"total": len(rows), "clear": sum(not (r["blocked_by"] or r["outside_outline"] or r["track_keepout"])
                                              for r in rows), "rows": rows}
+
+
+def clear_blockers(board: Board, macros: dict[int, Macro], fixed: set[str], intent: dict, audit: dict,
+                   *, max_trials: int) -> tuple[Board, dict]:
+    """Improve the blocked-corridor objective with bounded moves of independent footprints."""
+    original_clear = audit["clear"]
+    protected = fixed | {p.ref for macro in macros.values() for p in macro.parts}
+    refs = sorted({ref for row in audit["rows"] for ref in row["blocked_by"]} - protected)
+    if not refs:
+        return board, {**audit, "before_clear": original_clear, "trials": 0, "moved": []}
+    board = board.copy()
+    tail = critical_loops_intent(board, intent)["resolved_decap_pin_distance"]
+    cross = crossings(board)["count"]
+    trials, moved = 0, []
+    for ref in refs:
+        fp = board.fp(ref)
+        x, y = fp.position
+        width = max((row["width_mm"] for row in audit["rows"] if ref in row["blocked_by"]), default=0)
+        if not width:
+            continue
+        x0, y0, x1, y1 = fp.box()
+        step = max(width, min(x1 - x0, y1 - y0) / 2)
+        for dx, dy in ((step, 0), (-step, 0), (0, step), (0, -step),
+                       (2 * step, 0), (-2 * step, 0), (0, 2 * step), (0, -2 * step)):
+            if trials >= max_trials:
+                break
+            trials += 1
+            fp.x, fp.y = round(x + dx, 4), round(y + dy, 4)
+            proposed = corridors(board, macros)
+            if proposed["clear"] > audit["clear"] and not any(not f.fixed for f in check(board, fixed=fixed)):
+                distance = critical_loops_intent(board, intent)["resolved_decap_pin_distance"]
+                next_cross = crossings(board)["count"]
+                if (distance["n"] >= tail["n"] and distance.get("p90_mm", math.inf) <= tail.get("p90_mm", math.inf)
+                        and next_cross <= cross):
+                    audit, tail, cross = proposed, distance, next_cross
+                    moved.append(ref)
+                    break
+            fp.x, fp.y = x, y
+        if trials >= max_trials:
+            break
+    return board, {**audit, "before_clear": original_clear, "trials": trials, "moved": moved}

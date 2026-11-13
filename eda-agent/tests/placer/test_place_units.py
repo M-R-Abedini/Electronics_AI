@@ -100,6 +100,7 @@ def test_floorplan_can_select_reservations_without_blocks(monkeypatch):
     calls = []
 
     def solve_variant(board, *, floorplan, reserve=False, **kwargs):
+        assert kwargs["budget_divisor"] == 4
         calls.append((floorplan, reserve))
         placed = board.copy()
         placed.name = {(False, False): "baseline", (True, False): "blocks",
@@ -166,6 +167,17 @@ def test_rigid_corridor_detects_obstructed_same_side_ports():
     result = rigid.corridors(placed, macros)
     assert result["total"] == 1 and result["clear"] == 0
     assert "U1" in result["rows"][0]["blocked_by"]
+    # With an independent obstacle and no signal paths, a legal local move clears the strip.
+    placed.footprints = [fp for fp in placed.footprints if fp.ref in {"U1", "R1", "R2", "R3", "R4"}]
+    for fp in placed.footprints:
+        fp.pads.clear()
+    placed.reindex()
+    improved, report = rigid.clear_blockers(placed, macros, set(), {}, rigid.corridors(placed, macros), max_trials=8)
+    assert report["clear"] == 1 and report["moved"] == ["U1"]
+    assert placed.fp("U1").position == (10.0, 10.0)
+    assert improved.fp("R1").position == placed.fp("R1").position
+    _, locked_report = rigid.clear_blockers(placed, macros, {"U1"}, {}, rigid.corridors(placed, macros), max_trials=8)
+    assert locked_report["clear"] == 0 and locked_report["trials"] == 0
 
 
 def test_escape_reservation_selects_only_the_crowded_bank():
