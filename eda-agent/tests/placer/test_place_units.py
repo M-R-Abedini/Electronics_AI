@@ -21,7 +21,7 @@ from eda_agent.placer.ir import (
     Pad,
     derive,
 )
-from eda_agent.placer.place import blocks, escape, mechanical, problem
+from eda_agent.placer.place import blocks, escape, mechanical, pipeline, problem
 from eda_agent.placer.place.pipeline import _compare_floorplans, solve
 
 BOX = [(-1.0, -0.6), (1.0, -0.6), (1.0, 0.6), (-1.0, 0.6)]
@@ -90,6 +90,31 @@ def test_floorplan_guard_protects_resolved_decap_tail():
     result = _compare_floorplans(candidate, legal, base, legal, intent)
     assert result["use_baseline"] and "decap_p90_mm" in result["regressions"]
     assert not _compare_floorplans(base, legal, base, legal, intent)["use_baseline"]
+
+
+def test_floorplan_can_select_reservations_without_blocks(monkeypatch):
+    board = _board()
+    trial = escape.Escape("1", "A", (1, 0), (2, 0), 0.4, 0.6)
+    monkeypatch.setattr(escape, "envelopes", lambda *_: {"U1": [trial]})
+    monkeypatch.setattr(escape, "select_reservations", lambda exits: exits)
+    calls = []
+
+    def solve_variant(board, *, floorplan, reserve=False, **kwargs):
+        calls.append((floorplan, reserve))
+        placed = board.copy()
+        placed.name = {(False, False): "baseline", (True, False): "blocks",
+                       (False, True): "reserve", (True, True): "combined"}[floorplan, reserve]
+        return placed, {"strict_violations": 0, "illegal_after_s5": [], "s4_failed": [], "seconds_s0_s5": 0}
+
+    monkeypatch.setattr(pipeline, "_solve", solve_variant)
+    monkeypatch.setattr(pipeline, "_floorplan_metrics", lambda b, _: {
+        "crossings": 4 if b.name == "combined" else 3, "decap_p90_mm": 1.0, "resolved_decaps": 1})
+    monkeypatch.setattr(escape, "audit", lambda b, *_, **kwargs: {
+        "clear": int(b.name in ("reserve", "combined")), "total": 1})
+    result, info = solve(board, intent={"parts": {}}, floorplan=True)
+    assert calls == [(False, False), (True, False), (False, True), (True, True)]
+    assert result.name == info["floorplan"]["selected_variant"] == "reserve"
+    assert info["floorplan"]["comparisons"]["combined"]["regressions"] == ["crossings"]
 
 
 def test_block_seed_respects_fixed_anchor_and_prioritizes_its_linked_part():

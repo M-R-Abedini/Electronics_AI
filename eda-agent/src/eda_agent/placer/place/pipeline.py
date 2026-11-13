@@ -122,13 +122,12 @@ def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None
 
 def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int = 0,
           intent: dict | None = None, floorplan: bool = False) -> tuple:
-    """Place the board, retrying without fanout reservations when geometry cannot fit."""
+    """Place the board, comparing independent floorplan candidates when requested."""
     t0 = time.monotonic()
     original = board
     board, anchors = mechanical.anchor(board, intent or {})
     use_floorplan = bool(floorplan and intent)
-    placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                         floorplan=use_floorplan, reserve=use_floorplan)
+    placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=False)
     boxes = {fp.ref: problem.local_box(fp) for fp in board.footprints}
     exits = escape.envelopes(board, intent or {}, boxes)
 
@@ -136,30 +135,33 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         flipped = {fp.ref for fp in candidate.footprints if fp.side != board.fp(fp.ref).side}
         return escape.audit(candidate, exits, flipped=flipped)
 
-    fallback = None
     selected = escape.select_reservations(exits) if use_floorplan else {}
-    reservations_used = bool(selected)
-    if selected and (info["illegal_after_s5"] or info["s4_failed"]):
-        fallback = "reserved courtyards did not legalize"
-    elif selected and info["strict_violations"]:
-        fallback = "exact placement legality failed"
-    if fallback:
-        other, other_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                                   floorplan=True, reserve=False)
-        if _legality_key(other_info) <= _legality_key(info):
-            placed, info = other, other_info
-            reservations_used = False
-    guard = None
+    variant = "baseline"
+    audit = measure(placed)
+    comparisons = {}
     if use_floorplan:
-        baseline, baseline_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                                         floorplan=False)
-        guard = _compare_floorplans(placed, info, baseline, baseline_info, intent)
-        if guard["use_baseline"]:
-            placed, info = baseline, baseline_info
-            reservations_used = False
+        baseline, baseline_info = placed, info
+        base_metrics = _floorplan_metrics(baseline, intent)
+        rank = _floorplan_rank(info, base_metrics, audit)
+        modes = [("blocks", True, False)]
+        if selected:
+            modes.extend([("reserve", False, True), ("combined", True, True)])
+        for name, use_blocks, reserve in modes:
+            other, other_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                                       floorplan=use_blocks, reserve=reserve)
+            guard = _compare_floorplans(other, other_info, baseline, baseline_info, intent, base_metrics=base_metrics)
+            other_audit = measure(other)
+            other_rank = _floorplan_rank(other_info, guard["candidate"], other_audit)
+            comparisons[name] = {**guard, "clear_exits": other_audit["clear"],
+                                 "strict_violations": other_info["strict_violations"],
+                                 "seconds_s0_s5": other_info["seconds_s0_s5"]}
+            if not guard["use_baseline"] and other_rank < rank:
+                variant, placed, info, audit, rank = name, other, other_info, other_audit, other_rank
+    reservations_used = variant in ("reserve", "combined")
     info["floorplan"] = {"requested": use_floorplan, "reservations_used": reservations_used,
                          "reserved_pad_count": sum(map(len, selected.values())) if reservations_used else 0,
-                         "fallback": fallback, "quality_guard": guard, "escape": measure(placed)}
+                         "selected_variant": variant, "quality_guard": comparisons.get(variant),
+                         "comparisons": comparisons, "escape": audit}
     for row in anchors:
         ref = row["ref"]
         placed.fp(ref).locked = original.fp(ref).locked
@@ -173,15 +175,22 @@ def _legality_key(info: dict) -> tuple:
     return info["strict_violations"], len(info["illegal_after_s5"]), len(info["s4_failed"])
 
 
-def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, intent: dict) -> dict:
-    """Prefer the baseline when an equally legal trial worsens a measured objective."""
-    def metrics(board):
-        loops = critical_loops_intent(board, intent)
-        distance = loops["resolved_decap_pin_distance"]
-        return {"crossings": crossings(board)["count"], "decap_p90_mm": distance.get("p90_mm"),
-                "resolved_decaps": distance["n"], "all_decap_p90_mm": loops["decap_pin_distance"].get("p90_mm")}
+def _floorplan_metrics(board, intent: dict) -> dict:
+    loops = critical_loops_intent(board, intent)
+    distance = loops["resolved_decap_pin_distance"]
+    return {"crossings": crossings(board)["count"], "decap_p90_mm": distance.get("p90_mm"),
+            "resolved_decaps": distance["n"], "all_decap_p90_mm": loops["decap_pin_distance"].get("p90_mm")}
 
-    trial, base = metrics(candidate), metrics(baseline)
+
+def _floorplan_rank(info: dict, metrics: dict, audit: dict) -> tuple:
+    tail = metrics["decap_p90_mm"]
+    return (*_legality_key(info), -audit["clear"], metrics["crossings"], tail if tail is not None else math.inf)
+
+
+def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, intent: dict, *, base_metrics=None) -> dict:
+    """Prefer the baseline when an equally legal trial worsens a measured objective."""
+    trial = _floorplan_metrics(candidate, intent)
+    base = base_metrics if base_metrics is not None else _floorplan_metrics(baseline, intent)
     regressions = [key for key in ("crossings", "decap_p90_mm")
                    if base[key] is not None and (trial[key] is None or trial[key] > base[key])]
     if trial["resolved_decaps"] < base["resolved_decaps"]:

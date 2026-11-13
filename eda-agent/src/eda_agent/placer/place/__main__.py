@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mode", default="best", choices=["best", "analytical", "sa_only"])
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-route", action="store_true")
-    ap.add_argument("--floorplan", action="store_true", help="try placement with local blocks and fanout reservations")
+    ap.add_argument("--floorplan", action="store_true", help="compare baseline, local blocks, and applicable fanout reservations")
     ap.add_argument("--route-timeout", type=int)
     args = ap.parse_args(argv)
     rep = place_board(args.board, out_dir=args.out, side_policy=args.side_policy, mode=args.mode, seed=args.seed,
@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     route = rep["metrics"]["route"]
     print(json.dumps({"passed": rep["passed"], "gates": {g["name"]: [g["value"], g["passed"]] for g in rep["gates"]},
                       "mode": info["mode"], "seconds_s0_s5": info["seconds_s0_s5"],
+                      "floorplan_variant": info["floorplan"]["selected_variant"],
                       "hpwl_signal_mm": rep["metrics"]["hpwl"]["signal_mm"],
                       "coverage": route["coverage"] if route else None,
                       "placed_board": rep["artifacts"]["placed_board"], "gallery": rep["artifacts"]["gallery"]},
