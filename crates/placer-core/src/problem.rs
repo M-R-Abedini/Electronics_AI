@@ -51,6 +51,7 @@ struct EdgeIndex {
     net_edges: Vec<Vec<u32>>,
     stamp: Vec<u32>,
     epoch: u32,
+    trace_cells: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -60,6 +61,7 @@ struct EdgeGrid {
     cell: f64,
     nx: usize,
     ny: usize,
+    trace_cells: bool,
 }
 
 impl EdgeGrid {
@@ -73,11 +75,20 @@ impl EdgeGrid {
         let ((ax, ay), (bx, by)) = if a.1 <= b.1 { (a, b) } else { (b, a) };
         let dy = by - ay;
         let dx = bx - ax;
-        let scale = ax.abs().max(ay.abs()).max(bx.abs()).max(by.abs());
-        let eps = self.cell * 1e-9 + 8.0 * f64::EPSILON * scale;
+        let eps = if self.trace_cells {
+            let scale = ax.abs().max(ay.abs()).max(bx.abs()).max(by.abs());
+            self.cell * 1e-9 + 8.0 * f64::EPSILON * scale
+        } else {
+            0.0
+        };
         let j0 = self.index(ay - eps, self.y0, self.ny);
         let j1 = self.index(by + eps, self.y0, self.ny);
+        let min_col = self.index(ax.min(bx), self.x0, self.nx);
+        let max_col = self.index(ax.max(bx), self.x0, self.nx);
         (j0..=j1).map(move |j| {
+            if !self.trace_cells {
+                return (j, min_col, max_col);
+            }
             let lower = self.y0 + j as f64 * self.cell;
             let start = if j == 0 || dy == 0.0 {
                 0.0
@@ -101,7 +112,7 @@ impl EdgeGrid {
 }
 
 impl EdgeIndex {
-    fn new(bounds: Rect, cell: f64, nets: usize) -> Self {
+    fn new(bounds: Rect, cell: f64, nets: usize, trace_cells: bool) -> Self {
         let nx = (((bounds.x1 - bounds.x0) / cell).ceil() as usize).max(1);
         let ny = (((bounds.y1 - bounds.y0) / cell).ceil() as usize).max(1);
         EdgeIndex {
@@ -116,6 +127,7 @@ impl EdgeIndex {
             net_edges: vec![Vec::new(); nets],
             stamp: Vec::new(),
             epoch: 0,
+            trace_cells,
         }
     }
 
@@ -126,6 +138,7 @@ impl EdgeIndex {
             cell: self.cell,
             nx: self.nx,
             ny: self.ny,
+            trace_cells: self.trace_cells,
         }
     }
 
@@ -356,6 +369,13 @@ impl Problem {
             * 2.0;
         let n_nets = nets.len();
         let n_parts = parts.len();
+        // On sparse boards, cheap rectangular ranges outperform row clipping.
+        let edge_budget: usize = nets
+            .iter()
+            .filter(|n| n.crossing && (2..=MAX_CROSSING_PINS).contains(&n.pins.len()))
+            .map(|n| n.pins.len() - 1)
+            .sum();
+        let trace_cells = edge_budget >= 128;
         let mut pb = Problem {
             parts,
             pins,
@@ -368,7 +388,7 @@ impl Problem {
             placed: vec![true; n_parts],
             bounds,
             index: PartIndex::new(bounds, cell),
-            edges: EdgeIndex::new(bounds, edge_cell(&bounds), n_nets),
+            edges: EdgeIndex::new(bounds, edge_cell(&bounds), n_nets, trace_cells),
             net_hpwl: vec![0.0; n_nets],
             hpwl_total: 0.0,
             crossings: 0,
@@ -393,7 +413,7 @@ impl Problem {
             self.hpwl_total += self.nets[n].weight * self.net_hpwl[n];
         }
         let nets = self.nets.len();
-        self.edges = EdgeIndex::new(self.bounds, self.edges.cell, nets);
+        self.edges = EdgeIndex::new(self.bounds, self.edges.cell, nets, self.edges.trace_cells);
         let mut all = Vec::new();
         for n in 0..nets {
             if self.crossing_net(n) {
@@ -677,12 +697,13 @@ mod tests {
         #[test]
         fn grid_matches_brute_force_after_removing_and_reinserting(
             coords in prop::collection::vec(prop::array::uniform4(-30i32..=50), 2..30),
+            trace_cells in any::<bool>(),
         ) {
             let bounds = Rect { x0: 0.0, y0: 0.0, x1: 20.0, y1: 20.0 };
             let edges: Vec<_> = coords.iter().enumerate().map(|(i, &[a,b,c,d])| {
                 (((a as f64, b as f64), (c as f64, d as f64)), i as u32 % 4)
             }).collect();
-            let mut index = EdgeIndex::new(bounds, 2.0, 4);
+            let mut index = EdgeIndex::new(bounds, 2.0, 4, trace_cells);
             for &(seg, net) in &edges { index.insert(seg, net); }
             prop_assert_eq!(index.crossings_against(&edges, &[]), 2 * crossings_within(&edges));
             let changed: Vec<_> = edges.iter().copied().filter(|e| e.1 < 2).collect();
