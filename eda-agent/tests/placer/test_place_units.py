@@ -17,7 +17,7 @@ from eda_agent.placer.ir import (
     Pad,
     derive,
 )
-from eda_agent.placer.place import problem
+from eda_agent.placer.place import escape, problem
 from eda_agent.placer.place.pipeline import solve
 
 BOX = [(-1.0, -0.6), (1.0, -0.6), (1.0, 0.6), (-1.0, 0.6)]
@@ -74,6 +74,49 @@ def test_decap_affinity_uses_nearest_allowed_pin_without_counting_crossings():
 
 def test_s1_fixes_locked_parts_only_here():
     assert problem.build(_board()).fixed == {"U1": "locked in the file"}
+
+
+def test_floorplan_reserves_and_audits_rule_sized_pad_exits():
+    board = _board()
+    chip = board.fp("U1")
+    chip.pads = [Pad(str(i + 1), "A", (0.8, (i - 3.5) * 0.12), (0.35, 0.10)) for i in range(8)]
+    blocker = board.fp("R1")
+    blocker.x, blocker.y = 12.1, 10.0
+    intent = {"parts": {"U1": {"role": {"value": "ic", "confidence": 0.95}}}}
+    pb = problem.build(board, intent=intent, floorplan=True)
+    assert pb.parts[0][2] > problem.build(board, intent=intent).parts[0][2]
+    assert len(pb.exits["U1"]) == 8
+    assert math.isclose(pb.exits["U1"][0].width, 0.6)
+    result = escape.audit(board, pb.exits)
+    assert result["clear"] == 0 and all(row["blocked_by"] == ["R1"] for row in result["blocked"])
+    blocker.side = "B"
+    assert escape.audit(board, pb.exits)["clear"] == 8
+
+
+def test_floorplan_adds_verified_block_pin_links_only():
+    board = _board()
+    part = board.fp("R1")
+    intent = {"parts": {part.ref: {"role": {"value": "crystal", "confidence": 0.9},
+                                  "target": {"value": {"ref": "U1", "pins": ["1"]}, "confidence": 0.8}}}}
+    assert problem.build(board, intent=intent, floorplan=True).local_block_links == 1
+    assert not problem.build(board, intent=intent).affinities
+    intent["parts"][part.ref]["target"]["value"]["pins"] = ["2"]
+    assert not problem.build(board, intent=intent, floorplan=True).affinities
+
+
+def test_placement_readback_uses_the_mirrored_footprint_frame():
+    board = _board()
+    part = board.fp("R1")
+    part.side = "B"
+    part.pads[0].local = (0.2, 0.4)
+    part.pads[0].rotation = 30.0
+    part.pads[0].layers = ("B.Cu", "B.Mask")
+    pb = problem.build(board, side_policy="top_only")
+    result = problem.apply(pb, pb.poses())
+    flipped = result.fp("R1")
+    assert (flipped.side, flipped.pads[0].local, flipped.pads[0].rotation) == ("F", (0.2, -0.4), -30.0)
+    assert flipped.pads[0].layers[0] == "F.Cu"
+    assert (part.side, part.pads[0].local) == ("B", (0.2, 0.4))
 
 
 def test_solve_is_legal_better_and_deterministic():

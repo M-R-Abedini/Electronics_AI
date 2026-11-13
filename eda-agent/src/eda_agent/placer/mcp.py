@@ -104,10 +104,11 @@ class PlacerService:
               "SA-only starts, S4 legalization, S5 annealing in the Rust core; the better legal result wins), write a "
               "NEW board file, route it with the strict Freerouting check and evaluate it against the expert. "
               "side_policy 'expert' keeps every part's side (fair comparison), 'top_only' is assembly level 1. "
+              "Set floorplan=true to evaluate local-block placement and pad escape reservations. "
               "Takes 1 to 10 minutes. Never modifies the input board."),
              {"board_path": _STRING, "side_policy": {"type": "string", "enum": ["expert", "top_only"]},
               "seed": {"type": "integer", "minimum": 0, "default": 0}, "route": {"type": "boolean", "default": True},
-              "intent_path": _STRING},
+              "intent_path": _STRING, "floorplan": {"type": "boolean", "default": False}},
              ["board_path"], False),
             ("gallery",
              ("Build one side-by-side HTML gallery from run folders of placer__score or placer__place_board "
@@ -152,13 +153,13 @@ class PlacerService:
         return validate.validate(model.load(intent_path), read_board(board_path))
 
     def place_board(self, board_path: str, side_policy: str | None = None, seed: int = 0, route: bool = True,
-                    intent_path: str | None = None) -> dict:
+                    intent_path: str | None = None, floorplan: bool = False) -> dict:
         from .place.pipeline import place_board
 
         board_name = Path(board_path).stem
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         rep = place_board(board_path, out_dir=self.runs / f"{board_name}-place-{stamp}", side_policy=side_policy,
-                          seed=seed, route=route, intent_path=intent_path)
+                          seed=seed, route=route, intent_path=intent_path, floorplan=floorplan)
         info = rep["stages"]["place"]
         return {
             "passed": rep["passed"],
@@ -166,8 +167,10 @@ class PlacerService:
             "placed_board": rep["artifacts"]["placed_board"],
             "mode": info["mode"], "candidates": info.get("candidates"), "fixed_parts": info["fixed"],
             "seconds_s0_s5": info["seconds_s0_s5"],
+            "floorplan": {k: v for k, v in info["floorplan"].items() if k != "escape"},
             "metrics": {"hpwl_signal_mm": rep["metrics"]["hpwl"]["signal_mm"],
                         "crossings": rep["metrics"]["crossings"]["count"],
+                        "fanout_escape": {k: info["floorplan"]["escape"][k] for k in ("total", "clear")},
                         "route": ({k: rep["metrics"]["route"][k] for k in ("coverage", "unrouted", "vias",
                                                                             "track_length_mm", "router_stop")}
                                   if rep["metrics"]["route"] else None)},

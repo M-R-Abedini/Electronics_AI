@@ -20,8 +20,10 @@ from dataclasses import dataclass, field
 
 from ..eval.legality import board_polygon, courtyard_polygon
 from ..eval.metrics import zone_nets
+from ..geometry import rotated_box
 from ..intent import model
 from ..ir import Board, Footprint, is_ground_net
+from . import escape
 
 CONNECTOR_PREFIXES = ("J", "P", "CN", "CON", "USB")  # not "X": crystals in some libraries
 EDGE_DISTANCE_MM = 1.5  # declared: a connector this close to the outline edge is an edge connector (StickHub JSTs: 1.125 mm)
@@ -29,6 +31,9 @@ WEIGHT_SIGNAL = 1.0
 WEIGHT_PLANE_NET = 0.2
 DECAP_AFFINITY_WEIGHT = 3.0  # local supply distance in mm, weighted relative to signal HPWL
 GAP_MM = 0.0  # declared: extra courtyard gap; courtyards already carry the library's clearance
+LOCAL_BLOCK_WEIGHT = 2.0
+LOCAL_BLOCK_ROLES = frozenset({"crystal", "crystal_load_cap", "crystal_aux", "converter_inductor", "converter_diode",
+                               "converter_control", "regulator_input_cap", "regulator_output_cap", "esd", "led_resistor"})
 
 
 def local_box(fp: Footprint) -> tuple[float, float, float, float]:
@@ -89,6 +94,8 @@ class PlaceProblem:
     affinities: list[tuple[list[int], float]] = field(default_factory=list)
     outers: list[list[tuple[float, float]]] = field(default_factory=list)
     holes: list[list[tuple[float, float]]] = field(default_factory=list)
+    exits: dict[str, list[escape.Escape]] = field(default_factory=dict)
+    local_block_links: int = 0
 
     def poses(self) -> list[tuple[float, float, int]]:
         return [(p[7], p[8], p[9]) for p in self.parts]
@@ -98,25 +105,38 @@ def _quarter(rotation: float) -> int:
     return round(rotation / 90.0) % 4
 
 
-def build(board: Board, *, side_policy: str = "expert", intent: dict | None = None) -> PlaceProblem:
+def build(board: Board, *, side_policy: str = "expert", intent: dict | None = None,
+          floorplan: bool = False, reserve: bool = True) -> PlaceProblem:
     fixed = fixed_parts(board)
     sides = assign_sides(board, side_policy, fixed)
     planes = zone_nets(board) | {n for r in board.stackup.roles for n in r.nets}
     pb = PlaceProblem(board=board, refs=[fp.ref for fp in board.footprints], fixed=fixed, sides=sides)
     pin_of: dict[str, list[int]] = {}
     part_pins: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    boxes = {fp.ref: local_box(fp) for fp in board.footprints}
+    if floorplan and reserve and intent:
+        pb.exits = escape.envelopes(board, intent, boxes)
     for i, fp in enumerate(board.footprints):
         is_fixed = fp.ref in fixed
         flip = sides[fp.ref] != fp.side
-        x0, y0, x1, y1 = local_box(fp)
+        x0, y0, x1, y1 = boxes[fp.ref]
+        if fp.ref in pb.exits:
+            x0, y0, x1, y1 = escape.reserved_box((x0, y0, x1, y1), pb.exits[fp.ref])
         if flip:  # the footprint frame mirrors in y when the part changes side (KiCad left-right flip)
             y0, y1 = -y1, -y0
         on_grid = abs(fp.rotation / 90.0 - round(fp.rotation / 90.0)) < 1e-6
         if is_fixed and not on_grid:
             # a fixed part at an odd angle keeps its true courtyard through its world bounding box
-            shape = courtyard_polygon(fp)
-            bx0, by0, bx1, by1 = shape.bounds if shape is not None else (fp.x, fp.y, fp.x, fp.y)
-            x0, y0, x1, y1, r = bx0 - fp.x, by0 - fp.y, bx1 - fp.x, by1 - fp.y, 0
+            if fp.ref in pb.exits:
+                x0, y0, x1, y1 = rotated_box((x0, y0, x1, y1), (0.0, 0.0), fp.rotation)
+            else:
+                shape = courtyard_polygon(fp)
+                if shape is not None:
+                    bx0, by0, bx1, by1 = shape.bounds
+                    x0, y0, x1, y1 = bx0 - fp.x, by0 - fp.y, bx1 - fp.x, by1 - fp.y
+                else:
+                    x0 = y0 = x1 = y1 = 0.0
+            r = 0
         else:
             r = _quarter(fp.rotation) if on_grid else 0
         pb.parts.append((x0, y0, x1, y1, 0 if sides[fp.ref] == "F" else 1, is_fixed, not is_fixed,
@@ -141,18 +161,28 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         pb.net_names.append(net)
     for ref, part in sorted((intent or {}).get("parts", {}).items()):
         role, claim = part.get("role"), part.get("target")
-        if model.is_uncertain(role) or role["value"] != "decap" or model.is_uncertain(claim):
+        if model.is_uncertain(role) or model.is_uncertain(claim):
+            continue
+        kind = role["value"]
+        if kind != "decap" and (not floorplan or kind not in LOCAL_BLOCK_ROLES):
             continue
         target = claim["value"]
         net, target_ref = target.get("net"), target.get("ref")
-        if not net or is_ground_net(net) or not target_ref or target_ref == ref:
+        if not target_ref or target_ref == ref or target_ref not in boxes or ref not in boxes:
             continue
-        source = part_pins.get((ref, net), [])
         numbers = set(target.get("pins") or [])
-        pins = [index for number, index in part_pins.get((target_ref, net), [])
-                if not numbers or number in numbers]
-        if len(source) == 1 and pins:
-            pb.affinities.append(([source[0][1], *pins], DECAP_AFFINITY_WEIGHT))
+        shared = {net} if net else board.fp(ref).nets & board.fp(target_ref).nets
+        if kind == "decap" and not net:
+            continue
+        for common_net in sorted(shared):
+            if is_ground_net(common_net):
+                continue
+            source = part_pins.get((ref, common_net), [])
+            pins = [index for number, index in part_pins.get((target_ref, common_net), [])
+                    if not numbers or number in numbers]
+            if len(source) == 1 and pins:
+                pb.affinities.append(([source[0][1], *pins], DECAP_AFFINITY_WEIGHT if kind == "decap" else LOCAL_BLOCK_WEIGHT))
+                pb.local_block_links += kind != "decap"
     for o in board.outline:
         pb.outers.append([tuple(p) for p in o.outer])
         pb.holes += [[tuple(p) for p in h] for h in o.holes]
@@ -169,10 +199,19 @@ def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0,
 def apply(pb: PlaceProblem, poses: list[tuple[float, float, int]]) -> Board:
     """A copy of the board with the solved poses (rotation in degrees, side from S2b)."""
     out = pb.board.copy()
+    layer_flip = {layer.canonical: other.canonical for layer, other in zip(
+        out.copper_layers, reversed(out.copper_layers), strict=True)}
+    layer_flip.update({"F.Cu": "B.Cu", "B.Cu": "F.Cu"})
     for fp, (x, y, r), part in zip(out.footprints, poses, pb.parts, strict=True):
         if part[5]:
             continue  # fixed parts keep their exact pose, odd angles included
         fp.x, fp.y, fp.rotation = round(x, 4), round(y, 4), float(r * 90 % 360)
+        if fp.side != pb.sides[fp.ref]:
+            for pad in fp.pads:
+                pad.local = (pad.local[0], -pad.local[1])
+                pad.rotation = -pad.rotation
+                pad.layers = tuple(layer_flip.get(layer, layer) for layer in pad.layers)
+            fp.courtyard.polygons = [[(x, -y) for x, y in ring] for ring in fp.courtyard.polygons]
         fp.side = pb.sides[fp.ref]
     return out
 

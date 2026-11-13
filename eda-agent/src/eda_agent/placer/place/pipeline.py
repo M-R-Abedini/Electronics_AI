@@ -17,12 +17,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .. import report as run_report
+from ..eval import legality
 from ..eval.score import evaluate
 from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
 from ..route.check import route_check
 from ..toolchain import RUNTIME_DIR
-from . import analytical, problem
+from . import analytical, escape, problem
 
 SA_MOVES_PER_PART = 4000  # declared: annealing budget scales with movable parts ...
 SA_MIN_MOVES = 200_000
@@ -33,11 +34,12 @@ LEGALIZE_STEP_MM = 0.2
 LEGALIZE_RETRIES = 2
 
 
-def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None) -> tuple:
+def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None,
+               floorplan: bool = False, reserve: bool = True) -> tuple:
     """S1 to S5 on the IR with one global stage; returns (placed board, stage report)."""
     t0 = time.monotonic()
     timings: dict[str, float] = {}
-    pb = problem.build(board, side_policy=side_policy, intent=intent)
+    pb = problem.build(board, side_policy=side_policy, intent=intent, floorplan=floorplan, reserve=reserve)
     timings["s0_s2b"] = round(time.monotonic() - t0, 2)
     movable = sum(1 for p in pb.parts if not p[5])
     t = time.monotonic()
@@ -71,19 +73,21 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
     timings["s5"] = round(time.monotonic() - t, 2)
     illegal = core.illegal_parts()
     placed = problem.apply(pb, core.positions())
+    violations = sum(not finding.fixed for finding in legality.check(placed, fixed=set(pb.fixed)))
     info = {
         "mode": mode, "side_policy": side_policy, "seed": seed, "movable": movable,
-        "fixed": pb.fixed, "decap_affinities": len(pb.affinities), "s3": s3_info,
+        "fixed": pb.fixed, "decap_affinities": len(pb.affinities) - pb.local_block_links,
+        "local_block_links": pb.local_block_links, "s3": s3_info,
         "s4_failed": [pb.refs[i] for i in failed], "s4_retries": retries,
         "cost_after_s4": after_legalize, "s5": sa, "cost_final": core.cost(),
-        "illegal_after_s5": [pb.refs[i] for i in illegal], "timings": timings,
+        "illegal_after_s5": [pb.refs[i] for i in illegal], "strict_violations": violations, "timings": timings,
         "seconds_s0_s5": round(time.monotonic() - t0, 2),
     }
     return placed, info
 
 
-def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int = 0,
-          intent: dict | None = None) -> tuple:
+def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None, floorplan: bool,
+           reserve: bool = True) -> tuple:
     """S1 to S5.  ``best`` (default) runs both global stages and keeps the legal result of lower cost.
 
     DG-F1 evidence: the analytical start won on ecc83 and pic_programmer, the
@@ -91,13 +95,16 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
     the last parts), so neither is dropped; each run reports both.
     """
     if mode != "best":
-        return _solve_one(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent)
+        return _solve_one(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                          floorplan=floorplan, reserve=reserve)
     t0 = time.monotonic()
-    results = [(m, *_solve_one(board, side_policy=side_policy, mode=m, seed=seed, intent=intent)) for m in MODES]
+    results = [(m, *_solve_one(board, side_policy=side_policy, mode=m, seed=seed, intent=intent,
+                               floorplan=floorplan, reserve=reserve))
+               for m in MODES]
 
     def rank(item):
         _m, _placed, info = item
-        return (len(info["illegal_after_s5"]) > 0 or len(info["s4_failed"]) > 0, info["cost_final"]["total"])
+        return (*_legality_key(info), info["cost_final"]["total"])
 
     mode, placed, info = min(results, key=rank)
     info = dict(info)
@@ -106,6 +113,41 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
                               "seconds": i["seconds_s0_s5"]} for m, _p, i in results}
     info["seconds_s0_s5"] = round(time.monotonic() - t0, 2)
     return placed, info
+
+
+def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int = 0,
+          intent: dict | None = None, floorplan: bool = False) -> tuple:
+    """Place the board, retrying without fanout reservations when geometry cannot fit."""
+    t0 = time.monotonic()
+    use_floorplan = bool(floorplan and intent)
+    placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=use_floorplan)
+    boxes = {fp.ref: problem.local_box(fp) for fp in board.footprints}
+    exits = escape.envelopes(board, intent or {}, boxes)
+
+    def measure(candidate):
+        flipped = {fp.ref for fp in candidate.footprints if fp.side != board.fp(fp.ref).side}
+        return escape.audit(candidate, exits, flipped=flipped)
+
+    fallback = None
+    reservations_used = use_floorplan and bool(exits)
+    if use_floorplan and exits and (info["illegal_after_s5"] or info["s4_failed"]):
+        fallback = "reserved courtyards did not legalize"
+    elif use_floorplan and exits and info["strict_violations"]:
+        fallback = "exact placement legality failed"
+    if fallback:
+        other, other_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                                   floorplan=True, reserve=False)
+        if _legality_key(other_info) <= _legality_key(info):
+            placed, info = other, other_info
+            reservations_used = False
+    info["floorplan"] = {"requested": use_floorplan, "reservations_used": reservations_used,
+                         "fallback": fallback, "escape": measure(placed)}
+    info["seconds_s0_s5"] = round(time.monotonic() - t0, 2)
+    return placed, info
+
+
+def _legality_key(info: dict) -> tuple:
+    return info["strict_violations"], len(info["illegal_after_s5"]), len(info["s4_failed"])
 
 
 def _greedy_start(pb: problem.PlaceProblem) -> list[tuple[float, float, int]]:
@@ -125,7 +167,8 @@ def _greedy_start(pb: problem.PlaceProblem) -> list[tuple[float, float, int]]:
 
 def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, side_policy: str | None = None,
                 mode: str = "best", seed: int = 0, route: bool = True,
-                router_timeout_s: int | None = None, intent_path: str | Path | None = None) -> dict:
+                router_timeout_s: int | None = None, intent_path: str | Path | None = None,
+                floorplan: bool = False) -> dict:
     """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""
     from ..intent.resolve import resolve
     from ..intent.resolve import side_policy as policy_of
@@ -137,7 +180,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = (Path(out_dir) if out_dir else RUNTIME_DIR / "place" / f"{board.name}-{stamp}").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
-    placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent)
+    placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=floorplan)
     out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb", strip_routing=True)
     routed = (route_check(out_board, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
               if route else None)
@@ -155,9 +198,9 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     rep = run_report.build(
         kind="place_board", inputs={"board": board.source, "intent": intent_info},
         config={"side_policy": side_policy, "mode": mode, "seed": seed, "w_cross": problem.WEIGHT_SIGNAL * W_CROSS,
-                "sa_moves_per_part": SA_MOVES_PER_PART},
+                "sa_moves_per_part": SA_MOVES_PER_PART, "floorplan": floorplan},
         stages={"place": info, "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
-        metrics={**evaluation["metrics"], "pro_score": evaluation["pro_score"],
+        metrics={**evaluation["metrics"], "pro_score": evaluation["pro_score"], "fanout_escape": info["floorplan"]["escape"],
                  "route": routed["metrics"] if routed else None},
         gates=gates,
         failures=(routed["failures"] if routed else []) + [
