@@ -20,6 +20,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from ..ir import Board, Footprint, Pad, is_ground_net, is_power_net
 from ..toolchain import sha256_file
@@ -30,6 +31,14 @@ MOTIF = "motif"
 SCHEMATIC_NEIGHBOR_RATIO = 1.7  # Runner-up must be this many times farther away.
 SCHEMATIC_NEIGHBOR_RADIUS = 2 / 3  # Local radius relative to the two nearest candidates' separation.
 SCHEMATIC_TARGET_CONFIDENCE = 0.8  # Soft placement evidence.
+
+
+class _PairLeg(NamedTuple):
+    chip: str
+    function: str
+    series_roles: tuple[str, ...]
+    series_refs: tuple[str, ...]
+    connector: str | None
 
 # --------------------------------------------------------------------------- facts
 POWER_FN = re.compile(r"^(VCC|VDD|VAA|AVDD|DVDD|PVDD|VDDA|VCCA|VCCB|V_\{CC[AB]?\}|VIN|VI|VBAT|VSYS|VBUS|VDDH|VDDIO|"
@@ -113,6 +122,10 @@ def _family(fp: Footprint) -> str:
         return "test_point"
     if "Jumper" in lib or p in ("JP", "W", "SJ"):
         return "jumper"
+    if p in ("BT", "BAT") and len({pad.net for pad in fp.pads if pad.net}) == 2 and re.search(
+        r"BATTERY|COIN.?CELL|\b(?:CR|BR|LR|SR)\d{2,4}\b", f"{v} {lib}", re.IGNORECASE
+    ):
+        return "battery"
     if "Crystal" in lib or p in ("Y", "XTAL") or (p == "X" and "Crystal" in lib):
         return "crystal"
     if "Oscillator" in lib or p == "OSC":
@@ -293,6 +306,7 @@ class Inference:
         for ref in sorted(self.f.fp, key=natural_key):
             kind = self.f.kind[ref]
             getattr(self, f"_{kind}", self._other)(ref, crystal_nets)
+        self._apply_schematic_branches()
         for ref, part in self.parts.items():
             target = part.get("target", {}).get("value", {})
             rail = target.get("net")
@@ -301,6 +315,46 @@ class Inference:
             candidates = target.get("candidates", []) + self.f.parts_on(rail, ("connector",))
             if schematic := self._schematic_decap_target(ref, rail, candidates):
                 part["target"] = schematic
+
+    def _apply_schematic_branches(self) -> None:
+        roles = {ref: part["role"]["value"] for ref, part in self.parts.items()}
+        pad_nets = defaultdict(set)
+        for net, pads in self.f.on_net.items():
+            for ref, pad in pads:
+                pad_nets[ref, str(pad.number)].add(net)
+        for sheet, groups in self.f.board.schematic_branches.items():
+            for group in groups:
+                group_nets = set().union(*(pad_nets[ref, pin] for ref, pin in group))
+                if len(group_nets) != 1 or any(len(pad_nets[ref, pin]) != 1 for ref, pin in group):
+                    continue
+                rail = next(iter(group_nets))
+                if rail not in self.f.rails:
+                    continue
+                members = sorted({ref for ref, _ in group}, key=natural_key)
+                load_refs = set(self.loads(rail))
+                loads = [ref for ref in members if ref in load_refs or roles[ref] == "connector"]
+                bank = [ref for ref in members if roles[ref] == "bulk_cap"]
+                driver = any(roles[ref] == "converter_inductor" or ref in self.sources[rail] for ref in members)
+                for ref in members:
+                    part = self.parts[ref]
+                    target = part.get("target", {}).get("value", {})
+                    if roles[ref] not in ("decap", "bulk_cap") or target.get("net") != rail or target.get("ref"):
+                        continue
+                    if roles[ref] == "decap" and len(loads) == 1:
+                        dest = loads[0]
+                        pins = sorted({pin for owner, pin in group if owner == dest}, key=natural_key)
+                        value = {"ref": dest, "net": rail, "pins": pins}
+                    elif not loads and len(bank) >= 2 and (driver or len(bank) >= 3):
+                        part["role"] = claim("bulk_cap", "schematic", 0.8, ref=sheet,
+                                             detail="Capacitor in a shared supply bank")
+                        value = {"scope": "rail", "net": rail}
+                    else:
+                        continue
+                    part["target"] = claim(value, "schematic", 0.8, ref=sheet,
+                                           detail="Continuous local wire: " + ", ".join(members))
+
+    def _battery(self, ref: str, _c) -> None:
+        self.set(ref, "battery", 0.85, "battery reference and cell or battery symbol on two nets")
 
     def _other(self, ref: str, _c) -> None:
         self.set(ref, "unknown", 0.0, "no rule matched")
@@ -486,7 +540,7 @@ class Inference:
             return
         if len(set(rails)) == 2 or (rails and grounds):
             if rails and grounds:
-                self.set(ref, "signal_passive", 0.5, "resistor across a rail (load or bleeder)")
+                self.set(ref, "signal_passive", 0.8, "resistor shunting a power rail to ground")
             else:
                 self.set(ref, "rail_filter", 0.7, "resistor between two rails")
             return
@@ -680,6 +734,21 @@ class Inference:
     def pairs(self, board: Board) -> list[dict]:
         out = []
         for dp in board.diff_pairs:
+            pos, neg = (self._pair_leg(net) for net in (dp.positive, dp.negative))
+            if pos and neg and pos.chip == neg.chip and pos.series_roles == neg.series_roles:
+                pp, pn = pos.function, neg.function
+                if (pos.connector is None and neg.connector is None and pos.series_refs == neg.series_refs
+                        and pos.series_roles == ("coupling_cap",)
+                        and re.fullmatch(r"C\d+\+", pp) and pn.split("/")[0] == pp[:-1] + "-"):
+                    continue  # One flying capacitor bridges both charge-pump terminals.
+                if pos.connector and pos.connector == neg.connector and set(pos.series_refs).isdisjoint(neg.series_refs):
+                    kind = self._pair_interface(dp.positive, pp, pn, pos.series_roles)
+                    if kind:
+                        out.append(claim({"positive": dp.positive, "negative": dp.negative, "kind": kind,
+                                          "routing_eligible": False}, "board", 0.85,
+                                         ref="two independent legs with matching interface endpoints",
+                                         detail=f"{pos.chip} and {pos.connector}; {pp or 'unnamed'} / {pn or 'unnamed'}"))
+                        continue
             pins = [fn(p) for n in (dp.positive, dp.negative) for _r, p in self.f.on_net.get(n, ())]
             libs = [self.f.fp[r].lib_id.upper() for n in (dp.positive, dp.negative) for r, _p in self.f.on_net.get(n, ())]
             usb = any(re.search(r"(D[+-]|DP|DM|USB)", p) for p in pins) or any("USB" in lib for lib in libs)
@@ -687,6 +756,51 @@ class Inference:
             out.append(claim({"positive": dp.positive, "negative": dp.negative, "kind": "usb" if usb else "other"},
                              MOTIF, conf, ref="net name pattern" + (" + USB pins" if usb else "")))
         return out
+
+    def _pair_leg(self, net: str) -> _PairLeg | None:
+        """Find a unique IC through unbranched two-terminal series elements."""
+        if self.f.is_rail(net):
+            return None
+        local = self.f.on_net.get(net, [])
+        for direction in (local, list(reversed(local))):
+            if len(direction) != 2:
+                break
+            ref, pad = direction[0]
+            remote, other = direction[1]
+            roles, refs, seen = [], [], {net}
+            while self.parts[remote]["role"]["value"] in ("coupling_cap", "series_resistor"):
+                fp = self.f.fp[remote]
+                remaining = {p.net for p in fp.pads if p.net and p.net not in seen}
+                if len(fp.pads) != 2 or len(remaining) != 1:
+                    break
+                nxt = remaining.pop()
+                if self.f.is_rail(nxt):
+                    break
+                roles.append(self.parts[remote]["role"]["value"])
+                refs.append(remote)
+                seen.add(nxt)
+                peers = [(r, p) for r, p in self.f.on_net[nxt] if r != remote]
+                if len(peers) != 1:
+                    break
+                remote, other = peers[0]
+            if self.f.kind[ref] == "ic" and self.f.kind[remote] == "connector":
+                return _PairLeg(ref, fn(pad), tuple(roles), tuple(refs), remote)
+            if self.f.kind[ref] == "connector" and self.f.kind[remote] == "ic":
+                return _PairLeg(remote, fn(other), tuple(reversed(roles)), tuple(reversed(refs)), ref)
+            if self.f.kind[ref] == "ic" and remote == ref and refs:
+                return _PairLeg(ref, fn(pad), tuple(roles), tuple(refs), None)
+        return None
+
+    @staticmethod
+    def _pair_interface(net: str, pos: str, neg: str, series: tuple[str, ...]) -> str | None:
+        if re.fullmatch(r"(?:ETH_)?(?:PHY_)?(?:RX|TX)P", pos) and neg == pos[:-1] + "N":
+            return "ethernet" if "ETH" in pos or "ETH" in net.upper() else None
+        if re.fullmatch(r"(?:CODEC_)?MIC\d+P", pos) and neg == pos[:-1] + "N" and "coupling_cap" in series:
+            return "analog_audio"
+        name = net.upper().split("/")[-1]
+        if re.fullmatch(r"(?:MIPI|CSI|DSI)\d*_?(?:CLK|D\d+)_?P", name):
+            return "mipi"
+        return None
 
     def blocks(self) -> list[dict]:
         groups: dict[tuple[str, str], list[str]] = defaultdict(list)
@@ -747,7 +861,7 @@ def questions(intent: dict) -> list[dict]:
         if model.is_uncertain(part["role"]):
             out.append({"ref": ref, "about": "role", "draft": role, "critical": crit,
                         "why": part["role"]["source"].get("ref", "")})
-        elif target and (model.is_uncertain(target) or tv.get("ref") is None):
+        elif target and (model.is_uncertain(target) or (tv.get("ref") is None and tv.get("scope") != "rail")):
             out.append({"ref": ref, "about": "target", "draft": role, "critical": crit,
                         "candidates": tv.get("candidates", []), "net": tv.get("net"),
                         "why": target["source"].get("ref", "")})

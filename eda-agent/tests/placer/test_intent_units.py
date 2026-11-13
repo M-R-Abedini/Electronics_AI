@@ -90,6 +90,36 @@ def _schema():
     return json.loads(model.SCHEMA_FILE.read_text(encoding="utf-8"))
 
 
+def test_same_rail_branches_choose_a_local_pin_or_a_shared_bank():
+    supply = [("+3V3", "VDD", "power_in"), ("GND", None, "passive")]
+    footprints = [_fp(f"U{i}", "logic", "IC", supply) for i in (1, 2)]
+    footprints += [_fp(f"C{i}", "100nF" if i < 3 else "22uF", "C_0402", supply) for i in range(1, 6)]
+    board = derive(Board("branches", footprints, nets=[Net("+3V3", "", 7), Net("GND", "", 7)],
+                         schematic_branches={"main": [[['C1', '1'], ['U2', '1']],
+                                                      [[f"C{i}", "1"] for i in range(2, 6)]]}))
+    intent = infer.draft(board)
+    assert intent["parts"]["C1"]["target"]["value"] == {"ref": "U2", "net": "+3V3", "pins": ["1"]}
+    assert intent["parts"]["C2"]["target"]["value"] == {"scope": "rail", "net": "+3V3"}
+    assert not intent["questions"]
+    jsonschema.validate(intent, _schema())
+
+
+def test_pair_topology_follows_series_links_and_rejects_flying_capacitor():
+    p = "passive"
+    chip = _fp("U1", "chip", "IC", [("RX_P", "ETH_PHY_RXP", p), ("RX_N", "ETH_PHY_RXN", p),
+                                    ("PUMP_P", "C2+", p), ("PUMP_N", "C2-/MODE", p)])
+    parts = [chip, _fp("J1", "jack", "Connector", [("WIRE_A", "RD+", p), ("WIRE_B", "RD-", p)]),
+             _fp("R1", "0R", "R", [("RX_P", None, p), ("WIRE_A", None, p)]),
+             _fp("R2", "0R", "R", [("RX_N", None, p), ("WIRE_B", None, p)]),
+             _fp("C1", "220nF", "C", [("PUMP_P", None, p), ("PUMP_N", None, p)])]
+    nets = [Net(n, "", 2) for n in ("RX_P", "RX_N", "WIRE_A", "WIRE_B", "PUMP_P", "PUMP_N")]
+    intent = infer.draft(derive(Board("pairs", parts, nets=nets)))
+    assert [pair["value"] for pair in intent["diff_pairs"]] == [
+        {"positive": "RX_P", "negative": "RX_N", "kind": "ethernet", "routing_eligible": False}]
+    assert not intent["questions"]
+    jsonschema.validate(intent, _schema())
+
+
 @pytest.mark.parametrize("cap_x, second_sheet, expected", [(10, "camera", "J1"), (50, "camera", None),
                                                           (-120, "camera", None), (10, "other", None)])
 def test_schematic_proximity_resolves_only_clear_local_connector_targets(cap_x, second_sheet, expected):

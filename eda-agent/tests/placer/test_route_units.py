@@ -369,7 +369,8 @@ def test_s6a_selects_links_and_taps_from_the_intent_only(monkeypatch):
         "U1": {"role": claim("ic")},
         "C1": {"role": claim("decap"), "target": claim({"ref": "U1", "net": "+3V3", "pins": ["1"]})},
         "C2": {"role": claim("decap"), "target": claim({"ref": None, "net": "+3V3", "candidates": ["U1"]}, 0.3)},
-    }, "diff_pairs": [claim({"positive": "USB+", "negative": "USB-"})]}
+    }, "diff_pairs": [claim({"positive": "USB+", "negative": "USB-"}),
+                      claim({"positive": "MIC+", "negative": "MIC-", "routing_eligible": False})]}
     reserved = []
 
     def route_pairs(_board, pairs, *, fixed, retry_coarse):
@@ -381,6 +382,7 @@ def test_s6a_selects_links_and_taps_from_the_intent_only(monkeypatch):
     monkeypatch.setattr(s6a, "_route_pairs", route_pairs)
     planned = s6a.plan(board, intent, power_first=True)
     report = planned["report"]
+    assert report["pairs"][0]["failed"] == "interface identified; routing constraints require separate verification"
     assert [(r["cap"], r["routed"]) for r in report["links"]] == [("C1", True)]  # C2's target is not settled
     # the pour is on an outer layer, which also carries signals: no locked tap via on this board
     assert report["taps"] == []

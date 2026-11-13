@@ -107,6 +107,8 @@ def solve_nets(
     power_ports: Optional[list[dict[str, Any]]] = None,
     junctions: Optional[list[dict[str, Any]]] = None,
     net_labels: Optional[list[dict[str, Any]]] = None,
+    *,
+    include_local_groups: bool = False,
 ) -> dict[str, Any]:
     """Reconstruct the netlist from schematic geometry.
 
@@ -182,6 +184,13 @@ def solve_nets(
         for names in geom_names.values() if len(names) > 1
     ]
 
+    # Preserve physical wire groups before identical power ports or labels merge them.
+    local_groups: dict[tuple, list[list[str]]] = {}
+    if include_local_groups:
+        for p in pins:
+            root = uf.find((p["x"], p["y"]))
+            local_groups.setdefault(root, []).append([p["component"], str(p["pin"])])
+
     # 4c. By-name connectivity (Altium's rule): a net label or power port ties
     #     together everything sharing its name, sheet-wide, with no wire
     #     between them. Merge every declared point of the same name.
@@ -221,7 +230,10 @@ def solve_nets(
     for members in nets.values():
         members.sort(key=lambda m: (m["component"], _pin_key(m["pin"])))
 
-    return {"nets": nets, "pin_nets": pin_nets, "name_conflicts": name_conflicts}
+    result = {"nets": nets, "pin_nets": pin_nets, "name_conflicts": name_conflicts}
+    if include_local_groups:
+        result["local_groups"] = sorted(sorted(group) for group in local_groups.values())
+    return result
 
 
 def _pin_key(pin: str):

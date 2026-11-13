@@ -4,7 +4,11 @@
 from __future__ import annotations
 
 import pytest
+from eda_agent.fileio.altium_project import read_project_sheets
+from eda_agent.fileio.altium_sch import _parse_fields, read_schematic_pins
+from eda_agent.placer.intent import infer, validate
 from eda_agent.placer.io import altium
+from eda_agent.placer.ir import Board, Footprint
 
 
 @pytest.mark.parametrize("source_id, matched", [("child\\A1", True), ("child\\other", False), ("", False)])
@@ -37,3 +41,21 @@ def test_native_pins_match_source_id_and_keep_pcb_net(tmp_path, monkeypatch, sou
     assert part.schematic_position == ((0, 125) if matched else None)
     assert not board.outline_valid
     assert any("source ID differs" in item for item in board.unknowns) is not matched
+
+
+def test_legacy_schematic_pin_fields_and_explicit_project_documents(tmp_path):
+    project = tmp_path / "design.PrjPcb"
+    sheet = tmp_path / "Power.SchDoc"
+    sheet.touch()
+    (tmp_path / "PrintOnly.SchDoc").touch()
+    project.write_text("[Document1]\nDocumentPath=Power.SchDoc\n[Print]\nDocumentPath=PrintOnly.SchDoc\n")
+    assert read_project_sheets(project) == [sheet]
+    row = _parse_fields(b"|RECORD=2|OWNERINDEX=1|DESIGNATOR=2|LOCATION.X=20|LOCATION.Y=30|PINLENGTH=10")
+    assert read_schematic_pins(sheet, records=[row])[0]["designator"] == "2"
+
+
+def test_native_intent_validation_rejects_missing_pad_connectivity():
+    board = Board("legacy", [Footprint("U1", "", "", 0, 0, 0)], source={"format": "altium_saved_intent"})
+    result = validate.validate(infer.draft(board), board)
+    assert not result["valid"]
+    assert result["errors"] == ["native Altium snapshot has no decoded component-pad net connections"]

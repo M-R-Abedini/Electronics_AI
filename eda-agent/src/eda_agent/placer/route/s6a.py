@@ -105,7 +105,10 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
         confirmed = []
         for claim in intent.get("diff_pairs", []):
             pos, neg = claim["value"]["positive"], claim["value"]["negative"]
-            if model.is_uncertain(claim):
+            if claim["value"].get("routing_eligible") is False:
+                report["pairs"].append({"pair": [pos, neg], "routed": False,
+                                        "failed": "interface identified; routing constraints require separate verification"})
+            elif model.is_uncertain(claim):
                 report["pairs"].append({"pair": [pos, neg], "routed": False, "failed": "pair not confirmed by the intent"})
             else:
                 confirmed.append((pos, neg))

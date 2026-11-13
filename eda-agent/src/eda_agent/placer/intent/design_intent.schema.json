@@ -86,7 +86,7 @@
         "esd", "connector",
         "series_resistor", "pull_up", "pull_down", "termination", "bias_resistor", "divider_resistor",
         "led", "led_resistor", "rail_filter", "signal_passive",
-        "transistor", "diode", "switch", "jumper", "test_point", "mechanical", "unknown"
+        "transistor", "diode", "switch", "jumper", "test_point", "mechanical", "battery", "unknown"
       ]
     },
     "target": {
@@ -97,8 +97,12 @@
         "ref": {"type": ["string", "null"]},
         "net": {"type": "string"},
         "pins": {"type": "array", "items": {"type": "string"}},
-        "candidates": {"type": "array", "items": {"type": "string"}}
-      }
+        "candidates": {"type": "array", "items": {"type": "string"}},
+        "scope": {"const": "rail"}
+      },
+      "if": {"required": ["scope"]},
+      "then": {"required": ["net"], "properties": {"ref": {"type": "null"},
+        "net": {"minLength": 1}, "pins": {"maxItems": 0}, "candidates": {"maxItems": 0}}}
     },
     "part": {
       "type": "object",
@@ -122,7 +126,8 @@
       "allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {
         "type": "object", "required": ["positive", "negative"], "additionalProperties": false,
         "properties": {"positive": {"type": "string"}, "negative": {"type": "string"},
-                       "kind": {"enum": ["usb", "lvds", "ethernet", "other"]}}}}}]
+                       "kind": {"enum": ["usb", "lvds", "ethernet", "mipi", "analog_audio", "other"]},
+                       "routing_eligible": {"type": "boolean"}}}}}]
     },
     "block_claim": {
       "allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {

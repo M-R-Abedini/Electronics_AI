@@ -39,6 +39,15 @@ def test_two_pins_on_one_wire_are_one_net():
     assert len(res["nets"]) == 1
 
 
+def test_local_groups_survive_equal_power_port_names():
+    pins = [_pin("C1", "1", 0, 0), _pin("U1", "2", 10, 0), _pin("C2", "1", 0, 20)]
+    wires = [{"x1": 0, "y1": 0, "x2": 10, "y2": 0}]
+    ports = [{"x": 0, "y": y, "name": "VDD"} for y in (0, 20)]
+    result = solve_nets(pins, wires, ports, include_local_groups=True)
+    assert result["local_groups"] == [[["C1", "1"], ["U1", "2"]], [["C2", "1"]]]
+    assert set(result["pin_nets"].values()) == {"VDD"}
+
+
 def test_t_junction_connects_endpoint_on_span():
     # Vertical wire's endpoint lands on the horizontal wire's span (a T).
     res = solve_nets(

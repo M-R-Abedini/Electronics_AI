@@ -26,6 +26,9 @@ def _validator() -> jsonschema.Draft202012Validator:
 def validate(intent: dict, board: Board) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
+    if (board.source.get("format") == "altium_saved_intent" and board.footprints
+            and not any(pad.net for fp in board.footprints for pad in fp.pads)):
+        errors.append("native Altium snapshot has no decoded component-pad net connections")
     for err in sorted(_validator().iter_errors(intent), key=lambda e: list(map(str, e.absolute_path))):
         where = "/".join(map(str, err.absolute_path)) or "(root)"
         errors.append(f"schema {where}: {err.message}")

@@ -33,7 +33,7 @@ ROLES = (
     "esd", "connector",
     "series_resistor", "pull_up", "pull_down", "termination", "bias_resistor", "divider_resistor",
     "led", "led_resistor", "rail_filter", "signal_passive",
-    "transistor", "diode", "switch", "jumper", "test_point", "mechanical", "unknown",
+    "transistor", "diode", "switch", "jumper", "test_point", "mechanical", "battery", "unknown",
 )
 
 # Roles whose meaning includes what they serve; the value is the role the target must have.
@@ -43,7 +43,7 @@ TARGET_ROLES = {
     "regulator_output_cap": ("converter_ic", "linear_regulator", "power_switch", "ic"),
     "converter_inductor": ("converter_ic",),
     "converter_diode": ("converter_ic",),
-    "converter_control": ("converter_ic",),
+    "converter_control": ("converter_ic", "linear_regulator", "power_switch"),
     "crystal": None,
     "crystal_load_cap": ("crystal",),
     "crystal_aux": ("crystal",),

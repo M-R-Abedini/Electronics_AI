@@ -67,10 +67,26 @@ def _first_present(params: dict[str, str], names) -> str:
     return ""
 
 
+class _Record(dict[str, str]):
+    """Altium property names are case-insensitive across SchDoc versions."""
+
+    def __setitem__(self, key: str, value: str) -> None:
+        super().__setitem__(key.upper(), value)
+
+    def __getitem__(self, key: str) -> str:
+        return super().__getitem__(key.upper())
+
+    def get(self, key: str, default=None):
+        return super().get(key.upper(), default)
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and super().__contains__(key.upper())
+
+
 def _parse_fields(payload: bytes) -> dict[str, str]:
     """Parse a ``|KEY=VALUE|...`` record body into a dict (last key wins)."""
     text = payload.rstrip(b"\x00").decode("latin-1", "replace")
-    fields: dict[str, str] = {}
+    fields: dict[str, str] = _Record()
     for part in text.split("|"):
         if "=" in part:
             key, value = part.split("=", 1)
@@ -174,7 +190,7 @@ def read_schematic_wires(path: str | Path) -> list[dict[str, Any]]:
     return segments
 
 
-def read_schematic_pins(path: str | Path) -> list[dict[str, Any]]:
+def read_schematic_pins(path: str | Path, *, records: list[dict[str, str]] | None = None) -> list[dict[str, Any]]:
     """Extract pins (RECORD=2) with owner, name, location, and orientation.
 
     Returns ``{owner_index, designator, name, x, y, length, orientation}``
@@ -185,7 +201,7 @@ def read_schematic_pins(path: str | Path) -> list[dict[str, Any]]:
     solver needs is derived from these (validated in the solver step).
     """
     pins: list[dict[str, Any]] = []
-    for rec in read_schdoc_records(path):
+    for rec in read_schdoc_records(path) if records is None else records:
         if rec.get("RECORD") != RECORD_PIN:
             continue
         conglom = _to_int(rec.get("PinConglomerate")) or 0

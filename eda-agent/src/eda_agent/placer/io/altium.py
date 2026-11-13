@@ -11,7 +11,11 @@ from ...fileio.altium_sch import (
     RECORD_PIN,
     read_schdoc_records,
     read_schematic_components,
+    read_schematic_junctions,
+    read_schematic_pins,
+    read_schematic_wires,
 )
+from ...fileio.netlist_solver import pin_electrical_end, solve_nets
 from ..geometry import rotate
 from ..ir import (
     Board,
@@ -71,6 +75,7 @@ def _read_intent_board(path: Path, project: Path, snapshot: dict) -> Board:
     }
     layers = [CopperLayer(row["name"], names[row["name"]], i) for i, row in enumerate(copper)]
     footprints, counts, matched = [], Counter(), Counter()
+    sheet_pins = defaultdict(list)
     for row in snapshot["components"]:
         ref = row["designator"]
         params = row["parameters"]
@@ -115,6 +120,14 @@ def _read_intent_board(path: Path, project: Path, snapshot: dict) -> Board:
                 ),
                 drill=(drill, drill) if drill else None, function=function, pin_type=pin_type,
             ))
+        matched["pcb_pads"] += len(pads)
+        if sheet and pads:
+            numbers = {p.number for p in pads if p.net}
+            for pin in read_schematic_pins(sheet, records=records):
+                if pin["designator"] not in numbers or pin["x"] is None or pin["y"] is None:
+                    continue
+                px, py = pin_electrical_end(pin["x"], pin["y"], pin["length"], pin["orientation"])
+                sheet_pins[sheet].append({"component": ref, "pin": pin["designator"], "x": px, "y": py})
         footprints.append(Footprint(
             ref, component.get("value") or component.get("lib_reference") or row["comment"],
             row["footprint"], x, y, rotation, side, params.get("LOCKED") == "TRUE", pads,
@@ -141,6 +154,17 @@ def _read_intent_board(path: Path, project: Path, snapshot: dict) -> Board:
     board.unknowns.extend(["native PCB placement outline and fabrication rules are unavailable in this adapter",
                            "pad geometry is limited to the saved-file reader's coverage"])
     board.unknowns.extend(snapshot["missing"])
+    if footprints and not matched["pcb_pads"]:
+        board.unknowns.append("no PCB pads decoded; electrical intent coverage is unavailable")
+    names_seen = Counter(Path(item["path"]).name for item in sheets)
+    for sheet, pins in sheet_pins.items():
+        if names_seen[sheet.name] > 1:
+            continue
+        pin_counts = Counter((p["component"], p["pin"]) for p in pins)
+        pins = [p for p in pins if pin_counts[p["component"], p["pin"]] == 1]
+        groups = solve_nets(pins, read_schematic_wires(sheet), junctions=read_schematic_junctions(sheet),
+                            include_local_groups=True)["local_groups"]
+        board.schematic_branches[sheet.name] = [group for group in groups if len(group) > 1]
     return board
 
 
