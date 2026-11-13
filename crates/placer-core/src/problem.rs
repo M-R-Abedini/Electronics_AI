@@ -505,16 +505,6 @@ impl Problem {
             .collect()
     }
 
-    /// Test a single-part proposal while its old footprint remains in the index.
-    /// The legality query already ignores the moving part's own index entry.
-    pub(crate) fn legal_proposal(&mut self, i: usize, x: f64, y: f64, r: u8) -> bool {
-        let old = (self.parts[i].x, self.parts[i].y, self.parts[i].r);
-        (self.parts[i].x, self.parts[i].y, self.parts[i].r) = (x, y, r);
-        let legal = self.legal_at(i, None);
-        (self.parts[i].x, self.parts[i].y, self.parts[i].r) = old;
-        legal
-    }
-
     // --------------------------------------------------------------- moves
     /// Move part `i` (pose already changed by the caller from `old`) and return the cost delta,
     /// updating all caches.  `undo` restores the previous caches exactly.
