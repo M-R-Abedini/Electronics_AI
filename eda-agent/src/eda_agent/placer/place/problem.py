@@ -118,7 +118,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
     part_pins: dict[tuple[str, str], list[tuple[str, int]]] = {}
     boxes = {fp.ref: local_box(fp) for fp in board.footprints}
     if floorplan and reserve and intent:
-        pb.exits = escape.envelopes(board, intent, boxes)
+        pb.exits = escape.select_reservations(escape.envelopes(board, intent, boxes))
     for i, fp in enumerate(board.footprints):
         is_fixed = fp.ref in fixed
         flip = sides[fp.ref] != fp.side

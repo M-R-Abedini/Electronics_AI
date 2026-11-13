@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 
 from shapely import STRtree
 from shapely.geometry import LineString, Polygon, box
@@ -74,6 +75,29 @@ def reserved_box(bounds: Box, exits: list[Escape]) -> Box:
         radius = exit.via_space / 2
         x0, y0, x1, y1 = min(x0, x - radius), min(y0, y - radius), max(x1, x + radius), max(y1, y + radius)
     return x0, y0, x1, y1
+
+
+def select_reservations(exits: dict[str, list[Escape]]) -> dict[str, list[Escape]]:
+    """Reserve the most crowded bank of each footprint, where adjacent exits compete for space."""
+    selected = {}
+    for ref, rows in exits.items():
+        banks: dict[Point, list[Escape]] = {}
+        for row in rows:
+            dx, dy = row.end[0] - row.start[0], row.end[1] - row.start[1]
+            direction = (float(dx > 0) - float(dx < 0), float(dy > 0) - float(dy < 0))
+            banks.setdefault(direction, []).append(row)
+        crowded = []
+        for (dx, _), bank in banks.items():
+            axis = 1 if dx else 0
+            ordered = sorted(bank, key=lambda row: row.start[axis])
+            for a, b in pairwise(ordered):
+                pitch = b.start[axis] - a.start[axis]
+                if pitch < (a.via_space + b.via_space) / 2:
+                    crowded.append((pitch / ((a.via_space + b.via_space) / 2), a, b, bank))
+        if crowded:
+            _, _, _, bank = min(crowded, key=lambda row: (row[0], -len(row[3]), row[1].pin, row[2].pin))
+            selected[ref] = bank
+    return selected
 
 
 def audit(board: Board, exits: dict[str, list[Escape]], *, flipped: set[str] | None = None) -> dict:

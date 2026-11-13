@@ -23,7 +23,7 @@ from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
 from ..route.check import route_check
 from ..toolchain import RUNTIME_DIR
-from . import analytical, escape, mechanical, problem
+from . import analytical, blocks, escape, mechanical, problem
 
 SA_MOVES_PER_PART = 4000  # declared: annealing budget scales with movable parts ...
 SA_MIN_MOVES = 200_000
@@ -52,6 +52,10 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         s3_info = {"start": "greedy spiral at the board centre"}
     else:
         raise ValueError(f"unknown mode {mode!r}")
+    priority, seeded = [], 0
+    if floorplan and intent:
+        start, priority, seeded = blocks.seed(pb, intent, start)
+        s3_info["block_seeded_parts"] = seeded
     timings["s3"] = round(time.monotonic() - t, 2)
     core = problem.rust_problem(pb, w_cross=W_CROSS)
     core.set_positions([pose if not part[5] else (part[7], part[8], part[9]) for pose, part in zip(start, pb.parts,
@@ -59,7 +63,7 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
     t = time.monotonic()
     diag = problem.board_diag(pb)
     start_poses = core.positions()
-    failed = core.legalize(LEGALIZE_STEP_MM, diag)
+    failed = core.legalize(LEGALIZE_STEP_MM, diag, priority)
     retries = 0
     while failed and retries < LEGALIZE_RETRIES:  # deterministic retry: the parts left over go first
         retries += 1
@@ -131,10 +135,11 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         return escape.audit(candidate, exits, flipped=flipped)
 
     fallback = None
-    reservations_used = use_floorplan and bool(exits)
-    if use_floorplan and exits and (info["illegal_after_s5"] or info["s4_failed"]):
+    selected = escape.select_reservations(exits) if use_floorplan else {}
+    reservations_used = bool(selected)
+    if selected and (info["illegal_after_s5"] or info["s4_failed"]):
         fallback = "reserved courtyards did not legalize"
-    elif use_floorplan and exits and info["strict_violations"]:
+    elif selected and info["strict_violations"]:
         fallback = "exact placement legality failed"
     if fallback:
         other, other_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
@@ -143,6 +148,7 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             placed, info = other, other_info
             reservations_used = False
     info["floorplan"] = {"requested": use_floorplan, "reservations_used": reservations_used,
+                         "reserved_pad_count": sum(map(len, selected.values())) if reservations_used else 0,
                          "fallback": fallback, "escape": measure(placed)}
     for row in anchors:
         ref = row["ref"]

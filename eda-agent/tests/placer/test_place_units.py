@@ -21,7 +21,7 @@ from eda_agent.placer.ir import (
     Pad,
     derive,
 )
-from eda_agent.placer.place import escape, mechanical, problem
+from eda_agent.placer.place import blocks, escape, mechanical, problem
 from eda_agent.placer.place.pipeline import solve
 
 BOX = [(-1.0, -0.6), (1.0, -0.6), (1.0, 0.6), (-1.0, 0.6)]
@@ -78,6 +78,30 @@ def test_decap_affinity_uses_nearest_allowed_pin_without_counting_crossings():
 
 def test_s1_fixes_locked_parts_only_here():
     assert problem.build(_board()).fixed == {"U1": "locked in the file"}
+
+
+def test_block_seed_respects_fixed_anchor_and_prioritizes_its_linked_part():
+    board = _board()
+    intent = {"parts": {"R1": {"role": model.claim("decap", "board", 1),
+                               "target": model.claim({"ref": "U1", "net": "A"}, "board", 1)}},
+              "blocks": [model.claim({"anchor": "U1", "members": ["U1", "R1"]}, "board", 1)]}
+    pb = problem.build(board, intent=intent, floorplan=True)
+    start = pb.poses()
+    poses, priority, count = blocks.seed(pb, intent, start)
+    assert count == 1 and priority == [0, 1]
+    assert poses[0] == start[0] and poses[2:] == start[2:]
+    assert math.dist(poses[1][:2], poses[0][:2]) < math.dist(start[1][:2], start[0][:2])
+
+
+def test_escape_reservation_selects_only_the_crowded_bank():
+    def left(pin, y):
+        return escape.Escape(pin, "A", (0, y), (-1, y), 0.3, 0.6)
+
+    def right(pin, y):
+        return escape.Escape(pin, "B", (2, y), (3, y), 0.3, 0.6)
+
+    tight = [left("1", 0), left("2", 0.3)]
+    assert escape.select_reservations({"U1": tight + [right("3", 0), right("4", 1)]}) == {"U1": tight}
 
 
 def test_cold_placement_rejects_wiring_mismatch_and_does_not_infer_anchors_from_seed(tmp_path, monkeypatch):

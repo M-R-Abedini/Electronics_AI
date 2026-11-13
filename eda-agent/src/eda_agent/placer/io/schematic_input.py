@@ -34,8 +34,9 @@ def cold_input(reference: Board, schematic: Path) -> tuple[Board, dict]:
     root = read_netlist(schematic)
     board = reference.copy()
     by_ref = {fp.ref: fp for fp in board.footprints}
-    if len(by_ref) != len(board.footprints):
-        raise ValueError("PCB template contains duplicate footprint references")
+    counts = Counter(fp.ref for fp in board.footprints)
+    if any(counts[fp.ref] > 1 and fp.nets for fp in board.footprints):
+        raise ValueError("PCB template contains duplicate electrically connected footprint references")
     nodes = {(fp.ref, str(pad.number)) for fp in board.footprints for pad in fp.pads if pad.net}
     pcb_groups = defaultdict(set)
     for fp in board.footprints:
