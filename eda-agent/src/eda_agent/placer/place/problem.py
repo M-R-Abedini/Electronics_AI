@@ -109,7 +109,7 @@ def _quarter(rotation: float) -> int:
 
 
 def build(board: Board, *, side_policy: str = "expert", intent: dict | None = None,
-          floorplan: bool = False, reserve: bool = True) -> PlaceProblem:
+          floorplan: bool = False, reserve: bool | None = None) -> PlaceProblem:
     fixed = fixed_parts(board)
     sides = assign_sides(board, side_policy, fixed)
     planes = zone_nets(board) | {n for r in board.stackup.roles for n in r.nets}
@@ -117,7 +117,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
     pin_of: dict[str, list[int]] = {}
     part_pins: dict[tuple[str, str], list[tuple[str, int]]] = {}
     boxes = {fp.ref: local_box(fp) for fp in board.footprints}
-    if floorplan and reserve and intent:
+    if (floorplan if reserve is None else reserve) and intent:
         pb.exits = escape.select_reservations(escape.envelopes(board, intent, boxes))
     for i, fp in enumerate(board.footprints):
         is_fixed = fp.ref in fixed

@@ -152,6 +152,8 @@ def _stats(v: list[float]) -> dict:
 
 def critical_loops_intent(board: Board, intent: dict) -> dict:
     """Distances that the roles in ``intent`` make critical, measured pad to pad on the same net."""
+    from ..intent import model
+
     fps = {fp.ref: fp for fp in board.footprints}
     parts = intent.get("parts", {})
 
@@ -174,7 +176,7 @@ def critical_loops_intent(board: Board, intent: dict) -> dict:
                     best = d if best is None or d < best else best
         return best
 
-    decap, load, crystal, unsettled = [], [], [], 0
+    decap, resolved_decap, load, crystal, unsettled = [], [], [], [], 0
     for ref, part in parts.items():
         role = part["role"]["value"]
         tv = (part.get("target") or {}).get("value") or {}
@@ -188,12 +190,15 @@ def critical_loops_intent(board: Board, intent: dict) -> dict:
         if role == "decap":
             decap.append(d)
             unsettled += tv.get("ref") is None
+            if tv.get("ref") and not model.is_uncertain(part["role"]) and not model.is_uncertain(part.get("target")):
+                resolved_decap.append(d)
         elif role == "crystal_load_cap":
             load.append(d)
         elif role == "crystal":
             crystal.append(d)
     return {"method": "design_intent v1 (role targets; candidates measured to the nearest)",
             "intent_sha256": None, "decap_pin_distance": _stats(decap), "decaps_with_candidate_targets": unsettled,
+            "resolved_decap_pin_distance": _stats(resolved_decap),
             "crystal_ic_distance": _stats(crystal), "crystal_load_distance": _stats(load)}
 
 

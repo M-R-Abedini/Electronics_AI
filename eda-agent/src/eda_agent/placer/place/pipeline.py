@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .. import report as run_report
 from ..eval import legality
+from ..eval.metrics import critical_loops_intent, crossings
 from ..eval.score import evaluate
 from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
@@ -35,7 +36,7 @@ LEGALIZE_RETRIES = 2
 
 
 def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None,
-               floorplan: bool = False, reserve: bool = True) -> tuple:
+               floorplan: bool = False, reserve: bool = False) -> tuple:
     """S1 to S5 on the IR with one global stage; returns (placed board, stage report)."""
     t0 = time.monotonic()
     timings: dict[str, float] = {}
@@ -91,7 +92,7 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
 
 
 def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None, floorplan: bool,
-           reserve: bool = True) -> tuple:
+           reserve: bool = False) -> tuple:
     """S1 to S5.  ``best`` (default) runs both global stages and keeps the legal result of lower cost.
 
     DG-F1 evidence: the analytical start won on ecc83 and pic_programmer, the
@@ -126,7 +127,8 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
     original = board
     board, anchors = mechanical.anchor(board, intent or {})
     use_floorplan = bool(floorplan and intent)
-    placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=use_floorplan)
+    placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                         floorplan=use_floorplan, reserve=use_floorplan)
     boxes = {fp.ref: problem.local_box(fp) for fp in board.footprints}
     exits = escape.envelopes(board, intent or {}, boxes)
 
@@ -147,9 +149,17 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         if _legality_key(other_info) <= _legality_key(info):
             placed, info = other, other_info
             reservations_used = False
+    guard = None
+    if use_floorplan:
+        baseline, baseline_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                                         floorplan=False)
+        guard = _compare_floorplans(placed, info, baseline, baseline_info, intent)
+        if guard["use_baseline"]:
+            placed, info = baseline, baseline_info
+            reservations_used = False
     info["floorplan"] = {"requested": use_floorplan, "reservations_used": reservations_used,
                          "reserved_pad_count": sum(map(len, selected.values())) if reservations_used else 0,
-                         "fallback": fallback, "escape": measure(placed)}
+                         "fallback": fallback, "quality_guard": guard, "escape": measure(placed)}
     for row in anchors:
         ref = row["ref"]
         placed.fp(ref).locked = original.fp(ref).locked
@@ -161,6 +171,24 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
 
 def _legality_key(info: dict) -> tuple:
     return info["strict_violations"], len(info["illegal_after_s5"]), len(info["s4_failed"])
+
+
+def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, intent: dict) -> dict:
+    """Prefer the baseline when an equally legal trial worsens a measured objective."""
+    def metrics(board):
+        loops = critical_loops_intent(board, intent)
+        distance = loops["resolved_decap_pin_distance"]
+        return {"crossings": crossings(board)["count"], "decap_p90_mm": distance.get("p90_mm"),
+                "resolved_decaps": distance["n"], "all_decap_p90_mm": loops["decap_pin_distance"].get("p90_mm")}
+
+    trial, base = metrics(candidate), metrics(baseline)
+    regressions = [key for key in ("crossings", "decap_p90_mm")
+                   if base[key] is not None and (trial[key] is None or trial[key] > base[key])]
+    if trial["resolved_decaps"] < base["resolved_decaps"]:
+        regressions.append("resolved_decap_coverage")
+    trial_key, base_key = _legality_key(candidate_info), _legality_key(baseline_info)
+    return {"candidate": trial, "baseline": base, "regressions": regressions,
+            "use_baseline": base_key < trial_key or (base_key == trial_key and bool(regressions))}
 
 
 def _greedy_start(pb: problem.PlaceProblem) -> list[tuple[float, float, int]]:

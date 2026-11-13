@@ -22,7 +22,7 @@ from eda_agent.placer.ir import (
     derive,
 )
 from eda_agent.placer.place import blocks, escape, mechanical, problem
-from eda_agent.placer.place.pipeline import solve
+from eda_agent.placer.place.pipeline import _compare_floorplans, solve
 
 BOX = [(-1.0, -0.6), (1.0, -0.6), (1.0, 0.6), (-1.0, 0.6)]
 
@@ -78,6 +78,18 @@ def test_decap_affinity_uses_nearest_allowed_pin_without_counting_crossings():
 
 def test_s1_fixes_locked_parts_only_here():
     assert problem.build(_board()).fixed == {"U1": "locked in the file"}
+
+
+def test_floorplan_guard_protects_resolved_decap_tail():
+    base = _board()
+    candidate = base.copy()
+    candidate.fp("R1").x = -50
+    intent = {"parts": {"R1": {"role": model.claim("decap", "board", 1),
+                               "target": model.claim({"ref": "U1", "net": "A"}, "board", 1)}}}
+    legal = {"strict_violations": 0, "illegal_after_s5": [], "s4_failed": []}
+    result = _compare_floorplans(candidate, legal, base, legal, intent)
+    assert result["use_baseline"] and "decap_p90_mm" in result["regressions"]
+    assert not _compare_floorplans(base, legal, base, legal, intent)["use_baseline"]
 
 
 def test_block_seed_respects_fixed_anchor_and_prioritizes_its_linked_part():
