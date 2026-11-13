@@ -24,6 +24,8 @@ pub fn legalize(p: &mut Problem, step: f64, max_radius: f64, first: &[usize]) ->
         p.set_placed(i, false);
     }
     let k_max = (max_radius / step).ceil() as i64;
+    // All parts and rotations visit the same offsets. Cache each ring on demand.
+    let mut rings = Vec::new();
     let mut failed = Vec::new();
     for &i in &order {
         let (tx, ty, tr) = (p.parts[i].x, p.parts[i].y, p.parts[i].r);
@@ -35,27 +37,17 @@ pub fn legalize(p: &mut Problem, step: f64, max_radius: f64, first: &[usize]) ->
         'rot: for &r in &rotations {
             p.parts[i].r = r;
             for k in 0..=k_max {
-                let mut ring: Vec<(i64, i64)> = Vec::new();
-                if k == 0 {
-                    ring.push((0, 0));
-                } else {
-                    for d in -k..=k {
-                        ring.extend([(d, -k), (d, k)]);
-                        if d != -k && d != k {
-                            ring.extend([(-k, d), (k, d)]);
-                        }
-                    }
-                    ring.sort_by_key(|&(a, b)| (a * a + b * b, a, b));
+                if rings.len() == k as usize {
+                    rings.push(legalize_ring(k));
                 }
-                for (a, b) in ring {
+                for &(a, b) in &rings[k as usize] {
                     p.parts[i].x = round3(tx + a as f64 * step);
                     p.parts[i].y = round3(ty + b as f64 * step);
-                    p.set_placed(i, true);
                     if p.legal_at(i, None) {
+                        p.set_placed(i, true);
                         found = true;
                         break 'rot;
                     }
-                    p.set_placed(i, false);
                 }
             }
         }
@@ -69,6 +61,21 @@ pub fn legalize(p: &mut Problem, step: f64, max_radius: f64, first: &[usize]) ->
     }
     p.rebuild();
     failed
+}
+
+fn legalize_ring(k: i64) -> Vec<(i64, i64)> {
+    if k == 0 {
+        return vec![(0, 0)];
+    }
+    let mut ring = Vec::new();
+    for d in -k..=k {
+        ring.extend([(d, -k), (d, k)]);
+        if d != -k && d != k {
+            ring.extend([(-k, d), (k, d)]);
+        }
+    }
+    ring.sort_unstable_by_key(|&(a, b)| (a * a + b * b, a, b));
+    ring
 }
 
 #[inline]
@@ -127,9 +134,19 @@ pub fn anneal(
         if kind < 6 || (kind < 8 && !p.parts[i].can_rotate) || (kind >= 8 && !swap) {
             let nx = round3(x + rng.random_range(-radius..=radius));
             let ny = round3(y + rng.random_range(-radius..=radius));
+            if !p.legal_proposal(i, nx, ny, r) {
+                stats.iterations += 1;
+                stats.illegal += 1;
+                continue;
+            }
             undos.push(p.apply_pose(i, nx, ny, r));
         } else if kind < 8 {
             let nr = (r + rng.random_range(1..4u8)) & 3;
+            if !p.legal_proposal(i, x, y, nr) {
+                stats.iterations += 1;
+                stats.illegal += 1;
+                continue;
+            }
             undos.push(p.apply_pose(i, x, y, nr));
         } else {
             let side = p.parts[i].side;
@@ -148,7 +165,7 @@ pub fn anneal(
             moved.push(j);
         }
         stats.iterations += 1;
-        let legal = moved.iter().all(|&m| p.legal_at(m, None));
+        let legal = moved.len() == 1 || moved.iter().all(|&m| p.legal_at(m, None));
         let delta = p.cost() - before;
         let accept = legal && (delta <= 0.0 || rng.random::<f64>() < (-delta / t).exp());
         if accept {
@@ -283,5 +300,20 @@ mod tests {
             p.parts.iter().map(|q| (q.x, q.y, q.r)).collect::<Vec<_>>()
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn proposal_check_leaves_placement_and_cost_intact() {
+        let mut p = chain(3);
+        assert!(legalize(&mut p, 0.25, 20.0, &[]).is_empty());
+        let original = (p.parts[1].x, p.parts[1].y, p.parts[1].r);
+        let other = (p.parts[0].x, p.parts[0].y);
+        let cost = p.cost();
+        assert!(p.legal_proposal(1, original.0, original.1, original.2));
+        assert!(!p.legal_proposal(1, other.0, other.1, original.2));
+        assert!(!p.legal_proposal(1, -5.0, -5.0, original.2));
+        assert_eq!((p.parts[1].x, p.parts[1].y, p.parts[1].r), original);
+        assert_eq!(p.cost(), cost);
+        assert!(p.illegal_parts().is_empty());
     }
 }

@@ -118,6 +118,10 @@ pub fn segment_hits_rect_interior(a: (f64, f64), b: (f64, f64), r: &Rect) -> boo
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let mut t0 = 0.0_f64;
     let mut t1 = 1.0_f64;
+    // An edge whose bounding box misses the open rectangle cannot enter it.
+    if a.0.max(b.0) < x0 || a.0.min(b.0) > x1 || a.1.max(b.1) < y0 || a.1.min(b.1) > y1 {
+        return false;
+    }
     for (p, q) in [
         (-dx, a.0 - x0),
         (dx, x1 - a.0),

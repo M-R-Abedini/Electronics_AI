@@ -235,8 +235,7 @@ impl PartIndex {
                 out.extend_from_slice(&self.cells[side as usize][j * self.nx + i]);
             }
         }
-        out.sort_unstable();
-        out.dedup();
+        // Legality stops at the first overlap; duplicate IDs do not affect the result.
     }
 }
 
@@ -479,9 +478,6 @@ impl Problem {
             x1: r.x1 - self.gap / 2.0,
             y1: r.y1 - self.gap / 2.0,
         };
-        if !self.parts[i].fixed && !self.outline.contains_rect(&inner) {
-            return false;
-        }
         let side = self.parts[i].side;
         let mut cand = std::mem::take(&mut self.scratch);
         self.index.candidates(side, &r, &mut cand);
@@ -500,13 +496,23 @@ impl Problem {
             }
         }
         self.scratch = cand;
-        ok
+        ok && (self.parts[i].fixed || self.outline.contains_rect(&inner))
     }
 
     pub fn illegal_parts(&mut self) -> Vec<usize> {
         (0..self.parts.len())
             .filter(|&i| !self.parts[i].fixed && !self.legal_at(i, None))
             .collect()
+    }
+
+    /// Test a single-part proposal while its old footprint remains in the index.
+    /// The legality query already ignores the moving part's own index entry.
+    pub(crate) fn legal_proposal(&mut self, i: usize, x: f64, y: f64, r: u8) -> bool {
+        let old = (self.parts[i].x, self.parts[i].y, self.parts[i].r);
+        (self.parts[i].x, self.parts[i].y, self.parts[i].r) = (x, y, r);
+        let legal = self.legal_at(i, None);
+        (self.parts[i].x, self.parts[i].y, self.parts[i].r) = old;
+        legal
     }
 
     // --------------------------------------------------------------- moves
