@@ -23,7 +23,7 @@ from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
 from ..route.check import route_check
 from ..toolchain import RUNTIME_DIR
-from . import analytical, escape, problem
+from . import analytical, escape, mechanical, problem
 
 SA_MOVES_PER_PART = 4000  # declared: annealing budget scales with movable parts ...
 SA_MIN_MOVES = 200_000
@@ -119,6 +119,8 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
           intent: dict | None = None, floorplan: bool = False) -> tuple:
     """Place the board, retrying without fanout reservations when geometry cannot fit."""
     t0 = time.monotonic()
+    original = board
+    board, anchors = mechanical.anchor(board, intent or {})
     use_floorplan = bool(floorplan and intent)
     placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=use_floorplan)
     boxes = {fp.ref: problem.local_box(fp) for fp in board.footprints}
@@ -142,6 +144,11 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             reservations_used = False
     info["floorplan"] = {"requested": use_floorplan, "reservations_used": reservations_used,
                          "fallback": fallback, "escape": measure(placed)}
+    for row in anchors:
+        ref = row["ref"]
+        placed.fp(ref).locked = original.fp(ref).locked
+        info["fixed"][ref] = f"mechanical constraint ({row['mode']})"
+    info["mechanical_anchors"] = anchors
     info["seconds_s0_s5"] = round(time.monotonic() - t0, 2)
     return placed, info
 

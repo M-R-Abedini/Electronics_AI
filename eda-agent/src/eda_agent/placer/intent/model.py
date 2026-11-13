@@ -116,6 +116,9 @@ def canonical(intent: dict) -> dict:
     for key in ("parts", "nets", "power_w"):
         if key in doc:
             doc[key] = dict(sorted(doc[key].items(), key=lambda kv: natural_key(kv[0])))
+    for claim in doc.get("mechanical", {}).values():
+        if "angles_deg" in claim["value"]:
+            claim["value"]["angles_deg"].sort()
     return doc
 
 

@@ -40,6 +40,20 @@ def validate(intent: dict, board: Board) -> dict:
     if intent["board"]["sha256"] != board.source.get("sha256"):
         warnings.append("board sha256 differs from the intent's: written for another revision of the file")
     roles = {ref: part["role"]["value"] for ref, part in intent["parts"].items()}
+    regions = {area["uuid"]: area for area in board.rule_areas}
+    layer_names = {layer.name: layer.canonical for layer in board.copper_layers}
+    for ref, constraint in intent.get("mechanical", {}).items():
+        value = constraint["value"]
+        if ref not in fps:
+            errors.append(f"mechanical/{ref}: no such footprint")
+        if not model.is_hard(constraint) or constraint["source"].get("kind") not in ("board", "user", "datasheet"):
+            errors.append(f"mechanical/{ref}: requires confirmed or high-confidence mechanical evidence")
+        if value["mode"] == "region":
+            region = regions.get(value["region"])
+            if not region or region["keepout"].get("footprints"):
+                errors.append(f"mechanical/{ref}: region must be an existing rule area that allows footprints")
+            elif ref in fps and not any(layer_names.get(layer, layer) == f"{fps[ref].side}.Cu" for layer in region["layers"]):
+                errors.append(f"mechanical/{ref}: region does not cover the footprint side")
     for ref, part in intent["parts"].items():
         if ref not in fps:
             errors.append(f"parts/{ref}: no such reference on the board")
@@ -90,7 +104,7 @@ def validate(intent: dict, board: Board) -> dict:
 
     claims = [p["role"] for p in intent["parts"].values()] + [p["target"] for p in intent["parts"].values()
                                                                if p.get("target")]
-    claims += intent.get("diff_pairs", []) + intent.get("blocks", [])
+    claims += intent.get("diff_pairs", []) + intent.get("blocks", []) + list(intent.get("mechanical", {}).values())
     by_source: dict[str, int] = {}
     for c in claims:
         by_source[c["source"]["kind"]] = by_source.get(c["source"]["kind"], 0) + 1

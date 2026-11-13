@@ -73,8 +73,11 @@ class PlacerService:
             ("inspect",
              ("Read a KiCad board (any format KiCad 10 opens) into the placer's Board IR and summarise it: layers and "
              "inferred layer roles, stackup and its policy (locked / needs_decision), sides, net classes, "
-             "differential pairs, fixed parts, unknowns and capacity warnings. Read-only; does not modify the board."),
-             {"board_path": _STRING}, ["board_path"], True),
+              "differential pairs, fixed parts, unknowns and capacity warnings. Returns measured mechanical evidence "
+              "for connectors or the supplied mechanical_refs. An optional intent supplies reviewed dependencies. "
+              "Read-only; does not modify the board."),
+             {"board_path": _STRING, "intent_path": _STRING,
+              "mechanical_refs": {"type": "array", "items": _STRING}}, ["board_path"], True),
             ("score",
              ("Evaluate the board's current placement: legality gate (courtyard overlap, outline, keepouts), HPWL, "
              "ratsnest crossings, RUDY, critical loops from the design intent, regularity and Pro Score v1. With "
@@ -122,8 +125,16 @@ class PlacerService:
                 for name, description, props, required, readonly in definitions]
 
     # ------------------------------------------------------------------ tools
-    def inspect(self, board_path: str) -> dict:
-        return _inspect_summary(read_board(board_path))
+    def inspect(self, board_path: str, intent_path: str | None = None,
+                mechanical_refs: list[str] | None = None) -> dict:
+        from .intent.resolve import resolve
+        from .place.mechanical import evidence
+
+        board = read_board(board_path)
+        summary = _inspect_summary(board)
+        intent, _ = resolve(board, intent_path)
+        summary["mechanical"] = evidence(board, intent, set(mechanical_refs) if mechanical_refs is not None else None)
+        return summary
 
     def intent_draft(self, board_path: str, out_path: str | None = None) -> dict:
         from .intent import infer, model
@@ -167,6 +178,7 @@ class PlacerService:
             "placed_board": rep["artifacts"]["placed_board"],
             "mode": info["mode"], "candidates": info.get("candidates"), "fixed_parts": info["fixed"],
             "seconds_s0_s5": info["seconds_s0_s5"],
+            "mechanical_anchors": info["mechanical_anchors"],
             "floorplan": {k: v for k, v in info["floorplan"].items() if k != "escape"},
             "metrics": {"hpwl_signal_mm": rep["metrics"]["hpwl"]["signal_mm"],
                         "crossings": rep["metrics"]["crossings"]["count"],

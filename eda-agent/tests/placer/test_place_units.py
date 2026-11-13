@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import math
 
+import pytest
 from eda_agent.placer.eval.score import evaluate
+from eda_agent.placer.intent import infer, model, validate
 from eda_agent.placer.ir import (
     Board,
     CopperLayer,
@@ -17,7 +19,7 @@ from eda_agent.placer.ir import (
     Pad,
     derive,
 )
-from eda_agent.placer.place import escape, problem
+from eda_agent.placer.place import escape, mechanical, problem
 from eda_agent.placer.place.pipeline import solve
 
 BOX = [(-1.0, -0.6), (1.0, -0.6), (1.0, 0.6), (-1.0, 0.6)]
@@ -74,6 +76,32 @@ def test_decap_affinity_uses_nearest_allowed_pin_without_counting_crossings():
 
 def test_s1_fixes_locked_parts_only_here():
     assert problem.build(_board()).fixed == {"U1": "locked in the file"}
+
+
+def test_mechanical_constraints_preserve_pose_and_find_a_region_anchor():
+    board = _board()
+    board.fp("R1").rotation = 17
+    board.rule_areas = [{"uuid": "slot", "layers": ["F.Cu"], "keepout": {},
+                         "polygons": [[(1, 14), (6, 14), (6, 19), (1, 19)]]}]
+    intent = infer.draft(board)
+    intent["mechanical"] = {
+        "R1": model.claim({"mode": "preserve"}, "board", 1),
+        "R2": model.claim({"mode": "region", "region": "slot", "angles_deg": [90]}, "board", 1),
+    }
+    assert validate.validate(intent, board)["valid"]
+    anchored, rows = mechanical.anchor(board, intent)
+    assert anchored.fp("R1").position == board.fp("R1").position
+    assert anchored.fp("R1").rotation == 17
+    assert rows[1]["angle_deg"] == 90
+    assert all(anchored.fp(ref).locked and not board.fp(ref).locked for ref in ("R1", "R2"))
+    assert anchored.fp("R2").position == (3.5, 16.5)
+    board.rule_areas[0]["layers"] = ["B.Cu"]
+    assert not validate.validate(intent, board)["valid"]
+    board.rule_areas[0]["layers"] = ["F.Cu"]
+    board.rule_areas[0]["keepout"]["footprints"] = True
+    assert not validate.validate(intent, board)["valid"]
+    with pytest.raises(ValueError, match="missing usable placement region"):
+        mechanical.anchor(board, intent)
 
 
 def test_floorplan_reserves_and_audits_rule_sized_pad_exits():
