@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import math
+from xml.etree import ElementTree
 
 import pytest
 from eda_agent.placer.eval.score import evaluate
 from eda_agent.placer.intent import infer, model, validate
+from eda_agent.placer.io import schematic_input
 from eda_agent.placer.ir import (
     Board,
     CopperLayer,
@@ -76,6 +78,28 @@ def test_decap_affinity_uses_nearest_allowed_pin_without_counting_crossings():
 
 def test_s1_fixes_locked_parts_only_here():
     assert problem.build(_board()).fixed == {"U1": "locked in the file"}
+
+
+def test_cold_placement_rejects_wiring_mismatch_and_does_not_infer_anchors_from_seed(tmp_path, monkeypatch):
+    board = _board()
+    board.outline = [Outline([(0, 0), (20, 0), (20, 20), (15, 20), (15, 5), (5, 5), (5, 20), (0, 20)])]
+    sch = tmp_path / "test.kicad_sch"
+    sch.write_text("(kicad_sch)", encoding="utf-8")
+    root = ElementTree.Element("export")
+    nets = ElementTree.SubElement(root, "nets")
+    for name, pads in board.net_pads().items():
+        net = ElementTree.SubElement(nets, "net", name=name)
+        for fp, pad in pads:
+            ElementTree.SubElement(net, "node", ref=fp.ref, pin=pad.number, pinfunction="PORT")
+    monkeypatch.setattr(schematic_input, "read_netlist", lambda _: root)
+    cold, report = schematic_input.cold_input(board, sch)
+    assert problem.fixed_parts(cold) == problem.fixed_parts(board)
+    assert cold.fp("R1").position != board.fp("R1").position
+    assert cold.fp("R1").pads[0].function == "PORT"
+    assert report["reset_poses"] > 0
+    nets[0][0].set("pin", "wrong")
+    with pytest.raises(ValueError, match="does not match PCB endpoints"):
+        schematic_input.cold_input(board, sch)
 
 
 def test_mechanical_constraints_preserve_pose_and_find_a_region_anchor():

@@ -175,25 +175,46 @@ def _greedy_start(pb: problem.PlaceProblem) -> list[tuple[float, float, int]]:
 def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, side_policy: str | None = None,
                 mode: str = "best", seed: int = 0, route: bool = True,
                 router_timeout_s: int | None = None, intent_path: str | Path | None = None,
-                floorplan: bool = False) -> dict:
+                floorplan: bool = False, schematic_path: str | Path | None = None) -> dict:
     """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""
     from ..intent.resolve import resolve
     from ..intent.resolve import side_policy as policy_of
 
     src = Path(board_path).resolve()
-    board = read_board(src)
+    reference = read_board(src)
+    board, cold = reference, None
+    if schematic_path is not None:
+        from ..io.schematic_input import cold_input
+
+        board, cold = cold_input(reference, Path(schematic_path).resolve(strict=True))
     intent, intent_info = resolve(board, intent_path)
     side_policy = policy_of(intent, side_policy)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = (Path(out_dir) if out_dir else RUNTIME_DIR / "place" / f"{board.name}-{stamp}").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=floorplan)
-    out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb", strip_routing=True)
+    if cold is not None:
+        for ref, reason in cold["anchors"].items():
+            placed.fp(ref).locked = reference.fp(ref).locked
+            info["fixed"][ref] = reason
+        cold["assembly_sides"] = side_policy
+        if info["movable"] == 0 and cold["reset_poses"]:
+            raise RuntimeError("cold placement did not expose any reset footprints to the solver")
+        info["cold_input"] = cold
+    out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb", strip_routing=True,
+                            strip_zones=cold is not None)
     routed = (route_check(out_board, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
               if route else None)
     fixed = set(info["fixed"])
     evaluation = evaluate(placed, routed["metrics"] if routed else None, fixed, intent)
-    page = gallery([Panel(f"{board.name} (expert)", board, evaluate(board, fixed=fixed, intent=intent)),
+    reference_for_score = reference
+    if cold is not None:
+        reference_for_score = board.copy()
+        for fp in reference_for_score.footprints:
+            source = reference.fp(fp.ref)
+            fp.x, fp.y, fp.rotation, fp.locked = source.x, source.y, source.rotation, source.locked
+    reference_evaluation = evaluate(reference_for_score, fixed=fixed, intent=intent)
+    page = gallery([Panel(f"{board.name} (reference)", reference_for_score, reference_evaluation),
                     Panel(f"{board.name} (placer v2, {mode})",
                           read_board(routed["artifacts"]["routed_board"]) if routed else placed, evaluation,
                           routed["metrics"] if routed else None)],
@@ -214,6 +235,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
             {"stage": "legality", "cause": f["kind"], "refs": f["refs"]}
             for f in evaluation["legality"]["findings"] if not f["fixed"]],
         artifacts={"run_dir": str(run_dir), "placed_board": str(out_board), "gallery": str(page)},
+        reference_evaluation=reference_evaluation if cold is not None else None,
     )
     run_report.write(rep, run_dir / "run_report.json")
     return rep

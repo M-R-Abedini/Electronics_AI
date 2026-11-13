@@ -612,7 +612,9 @@ def place(board_path, placement_json, out_board, strip_routing, out_json):
         if "locked" in pose:
             fp.SetLocked(bool(pose["locked"]))
         moved += 1
-    removed = list(board.GetTracks()) if strip_routing == "1" else []
+    removed = list(board.GetTracks()) if strip_routing in ("1", "2") else []
+    if strip_routing == "2":
+        removed.extend(zone for zone in board.Zones() if not zone.GetIsRuleArea())
     for item in removed:
         board.Remove(item)
     pcbnew.SaveBoard(out_board, board)

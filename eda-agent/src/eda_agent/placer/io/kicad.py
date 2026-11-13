@@ -183,7 +183,8 @@ def read_board(path: str | Path) -> Board:
 # --------------------------------------------------------------------------
 # writing
 # --------------------------------------------------------------------------
-def write_board(src: str | Path, board: Board, dst: str | Path, *, strip_routing: bool = False) -> Path:
+def write_board(src: str | Path, board: Board, dst: str | Path, *, strip_routing: bool = False,
+                strip_zones: bool = False) -> Path:
     """Write ``board``'s placement into a new file ``dst`` (never ``src``) with its project sidecars."""
     src, dst = Path(src).resolve(), Path(dst).resolve()
     if src == dst:
@@ -196,7 +197,7 @@ def write_board(src: str | Path, board: Board, dst: str | Path, *, strip_routing
         placement = Path(tmp) / "placement.json"
         placement.write_text(json.dumps(board.placement()), encoding="utf-8")
         result_path = Path(tmp) / "result.json"
-        run_helper("place", src, placement, dst, "1" if strip_routing else "0", result_path)
+        run_helper("place", src, placement, dst, "2" if strip_zones else "1" if strip_routing else "0", result_path)
         result = json.loads(result_path.read_text(encoding="utf-8"))
     if result["missing"]:
         raise KiCadAdapterError(f"{len(result['missing'])} footprints of the placement are not on the board")

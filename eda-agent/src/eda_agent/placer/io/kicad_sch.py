@@ -87,7 +87,7 @@ def _references(symbol: list) -> set[str]:
     return {r for r in refs if r and not r.endswith("?") and not r.startswith("#")}
 
 
-def read_pins(sch: Path) -> dict[str, dict[str, SchPin]]:
+def read_pins(sch: Path, *, positions: dict | None = None) -> dict[str, dict[str, SchPin]]:
     """``{reference: {pin number: SchPin}}`` for every symbol placed on one schematic sheet file."""
     tree = _parse(sch.read_text(encoding="utf-8", errors="replace"))
     root = next((n for n in tree if isinstance(n, list) and n and n[0] == "kicad_sch"), None)
@@ -106,6 +106,10 @@ def read_pins(sch: Path) -> dict[str, dict[str, SchPin]]:
         pins = library.get(name, {})
         for ref in _references(symbol):
             out.setdefault(ref, {}).update(pins)  # the units of one part are separate symbols with one reference
+            if positions is not None:
+                at = next(iter(_children(symbol, "at")), [])
+                if len(at) >= 3:
+                    positions.setdefault(ref, set()).add((str(sch), float(_s(at[1])), float(_s(at[2]))))
     return out
 
 

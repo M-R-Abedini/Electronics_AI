@@ -215,6 +215,7 @@ class Board:
     teardrops: int = 0  # counted only; KiCad regenerates them
     drc_severities: dict[str, str] = field(default_factory=dict)  # project overrides, e.g. ignore
     schematic_branches: dict[str, list[list[list[str]]]] = field(default_factory=dict)
+    placement_anchors: dict[str, str] | None = None  # Explicit anchors for a cold placement input.
 
     def __post_init__(self) -> None:
         self.reindex()

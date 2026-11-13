@@ -50,6 +50,9 @@ def local_box(fp: Footprint) -> tuple[float, float, float, float]:
 
 def fixed_parts(board: Board) -> dict[str, str]:
     """S1: reference -> reason for every part the placer must not move."""
+    if board.placement_anchors is not None:
+        return {fp.ref: board.placement_anchors.get(fp.ref, "locked in the file") for fp in board.footprints
+                if fp.locked or fp.ref in board.placement_anchors}
     out: dict[str, str] = {}
     outline = board_polygon(board)
     edge = outline.exterior if outline is not None and outline.geom_type == "Polygon" else None
