@@ -20,12 +20,14 @@ from dataclasses import dataclass, field
 
 from ..eval.legality import board_polygon, courtyard_polygon
 from ..eval.metrics import zone_nets
+from ..intent import model
 from ..ir import Board, Footprint, is_ground_net
 
 CONNECTOR_PREFIXES = ("J", "P", "CN", "CON", "USB")  # not "X": crystals in some libraries
 EDGE_DISTANCE_MM = 1.5  # declared: a connector this close to the outline edge is an edge connector (StickHub JSTs: 1.125 mm)
 WEIGHT_SIGNAL = 1.0
 WEIGHT_PLANE_NET = 0.2
+DECAP_AFFINITY_WEIGHT = 3.0  # local supply distance in mm, weighted relative to signal HPWL
 GAP_MM = 0.0  # declared: extra courtyard gap; courtyards already carry the library's clearance
 
 
@@ -84,6 +86,7 @@ class PlaceProblem:
     pins: list[tuple[int, float, float]] = field(default_factory=list)
     nets: list[tuple[list[int], float, bool]] = field(default_factory=list)
     net_names: list[str] = field(default_factory=list)
+    affinities: list[tuple[list[int], float]] = field(default_factory=list)
     outers: list[list[tuple[float, float]]] = field(default_factory=list)
     holes: list[list[tuple[float, float]]] = field(default_factory=list)
 
@@ -95,12 +98,13 @@ def _quarter(rotation: float) -> int:
     return round(rotation / 90.0) % 4
 
 
-def build(board: Board, *, side_policy: str = "expert") -> PlaceProblem:
+def build(board: Board, *, side_policy: str = "expert", intent: dict | None = None) -> PlaceProblem:
     fixed = fixed_parts(board)
     sides = assign_sides(board, side_policy, fixed)
     planes = zone_nets(board) | {n for r in board.stackup.roles for n in r.nets}
     pb = PlaceProblem(board=board, refs=[fp.ref for fp in board.footprints], fixed=fixed, sides=sides)
     pin_of: dict[str, list[int]] = {}
+    part_pins: dict[tuple[str, str], list[tuple[str, int]]] = {}
     for i, fp in enumerate(board.footprints):
         is_fixed = fp.ref in fixed
         flip = sides[fp.ref] != fp.side
@@ -127,6 +131,7 @@ def build(board: Board, *, side_policy: str = "expert") -> PlaceProblem:
                 wx, wy = fp.pad_world(pad)
                 lx, ly = wx - fp.x, wy - fp.y
             pin_of.setdefault(pad.net, []).append(len(pb.pins))
+            part_pins.setdefault((fp.ref, pad.net), []).append((str(pad.number), len(pb.pins)))
             pb.pins.append((i, lx, ly))
     for net, pins in sorted(pin_of.items()):
         if len(pins) < 2 or is_ground_net(net):
@@ -134,6 +139,20 @@ def build(board: Board, *, side_policy: str = "expert") -> PlaceProblem:
         plane = net in planes
         pb.nets.append((pins, WEIGHT_PLANE_NET if plane else WEIGHT_SIGNAL, not plane))
         pb.net_names.append(net)
+    for ref, part in sorted((intent or {}).get("parts", {}).items()):
+        role, claim = part.get("role"), part.get("target")
+        if model.is_uncertain(role) or role["value"] != "decap" or model.is_uncertain(claim):
+            continue
+        target = claim["value"]
+        net, target_ref = target.get("net"), target.get("ref")
+        if not net or is_ground_net(net) or not target_ref or target_ref == ref:
+            continue
+        source = part_pins.get((ref, net), [])
+        numbers = set(target.get("pins") or [])
+        pins = [index for number, index in part_pins.get((target_ref, net), [])
+                if not numbers or number in numbers]
+        if len(source) == 1 and pins:
+            pb.affinities.append(([source[0][1], *pins], DECAP_AFFINITY_WEIGHT))
     for o in board.outline:
         pb.outers.append([tuple(p) for p in o.outer])
         pb.holes += [[tuple(p) for p in h] for h in o.holes]
@@ -143,7 +162,8 @@ def build(board: Board, *, side_policy: str = "expert") -> PlaceProblem:
 def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0, gap: float = GAP_MM):
     from placer_core import PlacementProblem
 
-    return PlacementProblem(pb.parts, pb.pins, pb.nets, pb.outers, pb.holes, gap, w_hpwl, w_cross)
+    args = (pb.parts, pb.pins, pb.nets, pb.outers, pb.holes, gap, w_hpwl, w_cross)
+    return PlacementProblem(*args, affinities=pb.affinities) if pb.affinities else PlacementProblem(*args)
 
 
 def apply(pb: PlaceProblem, poses: list[tuple[float, float, int]]) -> Board:
@@ -183,6 +203,9 @@ def reference_cost(pb: PlaceProblem, poses: list[tuple[float, float, int]], *, w
                           + (max(p[1] for p in pts) - min(p[1] for p in pts)))
         if crossing and 2 <= len(pins) <= 16:
             edges += [(a, b, n) for a, b in mst_edges(pts) if a != b]
+    for pins, weight in pb.affinities:
+        origin = xy(pins[0])
+        hpwl += weight * min(math.dist(origin, xy(index)) for index in pins[1:])
     crossings = sum(1 for i in range(len(edges)) for j in range(i + 1, len(edges))
                     if edges[i][2] != edges[j][2] and segments_cross(edges[i][0], edges[i][1], edges[j][0], edges[j][1]))
     return {"hpwl": hpwl, "crossings": float(crossings), "total": w_hpwl * hpwl + w_cross * crossings}

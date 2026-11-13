@@ -117,9 +117,10 @@ def v1_constructor(board: Board, seed: int = 0) -> tuple[Board, dict]:
 
 def placer_v2(board: Board, seed: int = 0) -> tuple[Board, dict]:
     """The 2.0 placer (S1 to S5), sides from the expert (P2)."""
+    from .intent.infer import draft
     from .place.pipeline import solve
 
-    return solve(board, side_policy="expert", mode="best", seed=seed)
+    return solve(board, side_policy="expert", mode="best", seed=seed, intent=draft(board))
 
 
 BASELINES: dict[str, Callable[[Board, int], tuple[Board, dict]]] = {

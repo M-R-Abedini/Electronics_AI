@@ -252,6 +252,7 @@ mod tests {
                 pins: vec![2 * i + 1, 2 * i + 2],
                 weight: 1.0,
                 crossing: true,
+                nearest: false,
             })
             .collect();
         let outline = Outline {

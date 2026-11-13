@@ -33,11 +33,11 @@ LEGALIZE_STEP_MM = 0.2
 LEGALIZE_RETRIES = 2
 
 
-def _solve_one(board, *, side_policy: str, mode: str, seed: int) -> tuple:
+def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None) -> tuple:
     """S1 to S5 on the IR with one global stage; returns (placed board, stage report)."""
     t0 = time.monotonic()
     timings: dict[str, float] = {}
-    pb = problem.build(board, side_policy=side_policy)
+    pb = problem.build(board, side_policy=side_policy, intent=intent)
     timings["s0_s2b"] = round(time.monotonic() - t0, 2)
     movable = sum(1 for p in pb.parts if not p[5])
     t = time.monotonic()
@@ -73,7 +73,8 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int) -> tuple:
     placed = problem.apply(pb, core.positions())
     info = {
         "mode": mode, "side_policy": side_policy, "seed": seed, "movable": movable,
-        "fixed": pb.fixed, "s3": s3_info, "s4_failed": [pb.refs[i] for i in failed], "s4_retries": retries,
+        "fixed": pb.fixed, "decap_affinities": len(pb.affinities), "s3": s3_info,
+        "s4_failed": [pb.refs[i] for i in failed], "s4_retries": retries,
         "cost_after_s4": after_legalize, "s5": sa, "cost_final": core.cost(),
         "illegal_after_s5": [pb.refs[i] for i in illegal], "timings": timings,
         "seconds_s0_s5": round(time.monotonic() - t0, 2),
@@ -81,7 +82,8 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int) -> tuple:
     return placed, info
 
 
-def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int = 0) -> tuple:
+def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int = 0,
+          intent: dict | None = None) -> tuple:
     """S1 to S5.  ``best`` (default) runs both global stages and keeps the legal result of lower cost.
 
     DG-F1 evidence: the analytical start won on ecc83 and pic_programmer, the
@@ -89,9 +91,9 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
     the last parts), so neither is dropped; each run reports both.
     """
     if mode != "best":
-        return _solve_one(board, side_policy=side_policy, mode=mode, seed=seed)
+        return _solve_one(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent)
     t0 = time.monotonic()
-    results = [(m, *_solve_one(board, side_policy=side_policy, mode=m, seed=seed)) for m in MODES]
+    results = [(m, *_solve_one(board, side_policy=side_policy, mode=m, seed=seed, intent=intent)) for m in MODES]
 
     def rank(item):
         _m, _placed, info = item
@@ -135,7 +137,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = (Path(out_dir) if out_dir else RUNTIME_DIR / "place" / f"{board.name}-{stamp}").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
-    placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed)
+    placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent)
     out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb", strip_routing=True)
     routed = (route_check(out_board, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
               if route else None)

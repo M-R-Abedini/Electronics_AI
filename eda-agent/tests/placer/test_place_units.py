@@ -48,6 +48,30 @@ def test_rust_cost_matches_python_reference():
     assert rust["crossings"] == ref["crossings"]
 
 
+def test_decap_affinity_uses_nearest_allowed_pin_without_counting_crossings():
+    board = _board()
+    chip, cap = board.fp("U1"), board.fp("R1")
+    chip.pads = [Pad("1", "A", (-0.6, 0), (0.3, 0.3)),
+                 Pad("2", "A", (0.6, 0), (0.3, 0.3)),
+                 Pad("3", "A", (0, 0), (0.3, 0.3))]
+    role = {"value": "decap", "confidence": 0.9}
+    target = {"value": {"ref": "U1", "net": "A", "pins": ["2", "3"]}, "confidence": 0.9}
+    intent = {"parts": {cap.ref: {"role": role, "target": target}}}
+
+    with_intent = problem.build(board, intent=intent)
+    without = problem.build(board)
+    assert len(with_intent.affinities) == 1
+    actual = problem.rust_problem(with_intent).cost()
+    plain = problem.rust_problem(without).cost()
+    expected = min(math.dist(cap.pad_world(cap.pads[0]), chip.pad_world(pin)) for pin in chip.pads[1:])
+    assert math.isclose(actual["hpwl"] - plain["hpwl"], expected * problem.DECAP_AFFINITY_WEIGHT)
+    assert actual["crossings"] == plain["crossings"]
+    assert math.isclose(actual["total"], problem.reference_cost(with_intent, with_intent.poses())["total"])
+
+    target["confidence"] = 0.1
+    assert not problem.build(board, intent=intent).affinities
+
+
 def test_s1_fixes_locked_parts_only_here():
     assert problem.build(_board()).fixed == {"U1": "locked in the file"}
 

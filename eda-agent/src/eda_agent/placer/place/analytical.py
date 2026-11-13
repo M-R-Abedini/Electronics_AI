@@ -72,6 +72,10 @@ class Analytical:
         self.pin_net = np.array(net_of, dtype=int)
         self.net_start = np.flatnonzero(np.r_[True, self.pin_net[1:] != self.pin_net[:-1]]) if net_of else np.array([0])
         self.net_w = np.array(weights, dtype=float)
+        self.affinities = [
+            (pb.pins[group[0]], [pb.pins[index] for index in group[1:]], weight)
+            for group, weight in pb.affinities
+        ]
         # grid over the board's bounding box
         xs = [p[0] for ring in pb.outers for p in ring]
         ys = [p[1] for ring in pb.outers for p in ring]
@@ -160,12 +164,39 @@ class Analytical:
         return wl, w[self.pin_net] * (gp - gm)
 
     def wirelength(self, gamma: float) -> tuple[float, np.ndarray, np.ndarray]:
+        if not self.net_w.size:
+            grad_x, grad_y = np.zeros(self.n), np.zeros(self.n)
+            return self.local_affinity(grad_x, grad_y), grad_x, grad_y
         px, py = self._pins_xy()
         wx, gx = self._wa(px, gamma)
         wy, gy = self._wa(py, gamma)
         grad_x = np.bincount(self.pin_part, weights=gx, minlength=self.n)
         grad_y = np.bincount(self.pin_part, weights=gy, minlength=self.n)
-        return wx + wy, grad_x, grad_y
+        local = self.local_affinity(grad_x, grad_y)
+        return wx + wy + local, grad_x, grad_y
+
+    def local_affinity(self, grad_x: np.ndarray | None = None, grad_y: np.ndarray | None = None,
+                       *, affinities=None) -> float:
+        cost = 0.0
+
+        def position(pin):
+            part, lx, ly = pin
+            dx, dy = ((lx, ly), (ly, -lx), (-lx, -ly), (-ly, lx))[self.r[part]]
+            return self.x[part] + dx, self.y[part] + dy
+
+        for source, targets, weight in self.affinities if affinities is None else affinities:
+            x, y = position(source)
+            positions = [(target[0], *position(target)) for target in targets]
+            part, tx, ty = min(positions, key=lambda p: math.hypot(x - p[1], y - p[2]))
+            distance = math.hypot(x - tx, y - ty)
+            cost += weight * distance
+            if grad_x is not None and grad_y is not None and distance > 1e-12:
+                dx, dy = weight * (x - tx) / distance, weight * (y - ty) / distance
+                grad_x[source[0]] += dx
+                grad_y[source[0]] += dy
+                grad_x[part] -= dx
+                grad_y[part] -= dy
+        return cost
 
     # -------------------------------------------------------------- density
     def density(self) -> tuple[float, np.ndarray, np.ndarray, float]:
@@ -212,21 +243,26 @@ class Analytical:
     def choose_rotations(self, gamma: float) -> int:
         changed = 0
         for k in self.movable:
-            if not self.can_rotate[k] or not np.any(self.pin_part == k):
+            if not self.can_rotate[k]:
                 continue
             nets = np.unique(self.pin_net[self.pin_part == k])
             mask = np.isin(self.pin_net, nets)
+            local = [affinity for affinity in self.affinities
+                     if affinity[0][0] == k or any(pin[0] == k for pin in affinity[1])]
+            if not nets.size and not local:
+                continue
             best_r, best = int(self.r[k]), None
             for r in (self.r[k], (self.r[k] + 1) % 4, (self.r[k] + 2) % 4, (self.r[k] + 3) % 4):
                 self.r[k] = r
                 px, py = self._pins_xy()
                 cost = 0.0
-                for v in (px, py):
+                for v in (px, py) if nets.size else ():
                     sel = v[mask]
                     nn = self.pin_net[mask]
                     starts = np.flatnonzero(np.r_[True, nn[1:] != nn[:-1]])
                     cost += float(np.sum((np.maximum.reduceat(sel, starts) - np.minimum.reduceat(sel, starts))
                                          * self.net_w[nn[starts]]))
+                cost += self.local_affinity(affinities=local)
                 if best is None or cost < best - 1e-9:
                     best, best_r = cost, int(r)
             if best_r != self.r[k]:

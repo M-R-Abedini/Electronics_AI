@@ -71,7 +71,7 @@ struct PlacementProblem {
 #[pymethods]
 impl PlacementProblem {
     #[new]
-    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross))]
+    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parts: Vec<PartRow>,
@@ -82,6 +82,7 @@ impl PlacementProblem {
         gap: f64,
         w_hpwl: f64,
         w_cross: f64,
+        affinities: Option<Vec<(Vec<usize>, f64)>>,
     ) -> PyResult<Self> {
         let n = parts.len();
         if let Some(bad) = pins.iter().find(|p| p.0 >= n) {
@@ -98,6 +99,17 @@ impl PlacementProblem {
             return Err(pyo3::exceptions::PyIndexError::new_err(format!(
                 "net of unknown pin {bad}"
             )));
+        }
+        let affinities = affinities.unwrap_or_default();
+        if affinities.iter().any(|(group, weight)| {
+            group.len() < 2
+                || group.iter().any(|&p| p >= pins.len())
+                || !weight.is_finite()
+                || *weight < 0.0
+        }) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "invalid pin affinity",
+            ));
         }
         let parts = parts
             .into_iter()
@@ -121,7 +133,14 @@ impl PlacementProblem {
                 pins,
                 weight,
                 crossing,
+                nearest: false,
             })
+            .chain(affinities.into_iter().map(|(pins, weight)| Net {
+                pins,
+                weight,
+                crossing: false,
+                nearest: true,
+            }))
             .collect();
         Ok(PlacementProblem {
             inner: Problem::new(

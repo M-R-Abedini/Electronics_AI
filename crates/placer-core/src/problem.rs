@@ -32,6 +32,7 @@ pub struct Net {
     pub pins: Vec<usize>,
     pub weight: f64,
     pub crossing: bool,
+    pub nearest: bool,
 }
 
 type Seg = ((f64, f64), (f64, f64));
@@ -389,9 +390,20 @@ impl Problem {
     }
 
     fn compute_net_hpwl(&self, n: usize) -> f64 {
-        let pins = &self.nets[n].pins;
+        let net = &self.nets[n];
+        let pins = &net.pins;
         if pins.len() < 2 {
             return 0.0;
+        }
+        if net.nearest {
+            let (x, y) = self.pin_xy(pins[0]);
+            return pins[1..]
+                .iter()
+                .map(|&pin| {
+                    let (tx, ty) = self.pin_xy(pin);
+                    (x - tx).hypot(y - ty)
+                })
+                .fold(f64::INFINITY, f64::min);
         }
         let (mut x0, mut x1, mut y0, mut y1) = (
             f64::INFINITY,
@@ -682,11 +694,13 @@ mod tests {
                 pins: vec![0, 1],
                 weight: 1.0,
                 crossing: true,
+                nearest: false,
             },
             Net {
                 pins: vec![2, 3],
                 weight: 1.0,
                 crossing: true,
+                nearest: false,
             },
         ];
         Problem::new(parts, pins, nets, square(), 0.0, 1.0, 10.0)
