@@ -39,3 +39,26 @@ def test_golden_compare_scores_only_filled_rows(tmp_path):
         w.writerows(rows)
     rep = impedance_golden.compare(path)
     assert rep["compared"] == 1 and abs(rep["rows"][0]["error"]) < 0.02
+    assert not rep["gates"][0]["passed"] and len(rep["missing_cases"]) == rep["of"] - 1
+
+
+@pytest.mark.parametrize(("column", "value", "message"), [
+    ("polar_z0", "nan", "finite and positive"),
+    ("H1", "2", "measured geometry differs"),
+    ("id", "SM02", "duplicate Polar case"),
+])
+def test_golden_compare_rejects_invalid_reference_rows(tmp_path, column, value, message):
+    path = impedance_golden.write_cases(tmp_path / "cases.csv")
+    with path.open(encoding="utf-8-sig") as fh:
+        rows = list(csv.DictReader(fh))
+    rows[0].update(polar_z0="50")
+    if column == "id":
+        rows[1][column] = rows[0][column]
+    else:
+        rows[0][column] = value
+    with path.open("w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=impedance_golden.FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+    with pytest.raises(ValueError, match=message):
+        impedance_golden.compare(path)

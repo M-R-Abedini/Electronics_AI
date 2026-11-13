@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -90,26 +91,44 @@ def write_cases(path: Path) -> Path:
 
 
 def compare(path: Path) -> dict:
-    geoms = {cid: g for cid, g, _note in cases()}
+    geoms = {cid: (g, _row(cid, g, note)) for cid, g, note in cases()}
     rows = []
+    seen = set()
     with path.open(encoding="utf-8-sig") as fh:
-        for r in csv.DictReader(fh):
-            g = geoms.get(r["id"])
-            key = "polar_zdiff" if g and g.coupled else "polar_z0"
-            if g is None or not (r.get(key) or "").strip():
+        reader = csv.DictReader(fh)
+        if not set(FIELDS[:-1]).issubset(reader.fieldnames or ()):
+            raise ValueError("Polar CSV is missing required case columns")
+        for r in reader:
+            cid = r["id"]
+            if cid not in geoms or cid in seen:
+                raise ValueError(f"unknown or duplicate Polar case: {cid!r}")
+            seen.add(cid)
+            g, expected = geoms[cid]
+            key = "polar_zdiff" if g.coupled else "polar_z0"
+            if not (r.get(key) or "").strip():
                 continue
+            if r["polar_structure"] != expected["polar_structure"] or any(
+                (float(r[field].replace(",", ".")) if r[field] else None) != (float(expected[field]) if expected[field] else None)
+                for field in FIELDS[2:-3]
+            ):
+                raise ValueError(f"{cid}: measured geometry differs from the reference case")
             polar = float(r[key].replace(",", "."))
+            if not math.isfinite(polar) or polar <= 0:
+                raise ValueError(f"{cid}: Polar impedance must be finite and positive")
             res = solve(g)
             ours = res["zdiff"] if g.coupled else res["z0"]
             rows.append({"id": r["id"], "structure": g.structure, "polar": polar, "field": ours,
-                         "closed": closed(g), "error": round((ours - polar) / polar, 4), "diff": g.coupled})
+                         "closed": closed(g), "error": (ours - polar) / polar, "diff": g.coupled})
     se = [abs(r["error"]) for r in rows if not r["diff"]]
     df = [abs(r["error"]) for r in rows if r["diff"]]
-    gates = [{"name": "single_ended_max_error", "value": max(se) if se else None, "op": "<=", "threshold": SE_GATE,
+    missing = sorted(set(geoms) - {r["id"] for r in rows})
+    gates = [{"name": "polar_case_coverage", "value": len(rows), "op": "==", "threshold": len(geoms),
+              "passed": not missing},
+             {"name": "single_ended_max_error", "value": max(se) if se else None, "op": "<=", "threshold": SE_GATE,
               "passed": bool(se) and max(se) <= SE_GATE},
              {"name": "differential_max_error", "value": max(df) if df else None, "op": "<=", "threshold": DIFF_GATE,
               "passed": bool(df) and max(df) <= DIFF_GATE}]
-    return {"rows": rows, "compared": len(rows), "of": len(geoms), "gates": gates}
+    return {"rows": rows, "compared": len(rows), "of": len(geoms), "missing_cases": missing, "gates": gates}
 
 
 def main(argv: list[str] | None = None) -> int:
