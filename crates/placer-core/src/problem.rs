@@ -53,6 +53,53 @@ struct EdgeIndex {
     epoch: u32,
 }
 
+#[derive(Clone, Copy)]
+struct EdgeGrid {
+    x0: f64,
+    y0: f64,
+    cell: f64,
+    nx: usize,
+    ny: usize,
+}
+
+impl EdgeGrid {
+    fn index(self, value: f64, origin: f64, count: usize) -> usize {
+        (((value - origin) / self.cell).floor().max(0.0) as usize).min(count - 1)
+    }
+
+    /// Visit the columns touched by the segment in each row. Boundary cells
+    /// extend beyond the grid because the index clamps out-of-board poses.
+    fn rows(self, (a, b): Seg) -> impl Iterator<Item = (usize, usize, usize)> {
+        let ((ax, ay), (bx, by)) = if a.1 <= b.1 { (a, b) } else { (b, a) };
+        let dy = by - ay;
+        let dx = bx - ax;
+        let scale = ax.abs().max(ay.abs()).max(bx.abs()).max(by.abs());
+        let eps = self.cell * 1e-9 + 8.0 * f64::EPSILON * scale;
+        let j0 = self.index(ay - eps, self.y0, self.ny);
+        let j1 = self.index(by + eps, self.y0, self.ny);
+        (j0..=j1).map(move |j| {
+            let lower = self.y0 + j as f64 * self.cell;
+            let start = if j == 0 || dy == 0.0 {
+                0.0
+            } else {
+                ((lower - eps - ay) / dy).clamp(0.0, 1.0)
+            };
+            let end = if j == self.ny - 1 || dy == 0.0 {
+                1.0
+            } else {
+                ((lower + self.cell + eps - ay) / dy).clamp(0.0, 1.0)
+            };
+            let x1 = ax + start * dx;
+            let x2 = ax + end * dx;
+            (
+                j,
+                self.index(x1.min(x2) - eps, self.x0, self.nx),
+                self.index(x1.max(x2) + eps, self.x0, self.nx),
+            )
+        })
+    }
+}
+
 impl EdgeIndex {
     fn new(bounds: Rect, cell: f64, nets: usize) -> Self {
         let nx = (((bounds.x1 - bounds.x0) / cell).ceil() as usize).max(1);
@@ -72,17 +119,14 @@ impl EdgeIndex {
         }
     }
 
-    fn span(&self, s: &Seg) -> (usize, usize, usize, usize) {
-        let c =
-            |v: f64, o: f64, n: usize| (((v - o) / self.cell).floor().max(0.0) as usize).min(n - 1);
-        let (ax, bx) = (s.0.0.min(s.1.0), s.0.0.max(s.1.0));
-        let (ay, by) = (s.0.1.min(s.1.1), s.0.1.max(s.1.1));
-        (
-            c(ax, self.x0, self.nx),
-            c(bx, self.x0, self.nx),
-            c(ay, self.y0, self.ny),
-            c(by, self.y0, self.ny),
-        )
+    fn grid(&self) -> EdgeGrid {
+        EdgeGrid {
+            x0: self.x0,
+            y0: self.y0,
+            cell: self.cell,
+            nx: self.nx,
+            ny: self.ny,
+        }
     }
 
     fn insert(&mut self, s: Seg, net: u32) {
@@ -97,8 +141,7 @@ impl EdgeIndex {
                 (self.edges.len() - 1) as u32
             }
         };
-        let (i0, i1, j0, j1) = self.span(&s);
-        for j in j0..=j1 {
+        for (j, i0, i1) in self.grid().rows(s) {
             for i in i0..=i1 {
                 self.cells[j * self.nx + i].push(id);
             }
@@ -110,8 +153,7 @@ impl EdgeIndex {
         let ids = std::mem::take(&mut self.net_edges[net]);
         for id in ids {
             let s = self.edges[id as usize].0;
-            let (i0, i1, j0, j1) = self.span(&s);
-            for j in j0..=j1 {
+            for (j, i0, i1) in self.grid().rows(s) {
                 for i in i0..=i1 {
                     let cell = &mut self.cells[j * self.nx + i];
                     if let Some(k) = cell.iter().position(|&e| e == id) {
@@ -133,8 +175,7 @@ impl EdgeIndex {
                 self.stamp.iter_mut().for_each(|v| *v = 0);
                 self.epoch = 1;
             }
-            let (i0, i1, j0, j1) = self.span(s);
-            for j in j0..=j1 {
+            for (j, i0, i1) in self.grid().rows(*s) {
                 for i in i0..=i1 {
                     for &id in &self.cells[j * self.nx + i] {
                         if self.stamp[id as usize] == self.epoch {
@@ -630,6 +671,32 @@ pub struct Undo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn grid_matches_brute_force_after_removing_and_reinserting(
+            coords in prop::collection::vec(prop::array::uniform4(-30i32..=50), 2..30),
+        ) {
+            let bounds = Rect { x0: 0.0, y0: 0.0, x1: 20.0, y1: 20.0 };
+            let edges: Vec<_> = coords.iter().enumerate().map(|(i, &[a,b,c,d])| {
+                (((a as f64, b as f64), (c as f64, d as f64)), i as u32 % 4)
+            }).collect();
+            let mut index = EdgeIndex::new(bounds, 2.0, 4);
+            for &(seg, net) in &edges { index.insert(seg, net); }
+            prop_assert_eq!(index.crossings_against(&edges, &[]), 2 * crossings_within(&edges));
+            let changed: Vec<_> = edges.iter().copied().filter(|e| e.1 < 2).collect();
+            let expected = changed.iter().map(|(a, _)| edges.iter().filter(|(b, net)| {
+                *net >= 2 && segments_cross(a.0, a.1, b.0, b.1)
+            }).count()).sum::<usize>();
+            prop_assert_eq!(index.crossings_against(&changed, &[0, 1]), expected);
+            index.remove_net(1);
+            let kept: Vec<_> = edges.iter().copied().filter(|e| e.1 != 1).collect();
+            prop_assert_eq!(index.crossings_against(&kept, &[]), 2 * crossings_within(&kept));
+            for &(seg, net) in edges.iter().filter(|e| e.1 == 1) { index.insert(seg, net); }
+            prop_assert_eq!(index.crossings_against(&edges, &[]), 2 * crossings_within(&edges));
+        }
+    }
 
     fn square() -> Outline {
         Outline {
