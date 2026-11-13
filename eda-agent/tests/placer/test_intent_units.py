@@ -90,6 +90,24 @@ def _schema():
     return json.loads(model.SCHEMA_FILE.read_text(encoding="utf-8"))
 
 
+@pytest.mark.parametrize("cap_x, second_sheet, expected", [(10, "camera", "J1"), (50, "camera", None),
+                                                          (-120, "camera", None), (10, "other", None)])
+def test_schematic_proximity_resolves_only_clear_local_connector_targets(cap_x, second_sheet, expected):
+    supply = [("+3V3", "VDD", "power_in"), ("GND", None, "passive")]
+    cap = _fp("C1", "100nF", "C_0402", supply, x=100, sheet="camera")
+    left = _fp("J1", "Camera", "Connector", supply, x=200, sheet="camera")
+    right = _fp("J2", "Camera", "Connector", supply, x=101, sheet=second_sheet)
+    cap.schematic_position, left.schematic_position, right.schematic_position = (cap_x, 0), (0, 0), (100, 0)
+    board = derive(Board("two-ports", [cap, left, right], nets=[Net("+3V3", "", 3), Net("GND", "", 3)]))
+    intent = infer.draft(board)
+    target = intent["parts"]["C1"]["target"]
+    assert target["value"]["ref"] == expected
+    assert any(q.get("ref") == "C1" for q in intent["questions"]) == (expected is None)
+    if expected:
+        assert target["value"]["pins"] == ["1"]
+        assert target["source"]["kind"] == "schematic" and not model.is_hard(target)
+
+
 def test_roles_and_targets_on_a_synthetic_board():
     intent = infer.draft(_board())
     role = {r: p["role"]["value"] for r, p in intent["parts"].items()}

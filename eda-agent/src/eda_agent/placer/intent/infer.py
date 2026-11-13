@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Deterministic role inference from the netlist (plan F2, task 2: "motifs").
 
-Only netlist facts are used: reference prefix, footprint library name, value,
-pin functions and electrical types, net names, schematic sheet and topology a
-few hops out.  The placement is never read, so the same intent comes out of
+Netlist facts and schematic evidence are used: reference prefix, footprint
+library name, value, pin functions and types, nets, topology and symbol positions.
+The PCB placement is never read, so the same intent comes out of
 any placement of the same design (placing from scratch must not see the
 expert's answer, P2).
 
@@ -16,6 +16,7 @@ items become questions for the client model (with datasheets) or the user.
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -26,6 +27,9 @@ from . import model
 from .model import claim, natural_key
 
 MOTIF = "motif"
+SCHEMATIC_NEIGHBOR_RATIO = 1.7  # Runner-up must be this many times farther away.
+SCHEMATIC_NEIGHBOR_RADIUS = 2 / 3  # Local radius relative to the two nearest candidates' separation.
+SCHEMATIC_TARGET_CONFIDENCE = 0.8  # Soft placement evidence.
 
 # --------------------------------------------------------------------------- facts
 POWER_FN = re.compile(r"^(VCC|VDD|VAA|AVDD|DVDD|PVDD|VDDA|VCCA|VCCB|V_\{CC[AB]?\}|VIN|VI|VBAT|VSYS|VBUS|VDDH|VDDIO|"
@@ -265,12 +269,38 @@ class Inference:
             return list(refs)
         return [r for r in refs if self.f.fp[r].sheet == self.f.fp[near].sheet]
 
+    def _schematic_decap_target(self, ref: str, rail: str, candidates: list[str]) -> dict | None:
+        cap = self.f.fp[ref]
+        if not cap.sheet or cap.schematic_position is None:
+            return None
+        local = [self.f.fp[r] for r in set(candidates) if self.f.fp[r].sheet == cap.sheet]
+        if len(local) < 2 or any(fp.schematic_position is None for fp in local):
+            return None
+        ranked = sorted((math.dist(cap.schematic_position, fp.schematic_position), fp.ref) for fp in local)
+        (nearest, winner), (second, runner_up) = ranked[:2]
+        spacing = math.dist(self.f.fp[winner].schematic_position, self.f.fp[runner_up].schematic_position)
+        if not spacing or second < SCHEMATIC_NEIGHBOR_RATIO * nearest or nearest > SCHEMATIC_NEIGHBOR_RADIUS * spacing:
+            return None
+        return claim(
+            {"ref": winner, "net": rail, "pins": self.power_pins(winner, rail)},
+            "schematic", SCHEMATIC_TARGET_CONFIDENCE, ref=cap.sheet,
+            detail=f"{ref} is {nearest:.1f} sheet units from {winner} and {second:.1f} from {runner_up} on {rail}",
+        )
+
     # ---- passes
     def run(self) -> None:
         crystal_nets = self.crystal_nets()
         for ref in sorted(self.f.fp, key=natural_key):
             kind = self.f.kind[ref]
             getattr(self, f"_{kind}", self._other)(ref, crystal_nets)
+        for ref, part in self.parts.items():
+            target = part.get("target", {}).get("value", {})
+            rail = target.get("net")
+            if part["role"]["value"] != "decap" or not rail or target.get("ref"):
+                continue
+            candidates = target.get("candidates", []) + self.f.parts_on(rail, ("connector",))
+            if schematic := self._schematic_decap_target(ref, rail, candidates):
+                part["target"] = schematic
 
     def _other(self, ref: str, _c) -> None:
         self.set(ref, "unknown", 0.0, "no rule matched")
@@ -690,7 +720,7 @@ def _parse_ohms(value: str) -> float | None:
 
 
 def draft(board: Board) -> dict:
-    """Intent drafted from the netlist alone, with the questions it could not settle."""
+    """Intent drafted from netlist and schematic evidence, with unresolved questions."""
     inf = Inference(board)
     inf.run()
     intent = {

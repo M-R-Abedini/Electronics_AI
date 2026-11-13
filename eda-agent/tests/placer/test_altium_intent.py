@@ -12,7 +12,7 @@ def test_native_pins_match_source_id_and_keep_pcb_net(tmp_path, monkeypatch, sou
     pcb, project = tmp_path / "board.PcbDoc", tmp_path / "board.PrjPcb"
     pcb.write_bytes(b"pcb snapshot")
     symbols = {"U1": [
-        (tmp_path / "power.SchDoc", {"unique_id": "A1", "value": "Regulator"},
+        (tmp_path / "power.SchDoc", {"unique_id": "A1", "value": "Regulator", "x": 0, "y": 125},
          [{"Designator": "1", "Name": "VIN", "Electrical": "7"}]),
         (tmp_path / "other.SchDoc", {"unique_id": "B1"},
          [{"Designator": "1", "Name": "DATA", "Electrical": "2"}]),
@@ -34,5 +34,6 @@ def test_native_pins_match_source_id_and_keep_pcb_net(tmp_path, monkeypatch, sou
     assert (pad.net, pad.local) == ("+12V", (1, 0))
     assert (pad.function, pad.pin_type) == (("VIN", "power") if matched else (None, None))
     assert part.sheet == ("power.SchDoc" if matched else None)
+    assert part.schematic_position == ((0, 125) if matched else None)
     assert not board.outline_valid
     assert any("source ID differs" in item for item in board.unknowns) is not matched

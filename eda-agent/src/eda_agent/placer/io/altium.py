@@ -120,6 +120,8 @@ def _read_intent_board(path: Path, project: Path, snapshot: dict) -> Board:
             row["footprint"], x, y, rotation, side, params.get("LOCKED") == "TRUE", pads,
             uuid=row["id"], sheet=sheet.name if sheet else None,
             description=component.get("description", ""),
+            schematic_position=(component["x"], component["y"])
+            if component.get("x") is not None and component.get("y") is not None else None,
         ))
     layer_stack = [
         StackupLayer(names.get(row["name"], row["name"]), "copper" if "layer_id" in row else "dielectric",

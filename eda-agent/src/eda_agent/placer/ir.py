@@ -72,6 +72,7 @@ class Footprint:
     sheet: str | None = None
     description: str = ""
     attributes: tuple[str, ...] = ()
+    schematic_position: Point | None = None  # Symbol origin in its sheet's coordinate system.
 
     @property
     def position(self) -> Point:
