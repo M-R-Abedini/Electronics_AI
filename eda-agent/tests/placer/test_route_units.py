@@ -584,3 +584,15 @@ def test_portal_fans_fine_pitch_pads_out_to_the_pair_pitch():
         shape = LineString(track["points"]).buffer(track["width"] / 2)
         assert min(shape.distance(g) for g in neighbours) >= rule.clearance - 1e-9
     assert got.xy("pos")[1] < 9.0 - 0.4 - rule.clearance  # the portal is clear of the pad row
+
+
+def test_tap_finds_a_plane_whose_layer_has_an_eda_name():
+    # an Altium import names its inner layers "Mid-Layer 1"; the zone lists that name, the target is canonical
+    outline = [(0, 0), (20, 0), (20, 20), (0, 20)]
+    chip = Footprint("U1", "", "", 10, 10, 0, side="F", pads=[Pad("1", "GND", (-1.0, 0.0), (0.6, 0.3), layers=("F.Cu",))])
+    board = Board("named", [chip], outline=[Outline(outline)],
+                  copper_layers=[CopperLayer("Top Layer", "F.Cu", 0), CopperLayer("Mid-Layer 1", "In1.Cu", 1),
+                                 CopperLayer("Bottom Layer", "B.Cu", 2)],
+                  nets=[Net("GND", "Default", 1)], netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                  zones=[{"net": "GND", "layers": ["Mid-Layer 1"], "outline": [outline]}], rules={"hole_to_hole": 0.25})
+    assert plan_power_tap(board, chip, chip.pads[0], "In1.Cu", fixed=[]) is not None

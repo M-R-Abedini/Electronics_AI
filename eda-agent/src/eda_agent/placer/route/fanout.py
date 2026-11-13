@@ -235,9 +235,12 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
     net = pad.net
     if not net or board.netclass_of(net) is None:
         return None
+    # a zone lists its layers by the names the EDA shows ("Mid-Layer 1"), the target is canonical ("In1.Cu")
+    canonical = {cl.name: cl.canonical for cl in board.copper_layers}
     target = unary_union([
         Polygon(zone["outline"][0], zone["outline"][1:])
-        for zone in board.zones if zone["net"] == net and target_layer in zone["layers"] and zone["outline"]
+        for zone in board.zones
+        if zone["net"] == net and zone["outline"] and target_layer in {canonical.get(n, n) for n in zone["layers"]}
     ])
     if target.is_empty or board_polygon(board) is None:
         return None
