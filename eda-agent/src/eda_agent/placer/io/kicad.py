@@ -171,6 +171,12 @@ def read_board(path: str | Path) -> Board:
     stackup = read_stackup(path.read_text(encoding="utf-8", errors="replace"))
     board = board_from_dump(data, stackup, path.stem)
     board.drc_severities = read_severities(path.with_suffix(".kicad_pro"))
+    # pin names the board file lacks (a board converted from another EDA) come from its schematics
+    from . import kicad_sch
+
+    found = kicad_sch.enrich(board, path)
+    if found["pads_named"] or found["pads_typed"]:
+        board.source["schematic_pins"] = found
     return board
 
 

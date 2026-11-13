@@ -189,7 +189,8 @@ def regulators(f: Facts) -> dict[str, Regulator]:
                 continue
             name, typ = fn(p), pin_type(p)
             if CONTROL_FN.match(name):
-                reg.control.add(p.net)
+                if p.net not in f.rails:  # a feedback pin strapped to a supply rail selects a mode; the rail is no control net
+                    reg.control.add(p.net)
             elif typ == "power_out" or OUT_FN.match(name):
                 if p.net in f.rails or reg.role != "converter_ic":
                     reg.outputs.add(p.net)
