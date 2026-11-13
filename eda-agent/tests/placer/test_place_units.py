@@ -21,7 +21,7 @@ from eda_agent.placer.ir import (
     Pad,
     derive,
 )
-from eda_agent.placer.place import blocks, escape, mechanical, pipeline, problem
+from eda_agent.placer.place import blocks, escape, mechanical, pipeline, problem, rigid
 from eda_agent.placer.place.pipeline import _compare_floorplans, solve
 
 BOX = [(-1.0, -0.6), (1.0, -0.6), (1.0, 0.6), (-1.0, 0.6)]
@@ -128,6 +128,44 @@ def test_block_seed_respects_fixed_anchor_and_prioritizes_its_linked_part():
     assert count == 1 and priority == [0, 1]
     assert poses[0] == start[0] and poses[2:] == start[2:]
     assert math.dist(poses[1][:2], poses[0][:2]) < math.dist(start[1][:2], start[0][:2])
+
+
+def test_rigid_collapse_preserves_member_geometry_and_pins_on_rotation():
+    pb = problem.build(_board())
+    start = pb.poses()
+    start[1] = (5.0, 5.0, 1)
+    start[2] = (8.0, 5.0, 0)
+    macros = rigid.compile_macros(pb, start, {1: [2], 0: [3]})
+    assert list(macros) == [1]  # The locked footprint stays a separate solver part.
+    compact, retained = rigid.collapse(pb, macros)
+    poses = [start[i] for i in retained]
+    assert len(compact.parts) == len(pb.parts) - 1
+    core = problem.rust_problem(compact)
+    poses[retained.index(1)] = (10.0, 13.0, 2)
+    core.set_positions(poses)
+    full = rigid.expand(pb, core.positions(), retained, macros)
+    assert full[1] == (10.0, 13.0, 2)
+    assert full[2] == (10.0, 10.0, 1)
+    compact_cost = problem.reference_cost(compact, poses)
+    full_cost = problem.reference_cost(pb, full)
+    assert math.isclose(compact_cost["total"], full_cost["total"])
+
+
+def test_rigid_corridor_detects_obstructed_same_side_ports():
+    board = _board()
+    pb = problem.build(board)
+    poses = pb.poses()
+    poses[1:5] = [(4.0, 10.0, 0), (4.0, 12.0, 0), (16.0, 10.0, 0), (16.0, 12.0, 0)]
+    macros = rigid.compile_macros(pb, poses, {1: [2], 3: [4]})
+    assert len(macros) == 2
+    from eda_agent.placer.macro import Port
+
+    macros[1].ports = [Port("A", "pad", "F.Cu", 0, 0, 0, 0.5)]
+    macros[3].ports = [Port("A", "pad", "F.Cu", 0, 0, 180, 0.5)]
+    placed = problem.apply(pb, poses)
+    result = rigid.corridors(placed, macros)
+    assert result["total"] == 1 and result["clear"] == 0
+    assert "U1" in result["rows"][0]["blocked_by"]
 
 
 def test_escape_reservation_selects_only_the_crowded_bank():

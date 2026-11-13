@@ -10,7 +10,8 @@ from ..intent import model
 from .problem import PlaceProblem, _rot90
 
 
-def seed(pb: PlaceProblem, intent: dict, start: list[tuple[float, float, int]]) -> tuple[list, list[int], int]:
+def seed(pb: PlaceProblem, intent: dict, start: list[tuple[float, float, int]], *, groups: dict | None = None
+         ) -> tuple[list, list[int], int]:
     poses = list(start)
     by_ref = {ref: i for i, ref in enumerate(pb.refs)}
     links: dict[int, list] = {}
@@ -68,4 +69,6 @@ def seed(pb: PlaceProblem, intent: dict, start: list[tuple[float, float, int]]) 
             placed.add(i)
             pending.remove(i)
             ordered.append(i)
+            if groups is not None:
+                groups.setdefault(next(iter(owners[i])), []).append(i)
     return poses, sorted(anchors | set(ordered)), len(ordered)

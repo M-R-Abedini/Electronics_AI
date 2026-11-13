@@ -123,10 +123,19 @@ def placer_v2(board: Board, seed: int = 0) -> tuple[Board, dict]:
     return solve(board, side_policy="expert", mode="best", seed=seed, intent=draft(board))
 
 
+def placer_f4(board: Board, seed: int = 0) -> tuple[Board, dict]:
+    """The guarded floorplan with the same sides and intent as the baseline."""
+    from .intent.infer import draft
+    from .place.pipeline import solve
+
+    return solve(board, side_policy="expert", mode="best", seed=seed, intent=draft(board), floorplan=True)
+
+
 BASELINES: dict[str, Callable[[Board, int], tuple[Board, dict]]] = {
     "expert": expert,
     "random_legal": random_legal,
     "v1_constructor": v1_constructor,
     "placer_v2": placer_v2,
+    "placer_f4": placer_f4,
 }
 

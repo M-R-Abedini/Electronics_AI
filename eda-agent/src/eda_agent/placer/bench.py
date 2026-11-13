@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="bench", description=__doc__)
     ap.add_argument("--split", default="dev", help="corpus split (dev, validation, validation_ext, stress)")
     ap.add_argument("--boards", help="comma-separated corpus names instead of a split")
-    ap.add_argument("--baselines", default=",".join(BASELINES))
+    ap.add_argument("--baselines", default=",".join(name for name in BASELINES if name != "placer_f4"))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--no-route", action="store_true")

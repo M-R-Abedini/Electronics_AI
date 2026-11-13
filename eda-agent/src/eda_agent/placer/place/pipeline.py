@@ -24,7 +24,7 @@ from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
 from ..route.check import route_check
 from ..toolchain import RUNTIME_DIR
-from . import analytical, blocks, escape, mechanical, problem
+from . import analytical, blocks, escape, mechanical, problem, rigid
 
 SA_MOVES_PER_PART = 4000  # declared: annealing budget scales with movable parts ...
 SA_MIN_MOVES = 200_000
@@ -36,7 +36,7 @@ LEGALIZE_RETRIES = 2
 
 
 def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None,
-               floorplan: bool = False, reserve: bool = False) -> tuple:
+               floorplan: bool = False, reserve: bool = False, rigid_blocks: bool = False) -> tuple:
     """S1 to S5 on the IR with one global stage; returns (placed board, stage report)."""
     t0 = time.monotonic()
     timings: dict[str, float] = {}
@@ -44,22 +44,29 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
     timings["s0_s2b"] = round(time.monotonic() - t0, 2)
     movable = sum(1 for p in pb.parts if not p[5])
     t = time.monotonic()
+    solver_pb, retained, macros = pb, list(range(len(pb.parts))), {}
+    if rigid_blocks and intent:
+        groups = {}
+        seeded_poses, _, _ = blocks.seed(pb, intent, _greedy_start(pb), groups=groups)
+        macros = rigid.compile_macros(pb, seeded_poses, groups)
+        if macros:
+            solver_pb, retained = rigid.collapse(pb, macros)
     if mode == "analytical":
-        s3 = analytical.global_place(pb)
+        s3 = analytical.global_place(solver_pb)
         start = s3.poses
         s3_info = {"iterations": s3.iterations, "overflow": s3.overflow, "wa_wirelength": s3.wirelength}
     elif mode == "sa_only":
-        start = _greedy_start(pb)
+        start = _greedy_start(solver_pb)
         s3_info = {"start": "greedy spiral at the board centre"}
     else:
         raise ValueError(f"unknown mode {mode!r}")
     priority, seeded = [], 0
-    if floorplan and intent:
+    if floorplan and intent and not macros:
         start, priority, seeded = blocks.seed(pb, intent, start)
         s3_info["block_seeded_parts"] = seeded
     timings["s3"] = round(time.monotonic() - t, 2)
-    core = problem.rust_problem(pb, w_cross=W_CROSS)
-    core.set_positions([pose if not part[5] else (part[7], part[8], part[9]) for pose, part in zip(start, pb.parts,
+    core = problem.rust_problem(solver_pb, w_cross=W_CROSS)
+    core.set_positions([pose if not part[5] else (part[7], part[8], part[9]) for pose, part in zip(start, solver_pb.parts,
                                                                                                 strict=True)])
     t = time.monotonic()
     diag = problem.board_diag(pb)
@@ -77,22 +84,25 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
     sa = core.anneal(iters, seed, max(diag * 0.15, 1.0), 0.05) if not failed else {"skipped": "illegal start"}
     timings["s5"] = round(time.monotonic() - t, 2)
     illegal = core.illegal_parts()
-    placed = problem.apply(pb, core.positions())
+    placed = problem.apply(pb, rigid.expand(pb, core.positions(), retained, macros) if macros else core.positions())
     violations = sum(not finding.fixed for finding in legality.check(placed, fixed=set(pb.fixed)))
     info = {
         "mode": mode, "side_policy": side_policy, "seed": seed, "movable": movable,
         "fixed": pb.fixed, "decap_affinities": len(pb.affinities) - pb.local_block_links,
         "local_block_links": pb.local_block_links, "s3": s3_info,
-        "s4_failed": [pb.refs[i] for i in failed], "s4_retries": retries,
+        "s4_failed": [solver_pb.refs[i] for i in failed], "s4_retries": retries,
         "cost_after_s4": after_legalize, "s5": sa, "cost_final": core.cost(),
-        "illegal_after_s5": [pb.refs[i] for i in illegal], "strict_violations": violations, "timings": timings,
+        "illegal_after_s5": [solver_pb.refs[i] for i in illegal], "strict_violations": violations, "timings": timings,
         "seconds_s0_s5": round(time.monotonic() - t0, 2),
     }
+    if macros:
+        info["rigid_macros"] = {"members": [[p.ref for p in m.parts] for m in macros.values()],
+                                "corridors": rigid.corridors(placed, macros)}
     return placed, info
 
 
 def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None, floorplan: bool,
-           reserve: bool = False) -> tuple:
+           reserve: bool = False, rigid_blocks: bool = False) -> tuple:
     """S1 to S5.  ``best`` (default) runs both global stages and keeps the legal result of lower cost.
 
     DG-F1 evidence: the analytical start won on ecc83 and pic_programmer, the
@@ -101,15 +111,15 @@ def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None
     """
     if mode != "best":
         return _solve_one(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                          floorplan=floorplan, reserve=reserve)
+                          floorplan=floorplan, reserve=reserve, rigid_blocks=rigid_blocks)
     t0 = time.monotonic()
     results = [(m, *_solve_one(board, side_policy=side_policy, mode=m, seed=seed, intent=intent,
-                               floorplan=floorplan, reserve=reserve))
+                               floorplan=floorplan, reserve=reserve, rigid_blocks=rigid_blocks))
                for m in MODES]
 
     def rank(item):
         _m, _placed, info = item
-        return (*_legality_key(info), info["cost_final"]["total"])
+        return (*_legality_key(info), bool(rigid_blocks and not info.get("rigid_macros")), info["cost_final"]["total"])
 
     mode, placed, info = min(results, key=rank)
     info = dict(info)
@@ -143,18 +153,22 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         baseline, baseline_info = placed, info
         base_metrics = _floorplan_metrics(baseline, intent)
         rank = _floorplan_rank(info, base_metrics, audit)
-        modes = [("blocks", True, False)]
+        modes = [("blocks", True, False), ("rigid", True, False)] if intent.get("blocks") else [("blocks", True, False)]
         if selected:
             modes.extend([("reserve", False, True), ("combined", True, True)])
         for name, use_blocks, reserve in modes:
             other, other_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                                       floorplan=use_blocks, reserve=reserve)
+                                       floorplan=use_blocks, reserve=reserve, rigid_blocks=name == "rigid")
             guard = _compare_floorplans(other, other_info, baseline, baseline_info, intent, base_metrics=base_metrics)
             other_audit = measure(other)
             other_rank = _floorplan_rank(other_info, guard["candidate"], other_audit)
             comparisons[name] = {**guard, "clear_exits": other_audit["clear"],
                                  "strict_violations": other_info["strict_violations"],
                                  "seconds_s0_s5": other_info["seconds_s0_s5"]}
+            if name == "rigid":
+                comparisons[name]["rigid_macros"] = other_info.get("rigid_macros")
+                if not other_info.get("rigid_macros"):
+                    continue
             if not guard["use_baseline"] and other_rank < rank:
                 variant, placed, info, audit, rank = name, other, other_info, other_audit, other_rank
     reservations_used = variant in ("reserve", "combined")
