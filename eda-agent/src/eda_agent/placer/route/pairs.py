@@ -35,7 +35,7 @@ from ..ir import Board, Footprint, Pad
 from .copper import copper_separated as _copper_separated
 from .copper import existing_holes as _existing_holes
 from .copper import holes_separated as _holes_separated
-from .copper import pad_layers, pad_polygon
+from .copper import outward, pad_layers, pad_polygon
 
 GRID_MM = 0.05  # declared: centreline grid
 WINDOW_MM = 6.0  # declared: grid window margin around the terminals
@@ -77,8 +77,12 @@ class PairRule:
 class Terminal:
     pads: dict[str, tuple[Footprint, Pad]]  # leg ("pos"/"neg") -> pad
     layer: str
+    portal: dict[str, tuple[float, float]] | None = None  # leg -> where its fan-out lead ends (fine pitch)
+    lead: list[dict] = field(default_factory=list)  # the fan-out copper from the pads to the portal
 
     def xy(self, leg: str) -> tuple[float, float]:
+        if self.portal is not None:
+            return self.portal[leg]
         fp, pad = self.pads[leg]
         return fp.pad_world(pad)
 
@@ -100,6 +104,11 @@ class PairRoute:
     vias: list[dict] = field(default_factory=list)
     segments: list[dict] = field(default_factory=list)
     failed: str | None = None
+    stubs: list[str] = field(default_factory=list)  # single pads (test points) left to the general router
+    fanout: str | None = None  # "portal" when the fine-pitch fallback routed the pair
+    via: tuple[float, float] | None = None  # via diameter and drill used, when not the net class's
+    delegated: list[dict] = field(default_factory=list)  # short hops left to the general router
+    coupled_share: float | None = None  # share of the path (Manhattan, terminal to terminal) routed here
 
     def lengths(self) -> dict[str, float]:
         out = {"pos": 0.0, "neg": 0.0}
@@ -113,7 +122,8 @@ class PairRoute:
         vias = {"pos": sum(v["net"] == self.pos for v in self.vias), "neg": sum(v["net"] == self.neg for v in self.vias)}
         return {"pair": [self.pos, self.neg], "routed": self.failed is None, "failed": self.failed,
                 "length_mm": ln, "skew_mm": round(abs(ln["pos"] - ln["neg"]), 3), "vias": vias,
-                "segments": self.segments}
+                "segments": self.segments, "stubs": self.stubs, "fanout": self.fanout, "via": self.via,
+                "delegated": self.delegated, "coupled_share": self.coupled_share}
 
 
 # --------------------------------------------------------------------------- geometry helpers
@@ -236,7 +246,8 @@ def obstacles(board: Board, win: Window, rule: PairRule, extra: list[dict], *, s
     for row in board.obstacles:
         layer = row["copper"]
         if layer in per and not row["overlapping_pads"] and not row.get("net"):
-            per[layer].extend(Polygon(ring) for ring in row["outlines"] if len(ring) >= 3)
+            # the router sees these as keepouts and keeps its clearance from them
+            per[layer].extend(Polygon(ring).buffer(rule.clearance + MARGIN_MM) for ring in row["outlines"] if len(ring) >= 3)
     edge = None
     if board.outline:
         inside = unary_union([Polygon(o.outer, o.holes) for o in board.outline]).buffer(-rule.clearance - MARGIN_MM)
@@ -340,8 +351,177 @@ class Exits:
 
 
 # --------------------------------------------------------------------------- routing
+PORTAL_TAIL_MM = 0.3  # declared: straight run at pair pitch before the coupled section starts
+
+
+def portal_terminal(board: Board, term: Terminal, rule: PairRule, fixed: list[dict]) -> Terminal | None:
+    """The terminal with a symmetric fan-out built for both legs at once, or None.
+
+    Next to fine-pitch pins the coupled section cannot reach the pads: the first leg's clearance
+    closes the way of the second. Each leg therefore leaves its pad straight along the pad's axis,
+    jogs at 45 degrees to the pair's pitch and runs a short tail; the two tails end side by side at
+    the portal, where the coupled section and the grid search take over. Both leads are checked
+    against the exact pad shapes, the fixed copper and each other. The lead keeps the pair's width
+    when that fits and necks down to the board's minimum track width when it does not.
+    """
+    (fp_a, pa), (fp_b, pb) = term.pads["pos"], term.pads["neg"]
+    if fp_a is not fp_b or any(abs(p.size[0] - p.size[1]) < 1e-6 for p in (pa, pb)):
+        return None
+    out_a, out_b = outward(fp_a, pa), outward(fp_b, pb)
+    if math.dist(out_a, out_b) > 1e-6:
+        return None
+    ox, oy = out_a
+    a, b = fp_a.pad_world(pa), fp_b.pad_world(pb)
+    lateral = (b[0] - a[0]) * -oy + (b[1] - a[1]) * ox  # signed pad pitch across the exit axis
+    along = (b[0] - a[0]) * ox + (b[1] - a[1]) * oy
+    if abs(along) > 1e-6 or abs(lateral) < 1e-6:
+        return None
+    ux, uy = (-oy, ox) if lateral > 0 else (oy, -ox)  # from the pos pad towards the neg pad
+    shift = (abs(lateral) - rule.pitch) / 2  # each leg moves this far towards its partner (negative: apart)
+    copper = [cl.canonical for cl in board.copper_layers]
+    other_pads = [pad_polygon(fp, pad) for fp in board.footprints for pad in fp.pads
+                  if pad.net not in (pa.net, pb.net) and term.layer in pad_layers(fp, pad, copper)]
+    own = {"pos": pa.net, "neg": pb.net}
+    partner_pad = {"pos": pad_polygon(fp_b, pb), "neg": pad_polygon(fp_a, pa)}
+    inside = unary_union([Polygon(o.outer, o.holes) for o in board.outline]) if board.outline else None
+    for width in dict.fromkeys((rule.width, max(board.rules.get("min_track_width", rule.width), 1e-3))):
+        if width > rule.width + 1e-9:
+            continue
+        straight = max(pa.size) / 2 + rule.clearance + width / 2 + 2 * GRID_MM
+        points, lead, ok = {}, [], True
+        for leg, start, sign in (("pos", a, 1.0), ("neg", b, -1.0)):
+            knee = (start[0] + ox * straight, start[1] + oy * straight)
+            jog = (knee[0] + sign * ux * shift + ox * abs(shift), knee[1] + sign * uy * shift + oy * abs(shift))
+            end = (jog[0] + ox * PORTAL_TAIL_MM, jog[1] + oy * PORTAL_TAIL_MM)
+            pts = [start, knee, jog, end] if abs(shift) > 1e-6 else [start, end]
+            shape = LineString(pts).buffer(width / 2)
+            track = {"layer": term.layer, "width": width, "net": own[leg], "points": pts}
+            if (any(shape.distance(g) < rule.clearance - 1e-9 for g in [*other_pads, partner_pad[leg]])
+                    or (inside is not None and not inside.buffer(-rule.clearance).covers(shape))
+                    or not _copper_separated([track], [], [c for c in fixed if c.get("net") != own[leg]], rule.clearance)):
+                ok = False
+                break
+            points[leg] = end
+            lead.append(track)
+        if ok and _copper_separated([lead[0]], [], [lead[1]], rule.clearance):
+            return replace(term, portal=points, lead=lead)
+    return None
+
+
+def _one_per_part(terms: list[Terminal]) -> list[Terminal]:
+    """Keep the closest-spaced terminal of each part; its other pads on the pair are stubs."""
+    best: dict[str, Terminal] = {}
+    for term in terms:
+        spacing = math.dist(*(fp.pad_world(pad) for fp, pad in term.pads.values()))
+        held = best.get(term.refs)
+        if held is None or spacing < math.dist(*(fp.pad_world(pad) for fp, pad in held.pads.values())):
+            best[term.refs] = term
+    return [term for term in terms if best[term.refs] is term]
+
+
+COUPLED_SHARE_MIN = 0.7  # plan 4.2 gate 1: a segmented pair counts only above this share
+
+
+def portal_reach(rule: PairRule) -> float:
+    """Room a pair needs off a pad row before it runs coupled: clearance, a turn to its pitch and the tail."""
+    return rule.clearance + rule.width + rule.pitch + PORTAL_TAIL_MM
+
+
+def _pad_mid(term: Terminal) -> tuple[float, float]:
+    (ax, ay), (bx, by) = (fp.pad_world(pad) for fp, pad in term.pads.values())
+    return (ax + bx) / 2, (ay + by) / 2
+
+
+def _free_span(a: Terminal, b: Terminal) -> float:
+    """Smallest copper-to-copper distance between the pads of two terminals."""
+    return min(pad_polygon(fa, pa).distance(pad_polygon(fb, pb))
+               for fa, pa in a.pads.values() for fb, pb in b.pads.values())
+
+
+def _manhattan(terms: list[Terminal]) -> float:
+    return sum(abs(p[0] - q[0]) + abs(p[1] - q[1]) for p, q in itertools.pairwise([_pad_mid(t) for t in terms]))
+
+
+def _fine_pitch_fallback(board: Board, pos: str, neg: str, rule: PairRule, fixed: list[dict], core,
+                         retry_coarse: bool) -> PairRoute | None:
+    """Second strategy for a pair the grid search could not route whole.
+
+    Portal fan-outs at fine-pitch pins; one terminal per part (a connector's duplicate pins are
+    left to the general router); the board's smallest legal via; and a hop at either end of the
+    chain that is too short to hold two fan-outs is delegated to the general router
+    (``short_hop_delegated``): no coupled section fits there and length tuning next to a
+    protection part is wrong.  The pair then counts only if the part routed here covers
+    COUPLED_SHARE_MIN of the path.
+    """
+    found = terminals(board, pos, neg)
+    if not all(isinstance(term, Terminal) for term in found):
+        return None
+    whole = chain(_one_per_part(found))
+    kept, delegated = list(whole), []
+    limit = 2 * portal_reach(rule)
+    while len(kept) > 2:
+        spans = {0: _free_span(kept[0], kept[1]), -1: _free_span(kept[-2], kept[-1])}
+        end = min(spans, key=spans.get)
+        if spans[end] >= limit:
+            break
+        a, b = (kept[0], kept[1]) if end == 0 else (kept[-2], kept[-1])
+        delegated.append({"from": a.refs, "to": b.refs, "label": "short_hop_delegated",
+                          "free_span_mm": round(spans[end], 3), "limit_mm": round(limit, 3),
+                          "direct_mm": round(math.dist(_pad_mid(a), _pad_mid(b)), 3)})
+        kept.pop(end)
+    share = round(_manhattan(kept) / _manhattan(whole), 4) if _manhattan(whole) else 1.0
+    terms = [portal_terminal(board, term, rule, fixed) or term for term in kept]
+    if len(terms) < 2 or not (delegated or any(term.portal for term in terms)):
+        return None
+    via_d = max(board.rules.get("min_via_diameter", rule.via_d), 1e-3)
+    via_drill = max(board.rules.get("min_through_drill", rule.via_drill), 1e-3)
+    small = replace(rule, via_d=via_d, via_drill=via_drill) if via_d < rule.via_d - 1e-9 else rule
+    for coarse in (False, True) if retry_coarse else (False,):
+        result = _route_order(board, terms, pos, neg, small, fixed, core, coarse=coarse)
+        if result.failed is None:
+            result.fanout = "portal" if any(term.portal for term in terms) else None
+            result.delegated, result.coupled_share = delegated, share
+            if share < COUPLED_SHARE_MIN:
+                result.tracks, result.vias = [], []
+                result.failed = f"coupled share {share:.2f} is below {COUPLED_SHARE_MIN}"
+            if small is not rule:
+                result.via = (via_d, via_drill)
+            used = {id(pad) for term in terms for _fp, pad in term.pads.values()}
+            result.stubs = [f"{fp.ref}.{pad.number}" for fp in board.footprints for pad in fp.pads
+                            if pad.net in (pos, neg) and id(pad) not in used]
+            return result
+    return None
+
+
+def stub_pads(board: Board, pos: str, neg: str, terms: list[Terminal] | None = None) -> list[str]:
+    """Pads on the pair that belong to no terminal and are their part's only pad on it (test points).
+
+    They are stubs for the general router, not pair terminals. A lone pad that pairs up with
+    another part's pad (two ESD diodes side by side) is in a terminal and is not a stub.
+    """
+    if terms is None:
+        terms = terminals(board, pos, neg)
+    used = {id(pad) for term in terms if isinstance(term, Terminal) for _fp, pad in term.pads.values()}
+    on_pair = [(fp, pad) for fp in board.footprints for pad in fp.pads if pad.net in (pos, neg)]
+    count = Counter(fp.ref for fp, _pad in on_pair)
+    return [f"{fp.ref}.{pad.number}" for fp, pad in on_pair if count[fp.ref] == 1 and id(pad) not in used]
+
+
 def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *,
                fixed: list[dict] | None = None, retry_coarse: bool = False) -> PairRoute:
+    res = _route_pair(board, pos, neg, rule, fixed=fixed, retry_coarse=retry_coarse)
+    res.stubs = stub_pads(board, pos, neg)
+    if res.failed is not None:
+        import placer_core
+
+        other = _fine_pitch_fallback(board, pos, neg, rule, list(fixed or []), placer_core, retry_coarse)
+        if other is not None:
+            return other
+    return res
+
+
+def _route_pair(board: Board, pos: str, neg: str, rule: PairRule, *,
+                fixed: list[dict] | None = None, retry_coarse: bool = False) -> PairRoute:
     import placer_core
 
     res = PairRoute(pos, neg)
@@ -350,6 +530,8 @@ def route_pair(board: Board, pos: str, neg: str, rule: PairRule, *,
         res.failed = f"found {len(terms)} side-by-side terminal(s); need 2"
         return res
     total_pads = sum(pad.net in (pos, neg) for fp in board.footprints for pad in fp.pads)
+    if 2 * len(terms) != total_pads:
+        total_pads -= len(stub_pads(board, pos, neg, terms))
     if 2 * len(terms) != total_pads:
         res.failed = f"{total_pads - 2 * len(terms)} pair pad(s) have no matched terminal"
         return res
@@ -393,6 +575,8 @@ def _route_order(board: Board, terms: list[Terminal], pos: str, neg: str,
         vias.extend(seg["vias"])
         fixed += seg["tracks"] + seg["vias"]
 
+    for term in terms:
+        tracks.extend(getattr(term, "lead", ()))
     lengths = _leg_lengths(tracks, {"pos": pos, "neg": neg})
     skew = abs(lengths["pos"] - lengths["neg"])
     pos_vias = sum(v["net"] == pos for v in vias)
@@ -575,14 +759,17 @@ def _breakouts_at(win, leg_raw, layers, term: Terminal, ends, which: int, nets, 
     for order in (("pos", "neg"), ("neg", "pos")):
         t_add, v_add, ok = [], [], True
         for leg in order:
-            fp, pad = term.pads[leg]
             lay_e, end_xy = ends[leg][which]
             others = [t for t in tracks + vias + t_add + v_add if t["net"] != nets[leg]]
             via_mask = blocked_drills.copy() if allow_via else None
             if via_mask is not None:
                 holes = [(v["x"], v["y"], v["drill"]) for v in vias + v_add]
                 _block_drills(win, via_mask, holes, rule.via_drill, hole_clearance)
-            got = _breakout(win, leg_raw[leg], layers, others, (fp.pad_world(pad), term.layer), (end_xy, lay_e), nets[leg],
+                for lead in getattr(term, "lead", ()):  # no via against the partner's fan-out lead
+                    if lead["net"] != nets[leg]:
+                        via_mask |= win.raster(LineString(lead["points"]).buffer(
+                            lead["width"] / 2 + rule.via_d / 2 + rule.clearance + MARGIN_MM))
+            got = _breakout(win, leg_raw[leg], layers, others, (term.xy(leg), term.layer), (end_xy, lay_e), nets[leg],
                             rule, core, allow_via, blocked_drills=via_mask)
             if got is None or sum(LineString(t["points"]).length for t in got[0]) > BREAKOUT_MAX_MM:
                 ok = False
@@ -701,7 +888,7 @@ def _route_segment(board, a: Terminal, b: Terminal, rule: PairRule, layers, fixe
     hole_clearance = board.rules.get("hole_to_hole", 0.0)
     _block_drills(win, blocked_drills, _existing_holes(board, fixed), rule.via_drill, hole_clearance)
     own = {a.pads["pos"][1].net, a.pads["neg"][1].net}
-    term_pads = {id(pad) for term in (a, b) for _fp, pad in term.pads.values()}
+    term_pads = {id(pad) for term in (a, b) if term.portal is None for _fp, pad in term.pads.values()}
     # coupled section: every pad except the four terminal pads; earlier copper of these nets is not in the way
     raw = obstacles(board, win, rule, fixed, skip_pads=term_pads, skip_copper_nets=own)
     # a leg's breakout: everything except its own net, so the partner's pads and copper are obstacles

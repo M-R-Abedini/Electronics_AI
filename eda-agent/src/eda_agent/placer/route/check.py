@@ -199,6 +199,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     attribution = drc.attribute(result, reference)
     unrouted_items = [u for u in result.get("unconnected_items", [])]
     failures = classify_unrouted(unrouted_items, finished, routed.stop_reason)
+    plane_nets = {z["net"] for z in ir.zones if z.get("uuid") in keep and z.get("net")}
+    unrouted_plane = sum(row["net"] in plane_nets for row in failures)
 
     denominator = prepared["denominator"]
     by_tracks = denominator - finished["unrouted_tracks_only"]
@@ -212,6 +214,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         "connected_via_zone": via_zone,
         "unsupported": unsupported,
         "unrouted": unrouted,
+        "unrouted_plane": unrouted_plane,  # connections of nets that own an inner plane
+        "unrouted_signal": len(failures) - unrouted_plane,
         "coverage": round((denominator - unrouted) / denominator, 4) if denominator else 1.0,
         "vias": finished["routing"]["vias"],
         "track_length_mm": finished["routing"]["length_mm"],

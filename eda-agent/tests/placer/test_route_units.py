@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -19,8 +20,10 @@ from eda_agent.placer.ir import (
 )
 from eda_agent.placer.route import drc, dsn, pairs
 from eda_agent.placer.route.check import classify_unrouted
+from eda_agent.placer.route.copper import pad_polygon
 from eda_agent.placer.route.fanout import plan_power_link, plan_power_tap
 from eda_agent.placer.route.freerouting import RouterConfig, parse_log
+from shapely.geometry import Point
 
 DSN = """(pcb x.dsn
   (resolution um 10)
@@ -379,11 +382,25 @@ def test_s6a_selects_links_and_taps_from_the_intent_only(monkeypatch):
     planned = s6a.plan(board, intent, power_first=True)
     report = planned["report"]
     assert [(r["cap"], r["routed"]) for r in report["links"]] == [("C1", True)]  # C2's target is not settled
-    assert [(r["ref"], r["pad"], r["routed"]) for r in report["taps"]] == [("U1", "2", True)]  # only U1 is active
+    # the pour is on an outer layer, which also carries signals: no locked tap via on this board
+    assert report["taps"] == []
+    inner = Board("s6a", [chip, cap, other], outline=[Outline(outline)],
+                  copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("In1.Cu", "In1.Cu", 1),
+                                 CopperLayer("B.Cu", "B.Cu", 2)],
+                  nets=[Net("GND", "Default", 3), Net("+3V3", "Default", 3)],
+                  netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                  zones=[{"net": "GND", "layers": ["In1.Cu"], "outline": [outline], "uuid": "z1"}],
+                  rules={"hole_to_hole": 0.25})
+    from eda_agent.placer.ir import LayerRole
+
+    inner.stackup.roles = [LayerRole("F.Cu", "signal", None, [], 0.0, 1.0), LayerRole("In1.Cu", "plane", "GND", ["GND"], 1.0, 1.0),
+                           LayerRole("B.Cu", "signal", None, [], 0.0, 1.0)]
+    planned = s6a.plan(inner, intent, pairs=False)
+    taps = planned["report"]["taps"]
+    assert [(r["ref"], r["pad"], r["routed"]) for r in taps] == [("U1", "2", True), ("C1", "2", True), ("C2", "2", True)]
     tracks = s6a._segments([c for c in planned["copper"] if "points" in c])
     assert s6a.TAP_MAX_MM == 2.0 and tracks and all(len(t["points"]) == 2 for t in tracks)
-    assert {item["net"] for item in reserved} == {"+3V3", "GND"}
-    assert any("drill" in item for item in reserved)
+    assert {item["net"] for item in reserved} == {"+3V3"}  # the link; no tap on a board without an inner plane
     reserved.clear()
     s6a.plan(board, intent)
     assert not reserved
@@ -473,3 +490,97 @@ def test_c3_verdict_is_inconclusive_unless_the_runs_compare():
     assert c3_verdict(side(0.784, True), side(0.8436, False, drc=1))["gate"]["passed"] is None
     assert c3_verdict(side(0.9646, True), side(0.9602, True))["gate"]["status"] == "passed"  # within 0.5 pp
     assert c3_verdict(side(0.9646, True), side(0.8982, True))["gate"]["status"] == "failed"
+
+
+def _plane_board(parts):
+    outline = [(0, 0), (20, 0), (20, 20), (0, 20)]
+    return Board("plane", parts, outline=[Outline(outline)],
+                 copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("In1.Cu", "In1.Cu", 1),
+                                CopperLayer("B.Cu", "B.Cu", 2)],
+                 nets=[Net("GND", "Default", 3), Net("VAF", "Default", 2)],
+                 netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                 zones=[{"net": "GND", "layers": ["In1.Cu"], "outline": [outline]}], rules={"hole_to_hole": 0.25})
+
+
+def test_tap_via_keeps_clearance_to_its_own_pad_and_a_neighbour_shares_it():
+    chip = Footprint("U1", "", "", 10, 10, 0, side="F",
+                     pads=[Pad("1", "GND", (-1.0, 0.0), (0.6, 0.3), layers=("F.Cu",)),
+                           Pad("2", "GND", (-1.0, 0.5), (0.6, 0.3), layers=("F.Cu",))])
+    board = _plane_board([chip])
+    track, via = plan_power_tap(board, chip, chip.pads[0], "In1.Cu", fixed=[])
+    gap = min(Point(via["x"], via["y"]).distance(pad_polygon(chip, pad)) for pad in chip.pads) - via["diameter"] / 2
+    assert gap >= 0.15 - 1e-9  # the router rejects a via closer than the clearance to a same-net SMD pad
+    fixed = [track, via]
+    track2, via2 = plan_power_tap(board, chip, chip.pads[1], "In1.Cu", fixed=fixed, share=[via])
+    assert via2 is via and track2["points"][-1] == (via["x"], via["y"])
+    # without sharing the second via may not crowd the first
+    _t, lone = plan_power_tap(board, chip, chip.pads[1], "In1.Cu", fixed=fixed)
+    assert math.dist((lone["x"], lone["y"]), (via["x"], via["y"])) >= via["diameter"] + 0.15 - 1e-9
+
+
+def test_cross_link_joins_a_back_side_cap_to_its_pin_through_one_via():
+    from eda_agent.placer.route.fanout import plan_cross_link
+
+    chip = Footprint("U1", "", "", 10, 10, 0, side="F", pads=[Pad("1", "VAF", (-1.0, 0.0), (0.6, 0.3), layers=("F.Cu",))])
+    cap = Footprint("C1", "", "", 8, 11, 0, side="B", pads=[Pad("1", "VAF", (0.5, 0), (0.4, 0.4), layers=("B.Cu",))])
+    board = _plane_board([chip, cap])
+    first, via, second = plan_cross_link(board, (chip, chip.pads[0]), (cap, cap.pads[0]), fixed=[])
+    assert {first["layer"], second["layer"]} == {"F.Cu", "B.Cu"} and via["net"] == "VAF"
+    assert first["points"][-1] == second["points"][-1] == (via["x"], via["y"])
+    far = Footprint("C2", "", "", 2, 18, 0, side="B", pads=[Pad("1", "VAF", (0, 0), (0.4, 0.4), layers=("B.Cu",))])
+    assert plan_cross_link(_plane_board([chip, far]), (chip, chip.pads[0]), (far, far.pads[0]), fixed=[]) is None
+
+
+def test_plane_coupled_link_needs_both_taps():
+    from eda_agent.placer.route.s6a import settle_plane_links
+
+    row = {"cap": "C1", "target": "U1", "net": "GND", "routed": False}
+    report = {"taps": [{"ref": "U1", "pad": "3", "routed": True, "shared_via": False},
+                       {"ref": "C1", "pad": "2", "routed": False}]}
+    links = [(row, ("C1", "2"), ("U1", "3"))]
+    settle_plane_links(report, links)
+    assert row["routed"] is False and row["failed"] == "cap pad has no tap to the plane"
+    report["taps"][1].update(routed=True, shared_via=True)
+    settle_plane_links(report, links)
+    assert row["routed"] is True and row["kind"] == "plane_coupled" and row["shared_via"] and "failed" not in row
+
+
+def _pair_board(extra=()):
+    outline = [(0, 0), (20, 0), (20, 20), (0, 20)]
+    chip = Footprint("U1", "", "", 10, 10, 0, side="F",
+                     pads=[Pad("1", "D+", (-0.2, -1.0), (0.25, 0.8), layers=("F.Cu",)),
+                           Pad("2", "D-", (0.2, -1.0), (0.25, 0.8), layers=("F.Cu",)),
+                           Pad("3", "X", (0.6, -1.0), (0.25, 0.8), layers=("F.Cu",)),
+                           Pad("4", "Y", (-0.6, -1.0), (0.25, 0.8), layers=("F.Cu",))])
+    return Board("pair", [chip, *extra], outline=[Outline(outline)],
+                 copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+                 nets=[Net("D+", "USB", 2), Net("D-", "USB", 2)],
+                 netclasses=[NetClass("USB", 0.2, 0.125, 0.8, 0.4, diff_pair_width=0.125, diff_pair_gap=0.2)],
+                 rules={"min_track_width": 0.08, "min_via_diameter": 0.35, "min_through_drill": 0.2})
+
+
+def test_stub_pads_are_lone_pads_outside_every_terminal():
+    def lone(ref, net, x, y):
+        return Footprint(ref, "", "", x, y, 0, side="F", pads=[Pad("1", net, (0, 0), (0.5, 0.5), layers=("F.Cu",))])
+
+    # two ESD diodes side by side form a terminal; two test points far apart are stubs
+    board = _pair_board([lone("D1", "D+", 5, 5), lone("D2", "D-", 5.8, 5), lone("TP1", "D+", 15, 3), lone("TP2", "D-", 15, 16)])
+    assert sorted(pairs.stub_pads(board, "D+", "D-")) == ["TP1.1", "TP2.1"]
+    assert {t.refs for t in pairs.terminals(board, "D+", "D-")} == {"U1", "D1/D2"}
+
+
+def test_portal_fans_fine_pitch_pads_out_to_the_pair_pitch():
+    board = _pair_board()
+    rule = pairs.rule_for(board, "D+")
+    term = pairs.terminals(board, "D+", "D-")[0]
+    got = pairs.portal_terminal(board, term, rule, [])
+    assert got is not None and len(got.lead) == 2
+    assert math.dist(got.xy("pos"), got.xy("neg")) == pytest.approx(rule.pitch)  # 0.325 from pads 0.4 apart
+    lengths = [sum(math.dist(p, q) for p, q in zip(t["points"], t["points"][1:])) for t in got.lead]
+    assert lengths[0] == pytest.approx(lengths[1])  # symmetric: no skew added
+    neighbours = [pad_polygon(board.fp("U1"), pad) for pad in board.fp("U1").pads[2:]]
+    from shapely.geometry import LineString
+    for track in got.lead:
+        shape = LineString(track["points"]).buffer(track["width"] / 2)
+        assert min(shape.distance(g) for g in neighbours) >= rule.clearance - 1e-9
+    assert got.xy("pos")[1] < 9.0 - 0.4 - rule.clearance  # the portal is clear of the pad row
