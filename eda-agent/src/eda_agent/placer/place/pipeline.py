@@ -89,7 +89,13 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
     timings["s5"] = round(time.monotonic() - t, 2)
     illegal = core.illegal_parts()
     placed = problem.apply(pb, rigid.expand(pb, core.positions(), retained, macros) if macros else core.positions())
-    violations = sum(not finding.fixed for finding in legality.check(placed, fixed=set(pb.fixed)))
+    findings = legality.check(placed, fixed=set(pb.fixed))
+    th_findings = [f for f in findings if not f.fixed and f.detail.startswith("thru_hole_pads:")]
+    if th_findings and not failed and not illegal and "F" in pb.sides.values() and "B" in pb.sides.values():
+        placed, core, findings = _resolve_movable_th_collisions(
+            placed, pb, solver_pb, core, retained, macros, diag, th_findings, findings
+        )
+    violations = sum(not finding.fixed for finding in findings)
     info = {
         "mode": mode, "side_policy": side_policy, "seed": seed, "movable": movable,
         "fixed": pb.fixed, "decap_affinities": len(pb.affinities) - pb.local_block_links,
@@ -115,6 +121,68 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         info["seconds_s0_s5"] = round(time.monotonic() - t0, 2)
     info["iteration_budget"] = {"analytical": analytical.MAX_ITERS // budget_divisor, "annealing": iters}
     return placed, info
+
+
+def _resolve_movable_th_collisions(placed, pb, solver_pb, core, retained, macros, diag, th_findings, findings):
+    idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
+
+    def _relocate_side(cur_placed, cur_core, cur_th_findings, side_to_move: str, side_holes: list):
+        targets = sorted({
+            r for f in cur_th_findings if not f.fixed and f.detail.startswith("thru_hole_pads:")
+            for r in f.refs if r not in pb.fixed and pb.sides.get(r) == side_to_move
+        })
+        if not targets or not all(r in idx_by_ref for r in targets):
+            return cur_placed, cur_core, False
+        poses_now = cur_core.positions()
+        target_idxs = [idx_by_ref[r] for r in targets]
+        move_set = set(target_idxs)
+        new_parts = [
+            (*part[:5], idx not in move_set, part[6] if idx in move_set else False, *poses_now[idx])
+            for idx, part in enumerate(solver_pb.parts)
+        ]
+        fix_pb = copy.copy(solver_pb)
+        fix_pb.parts = new_parts
+        fix_pb.holes = list(solver_pb.holes) + side_holes
+        fix_core = problem.rust_problem(fix_pb, w_cross=W_CROSS)
+        if fix_core.legalize(LEGALIZE_STEP_MM / 2, diag, target_idxs):
+            return cur_placed, cur_core, False
+        fixed_poses = fix_core.positions()
+        cur_core.set_positions(fixed_poses)
+        next_placed = problem.apply(pb, rigid.expand(pb, fixed_poses, retained, macros) if macros else fixed_poses)
+        return next_placed, cur_core, True
+
+    def _side_holes(cur_placed, cur_th_findings, side_to_move: str) -> list:
+        opp = "F" if side_to_move == "B" else "B"
+        holes = [
+            ring for fp in cur_placed.footprints
+            if fp.side == opp and fp.ref not in pb.fixed
+            for ring in legality.thru_hole_hole_rings(fp, margin_mm=0.15)
+        ]
+        overhangs = [
+            legality.thru_hole_overhang_mm(cur_placed.fp(owner))
+            for f in cur_th_findings
+            if not f.fixed and f.detail.startswith("thru_hole_pads:")
+            and (owner := f.detail.split(":", 1)[1]) not in pb.fixed
+            and pb.sides.get(owner) == side_to_move
+        ]
+        if overhangs:
+            margin = 0.20 + max(overhangs)
+            for fp in cur_placed.footprints:
+                if fp.side == opp:
+                    holes.extend(legality.thru_hole_hole_rings(fp, margin_mm=margin, thru_hole_only=False))
+        return holes
+
+    for side_to_move in ("B", "F"):
+        if not th_findings:
+            break
+        side_holes = _side_holes(placed, th_findings, side_to_move)
+        if not side_holes:
+            continue
+        placed, core, moved_side = _relocate_side(placed, core, th_findings, side_to_move, side_holes)
+        if moved_side:
+            findings = legality.check(placed, fixed=set(pb.fixed))
+            th_findings = [f for f in findings if not f.fixed and f.detail.startswith("thru_hole_pads:")]
+    return placed, core, findings
 
 
 def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None, floorplan: bool,
@@ -171,51 +239,76 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             modes.extend([("reserve", False, True), ("combined", True, True)])
     divisor = len(modes) + 1
     budget = {"budget_divisor": divisor} if divisor > 1 else {}
+    def blocked_exits(escape_audit):
+        return {(r["ref"], r["pin"], r["net"]) for r in escape_audit.get("blocked", [])}
+
+    def refine_decap(cand, cand_info, cand_audit):
+        if not use_floorplan:
+            return cand, cand_audit, None
+        rm = cand_info.get("rigid_macros") or {}
+        if rm.get("corridors", {}).get("total") or any(_legality_key(cand_info)):
+            return cand, cand_audit, None
+        rigid_members = {r for group in rm.get("members", []) for r in group}
+        refine_fixed = set(cand_info["fixed"]) | rigid_members
+        blocked = blocked_exits(cand_audit)
+
+        def preserve(board_state):
+            return blocked_exits(measure(board_state)) <= blocked
+
+        cand, ref_report = decap.refine(cand, intent, refine_fixed, preserve_escapes=preserve)
+        if ref_report["moved"]:
+            cand_audit = measure(cand)
+            cand_info["cost_final_stage"] = "before_decap_refinement"
+            ref_report["output_metrics"] = _floorplan_metrics(cand, intent)
+        return cand, cand_audit, ref_report
+
     placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
                          floorplan=False, **budget)
     variant = "baseline"
     audit = measure(placed)
     comparisons = {}
+    tail_refinement = None
     if use_floorplan:
+        placed, audit, tail_refinement = refine_decap(placed, info, audit)
         baseline, baseline_info = placed, info
         base_metrics = _floorplan_metrics(baseline, intent)
-        rank = _floorplan_rank(info, base_metrics, audit)
+        rank = _floorplan_rank(baseline_info, base_metrics, audit)
         for name, use_blocks, reserve in modes:
             other, other_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
                                        floorplan=use_blocks, reserve=reserve, rigid_blocks=name == "rigid", **budget)
-            guard = _compare_floorplans(other, other_info, baseline, baseline_info, intent, base_metrics=base_metrics)
             other_audit = measure(other)
+            other_refinement = None
+            if not (name == "rigid" and not other_info.get("rigid_macros")):
+                other, other_audit, other_refinement = refine_decap(other, other_info, other_audit)
+            guard = _compare_floorplans(other, other_info, baseline, baseline_info, intent, base_metrics=base_metrics)
             other_rank = _floorplan_rank(other_info, guard["candidate"], other_audit)
             comparisons[name] = {**guard, "clear_exits": other_audit["clear"],
                                  "strict_violations": other_info["strict_violations"],
-                                 "seconds_s0_s5": other_info["seconds_s0_s5"]}
+                                 "seconds_s0_s5": other_info["seconds_s0_s5"],
+                                 "decap_refinement": other_refinement}
             if name == "rigid":
                 comparisons[name]["rigid_macros"] = other_info.get("rigid_macros")
                 if not other_info.get("rigid_macros"):
                     continue
             if not guard["use_baseline"] and other_rank < rank:
-                variant, placed, info, audit, rank = name, other, other_info, other_audit, other_rank
+                variant, placed, info, audit, rank, tail_refinement = (
+                    name, other, other_info, other_audit, other_rank, other_refinement
+                )
     reservations_used = variant in ("reserve", "combined")
-    tail_refinement = None
     passive_alignment = None
     rigid_macros = info.get("rigid_macros") or {}
-    if not rigid_macros.get("corridors", {}).get("total") and not any(_legality_key(info)):
-        def blocked_exits(escape_audit):
-            return {(r["ref"], r["pin"], r["net"]) for r in escape_audit.get("blocked", [])}
-
+    if use_floorplan and not rigid_macros.get("corridors", {}).get("total") and not any(_legality_key(info)):
         rigid_members = {r for group in rigid_macros.get("members", []) for r in group}
         refine_fixed = set(info["fixed"]) | rigid_members
-        blocked = blocked_exits(audit) if use_floorplan else set()
-        preserve = (lambda b: blocked_exits(measure(b)) <= blocked) if use_floorplan else None
-        if use_floorplan:
-            placed, tail_refinement = decap.refine(placed, intent, refine_fixed, preserve_escapes=preserve)
-            if tail_refinement["moved"]:
-                audit = measure(placed)
-                blocked = blocked_exits(audit)
-                info["cost_final_stage"] = "before_decap_refinement"
-                tail_refinement["output_metrics"] = _floorplan_metrics(placed, intent)
-        placed, passive_alignment = decap.align_passives(placed, intent, refine_fixed, preserve_escapes=preserve)
-        if passive_alignment["moved"] and use_floorplan:
+        blocked = blocked_exits(audit)
+
+        def preserve_align(board_state):
+            return blocked_exits(measure(board_state)) <= blocked
+
+        placed, passive_alignment = decap.align_passives(
+            placed, intent, refine_fixed, preserve_escapes=preserve_align
+        )
+        if passive_alignment["moved"]:
             audit = measure(placed)
             info.setdefault("cost_final_stage", "before_passive_alignment")
             passive_alignment["output_metrics"] = _floorplan_metrics(placed, intent)

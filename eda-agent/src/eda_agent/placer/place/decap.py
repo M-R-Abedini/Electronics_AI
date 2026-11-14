@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import math
-import time
 from collections import defaultdict
 from collections.abc import Callable
 
@@ -93,7 +92,24 @@ def _poses_for_targets(result: Board, fp, target_refs: list[str], req_net: str |
     return poses[:12] if len(target_refs) > 1 else poses[:8]
 
 
-def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 32,
+def _touches_same_side_neighbor(board: Board, fp) -> bool:
+    shape = legality.courtyard_polygon(fp)
+    if shape is None:
+        return False
+    mx0, my0, mx1, my1 = shape.bounds
+    for other in board.footprints:
+        if other is fp or other.side != fp.side:
+            continue
+        ox0, oy0, ox1, oy1 = other.box()
+        if mx0 - 0.02 > ox1 or mx1 + 0.02 < ox0 or my0 - 0.02 > oy1 or my1 + 0.02 < oy0:
+            continue
+        other_shape = legality.courtyard_polygon(other)
+        if other_shape is not None and shape.distance(other_shape) < 0.01 - 1e-9:
+            return True
+    return False
+
+
+def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 48,
            preserve_escapes: Callable[[Board], bool] | None = None) -> tuple[Board, dict]:
     """Try relocating tail capacitors (resolved and candidate-target) near supply pins cleanly."""
     distances, cand_dists, before, before_all = _measure(board, intent)
@@ -106,13 +122,17 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 32,
     trials, moved = 0, []
     clearance = max(board.rules.get("courtyard_clearance", 0), 0.05)
     all_dists = {**distances, **{r: info[0] for r, info in cand_dists.items()}}
-    count_res = math.ceil(len(distances) / 10) if distances else 0
+    tail_res = math.ceil(len(distances) / 10) if distances else 0
+    max_res = max(tail_res, 6) if distances else 0
+    ranked_res = [ref for ref in sorted(distances, key=lambda r: (-distances[r], r)) if ref not in fixed]
     worst: list[tuple[str, bool]] = [
-        (ref, False) for ref in sorted(distances, key=lambda r: (-distances[r], r))[:count_res] if ref not in fixed
+        (ref, False) for idx, ref in enumerate(ranked_res)
+        if idx < tail_res or (idx < max_res and distances[ref] > 1.5)
     ]
+    init_res = len(worst)
     count_cand = max(math.ceil(len(cand_dists) / 10), 4) if cand_dists else 0
     for ref in sorted(cand_dists, key=lambda r: (-cand_dists[r][0], r)):
-        if ref not in fixed and cand_dists[ref][0] > 1.5 and len(worst) - count_res < count_cand:
+        if ref not in fixed and cand_dists[ref][0] > 1.5 and len(worst) - init_res < count_cand:
             worst.append((ref, True))
     for ref, is_cand in worst:
         fp = result.fp(ref)
@@ -144,10 +164,16 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 32,
                             and (_tail(trial_all) < _tail(all_dists)
                                  or math.fsum(trial_all.values()) < math.fsum(all_dists.values()) - 1e-6))
             else:
-                improved = (trial.keys() == distances.keys() and trial[ref] < distances[ref]
-                            and all(stats[k] <= old_stats[k] for k in ("median_mm", "p90_mm", "max_mm"))
-                            and _tail(trial) < _tail(distances))
-            if improved and not any(not f.fixed for f in legality.check(result, fixed=fixed)):
+                improved = (
+                    trial.keys() == distances.keys()
+                    and trial[ref] < distances[ref]
+                    and all(stats[k] <= old_stats[k] for k in ("median_mm", "p90_mm", "max_mm"))
+                    and (_tail(trial) < _tail(distances)
+                         or (_tail(trial) <= _tail(distances)
+                             and math.fsum(trial.values()) < math.fsum(distances.values()) - 1e-6))
+                )
+            if improved and not _touches_same_side_neighbor(result, fp) and not any(
+                    not f.fixed for f in legality.check(result, fixed=fixed)):
                 next_cross = metrics.crossings(result)["count"]
                 if next_cross <= cross and (preserve_escapes is None or preserve_escapes(result)):
                     distances, cand_dists, all_dists, cross = trial, trial_cand, trial_all, next_cross
@@ -237,16 +263,13 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
     raw_cands.sort()
     res_d, cand_d, before_res, before_all = _measure(result, intent or {})
     has_res, has_all = bool(res_d), bool(res_d or cand_d)
-    t0 = time.monotonic()
     cross = metrics.crossings(result)["count"]
-    slow_cross = (time.monotonic() - t0) >= 0.1
 
     best_reg, cur_res, cur_all = before, before_res, before_all
     trials = 0
     moved: list[str] = []
     moved_set: set[str] = set()
     failed_per_ref: dict[str, int] = defaultdict(int)
-    wave_items: list[tuple[str, float, float, str, str]] = []
 
     def _try_legal_and_decap(ref: str, axis: str, other_ref: str) -> tuple[bool, bool, float, float, dict, dict, dict]:
         nonlocal trials
@@ -273,43 +296,12 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
             fp.x, fp.y = ox, oy
             return False, False, ox, oy, best_reg, cur_res, cur_all
         trials += 1
-        if any(not f.fixed for f in legality.check(result, fixed=fixed)) or (
-                preserve_escapes is not None and not preserve_escapes(result)):
+        if (_touches_same_side_neighbor(result, fp)
+                or any(not f.fixed for f in legality.check(result, fixed=fixed))
+                or (preserve_escapes is not None and not preserve_escapes(result))):
             fp.x, fp.y = ox, oy
             return False, True, ox, oy, best_reg, cur_res, cur_all
         return True, True, ox, oy, t_reg, n_res, n_all
-
-    def _flush_batch() -> None:
-        nonlocal best_reg, cur_res, cur_all, cross, wave_items
-        if not wave_items:
-            return
-        next_cross = metrics.crossings(result)["count"]
-        if next_cross <= cross:
-            cross = next_cross
-            for r, *_ in wave_items:
-                moved.append(r)
-            wave_items = []
-            return
-        snap = list(wave_items)
-        for r, ox, oy, _, _ in reversed(snap):
-            fp = result.fp(r)
-            fp.x, fp.y = ox, oy
-            moved_set.discard(r)
-        best_reg = metrics.regularity(result)
-        if has_res or has_all:
-            _, _, cur_res, cur_all = _measure(result, intent or {})
-        wave_items = []
-        for r, _, _, axis, oref in snap:
-            ok, _, ox, oy, t_reg, n_res, n_all = _try_legal_and_decap(r, axis, oref)
-            if not ok:
-                continue
-            c = metrics.crossings(result)["count"]
-            if c <= cross:
-                cross, best_reg, cur_res, cur_all = c, t_reg, n_res, n_all
-                moved.append(r)
-                moved_set.add(r)
-            else:
-                result.fp(r).x, result.fp(r).y = ox, oy
 
     for _, _, ref, other_ref, axis in raw_cands:
         if trials >= max_trials:
@@ -321,24 +313,14 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
             if tried:
                 failed_per_ref[ref] += 1
             continue
-        if slow_cross:
-            best_reg, cur_res, cur_all = t_reg, n_res, n_all
+        next_cross = metrics.crossings(result)["count"]
+        if next_cross <= cross:
+            cross, best_reg, cur_res, cur_all = next_cross, t_reg, n_res, n_all
+            moved.append(ref)
             moved_set.add(ref)
-            wave_items.append((ref, ox, oy, axis, other_ref))
-            if len(wave_items) >= 6:
-                _flush_batch()
         else:
-            next_cross = metrics.crossings(result)["count"]
-            if next_cross <= cross:
-                cross, best_reg, cur_res, cur_all = next_cross, t_reg, n_res, n_all
-                moved.append(ref)
-                moved_set.add(ref)
-            else:
-                result.fp(ref).x, result.fp(ref).y = ox, oy
-                failed_per_ref[ref] += 1
-
-    if slow_cross:
-        _flush_batch()
+            result.fp(ref).x, result.fp(ref).y = ox, oy
+            failed_per_ref[ref] += 1
 
     report.update(after=metrics.regularity(result), trials=trials, moved=moved)
     return (result if moved else board), report

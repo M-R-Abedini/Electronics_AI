@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from ..eval.legality import board_polygon, courtyard_polygon
+from ..eval.legality import board_polygon, courtyard_polygon, placement_obstacle_holes
 from ..eval.metrics import zone_nets
 from ..geometry import rotated_box
 from ..intent import model
@@ -31,7 +31,7 @@ WEIGHT_SIGNAL = 1.0
 WEIGHT_PLANE_NET = 0.2
 DECAP_AFFINITY_WEIGHT = 3.0  # local supply distance in mm, weighted relative to signal HPWL
 CANDIDATE_DECAP_AFFINITY_WEIGHT = 1.0  # softer pull toward nearest valid candidate IC pad when target ref is unresolved
-GAP_MM = 0.0  # declared: extra courtyard gap; courtyards already carry the library's clearance
+GAP_MM = 0.02  # declared: minimum courtyard gap (>= 20 um prevents touching-courtyard DRC)
 LOCAL_BLOCK_WEIGHT = 2.0
 LOCAL_BLOCK_ROLES = frozenset({"crystal", "crystal_load_cap", "crystal_aux", "converter_inductor", "converter_diode",
                                "converter_control", "regulator_input_cap", "regulator_output_cap", "esd", "led_resistor"})
@@ -204,6 +204,8 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
     for o in board.outline:
         pb.outers.append([tuple(p) for p in o.outer])
         pb.holes += [[tuple(p) for p in h] for h in o.holes]
+    two_sided = "F" in sides.values() and "B" in sides.values()
+    pb.holes.extend(placement_obstacle_holes(board, set(fixed), two_sided))
     return pb
 
 

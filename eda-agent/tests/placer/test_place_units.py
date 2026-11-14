@@ -10,6 +10,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
+from eda_agent.placer.eval import legality
 from eda_agent.placer.eval.score import evaluate
 from eda_agent.placer.intent import infer, model, validate
 from eda_agent.placer.io import schematic_input
@@ -620,3 +621,131 @@ def test_place_cluster_validation_and_mechanical_constraints(tmp_path):
     assert 10.0 <= reloc_out.fp("R1").x <= 14.0 and 14.0 <= reloc_out.fp("R1").y <= 19.0
     assert reloc_out.fp("R1").locked == reference.fp("R1").locked
     assert reloc_out.fp("R3").position == reference.fp("R3").position
+
+
+def test_copper_graphic_obstacle_check_and_avoidance():
+    board = _board()
+    board.obstacles.append({
+        "source": "board",
+        "kind": "copper_graphic",
+        "copper": "F.Cu",
+        "net": "",
+        "uuid": "cg-1",
+        "outlines": [
+            [(6.0, 4.0), (14.0, 4.0), (14.0, 6.0), (6.0, 6.0)],
+            [(9.2, 9.5), (10.8, 9.5), (10.8, 10.5), (9.2, 10.5)],  # inside locked U1
+        ],
+    })
+    board.fp("R1").x, board.fp("R1").y = 10.0, 5.0
+    board.fp("R1").side = "F"
+    findings = legality.check(board)
+    cg_hits = [f for f in findings if f.detail == "copper_graphic:cg-1"]
+    assert [f.refs for f in cg_hits] == [["R1"]] and all(f.kind == "keepout" for f in cg_hits)
+
+    # Opposite-side SMD part must not be flagged against F.Cu board graphic text.
+    board.fp("R1").side = "B"
+    assert not any(f.detail == "copper_graphic:cg-1" for f in legality.check(board))
+
+    board.fp("R1").side = "F"
+    pb = problem.build(board)
+    assert pb.holes
+    placed, info = solve(board, seed=0)
+    assert info["strict_violations"] == 0
+    assert not any(f.detail.startswith("copper_graphic:") for f in legality.check(placed))
+
+
+def test_opposite_side_th_pad_collision_check_and_avoidance():
+    def make_board(*, lock_u2: bool):
+        fps = [
+            _fp("U1", 3.0, 3.0, ["A", "B"], locked=True),
+            Footprint(
+                "C1", "100n", "lib:c", 12.0, 12.0, 0.0, "F", locked=False,
+                pads=[Pad("1", "A", (0.0, 0.0), (1.0, 1.0), layers=("F.Cu",))],
+                courtyard=Courtyard("file", [BOX]), uuid="u-C1",
+            ),
+            Footprint(
+                "U2", "conn", "lib:conn", 12.0, 12.0, 0.0, "B", locked=lock_u2,
+                pads=[Pad("1", "A", (0.0, 0.0), (1.8, 1.8), shape="Circle", kind="thru_hole",
+                          layers=("F.Cu", "B.Cu"), drill=0.8)],
+                courtyard=Courtyard("file", [BOX]), uuid="u-U2",
+            ),
+        ]
+        b = Board(
+            name="th", footprints=fps, outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+            board_area_mm2=400.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+            netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)],
+            nets=[Net("A", "Default", 3), Net("B", "Default", 1)],
+        )
+        return derive(b)
+
+    fixed_th = make_board(lock_u2=True)
+    th_hits = [f for f in legality.check(fixed_th) if f.detail.startswith("thru_hole_pads:")]
+    assert len(th_hits) == 1
+    assert th_hits[0].refs == ["C1", "U2"] and th_hits[0].detail == "thru_hole_pads:U2" and not th_hits[0].fixed
+    assert problem.build(fixed_th).holes
+    placed_fixed, info_fixed = solve(fixed_th, seed=0)
+    assert info_fixed["strict_violations"] == 0
+    assert not any(f.detail.startswith("thru_hole_pads:") for f in legality.check(placed_fixed))
+
+    movable_th = make_board(lock_u2=False)
+    assert any(f.detail == "thru_hole_pads:U2" for f in legality.check(movable_th))
+    pb = problem.build(movable_th)
+    core = problem.rust_problem(pb)
+    core.set_positions([(3.0, 3.0, 0), (12.0, 12.0, 0), (12.0, 12.0, 0)])
+    colliding = problem.apply(pb, core.positions())
+    coll_hits = [f for f in legality.check(colliding, fixed=set(pb.fixed)) if f.detail.startswith("thru_hole_pads:")]
+    assert coll_hits
+    resolved, _core, resolved_findings = pipeline._resolve_movable_th_collisions(
+        colliding, pb, pb, core, None, None, problem.board_diag(pb), coll_hits, coll_hits,
+    )
+    assert not any(f.detail.startswith("thru_hole_pads:") for f in resolved_findings)
+    assert not any(f.detail.startswith("thru_hole_pads:") for f in legality.check(resolved, fixed=set(pb.fixed)))
+    _placed_mov, info_mov = solve(movable_th, seed=0)
+    assert info_mov["strict_violations"] == 0
+
+
+def test_decap_alignment_determinism_clearance_and_floorplan_refinement():
+    def passive(ref, x, y):
+        return _fp(ref, x, y, ["A", "B"])
+
+    d1_close = Footprint(
+        "D1", "diode", "lib:d", 14.505, 10.0, 0.0, "F", locked=True,
+        pads=[Pad("1", "A", (0.0, 0.0), (0.5, 0.5), layers=("F.Cu",))],
+        courtyard=Courtyard("file", [BOX]), uuid="u-D1",
+    )
+    b_tight = derive(Board(
+        name="align",
+        footprints=[_fp("U1", 2.0, 2.0, ["A", "B"], locked=True), passive("R1", 10.0, 10.0),
+                    passive("R2", 12.5, 10.4), d1_close],
+        outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)],
+        nets=[Net("A", "Default", 4), Net("B", "Default", 4)],
+    ))
+    _, blocked_rep = decap.align_passives(b_tight, {}, {"U1", "D1", "R1"})
+    assert blocked_rep["moved"] == []
+
+    b_open = b_tight.copy()
+    b_open.fp("D1").x = 16.0
+    out_a, rep_a = decap.align_passives(b_open, {}, {"U1", "D1", "R1"})
+    out_b, rep_b = decap.align_passives(b_open, {}, {"U1", "D1", "R1"})
+    assert rep_a["moved"] == ["R2"] and rep_a == rep_b
+    assert out_a.fp("R2").position == pytest.approx((12.5, 10.0))
+    assert out_a.fp("R2").position == out_b.fp("R2").position
+
+    board = _board()
+    intent = {
+        "parts": {"R1": {"role": model.claim("decap", "board", 1),
+                         "target": model.claim({"ref": "U1", "net": "A"}, "board", 1)}},
+        "blocks": [model.claim({"anchor": "U1", "members": ["U1", "R1"]}, "board", 1)],
+    }
+    _, info_plain = solve(board, seed=0, intent=intent, floorplan=False)
+    assert info_plain["passive_alignment"] is None
+
+    placed_fp1, info_fp1 = solve(board, seed=0, intent=intent, floorplan=True)
+    placed_fp2, info_fp2 = solve(board, seed=0, intent=intent, floorplan=True)
+    assert [fp.position for fp in placed_fp1.footprints] == [fp.position for fp in placed_fp2.footprints]
+    assert info_fp1["passive_alignment"] == info_fp2["passive_alignment"]
+    assert info_fp1["floorplan"]["comparisons"]
+    assert all("decap_refinement" in row for row in info_fp1["floorplan"]["comparisons"].values())
+
