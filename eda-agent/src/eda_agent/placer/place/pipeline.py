@@ -11,6 +11,7 @@ file is only read; the result is a new board plus ``run_report.json``.
 
 from __future__ import annotations
 
+import copy
 import math
 import time
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from .. import report as run_report
 from ..eval import legality
 from ..eval.metrics import critical_loops_intent, crossings
 from ..eval.score import evaluate
+from ..intent import model
 from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
 from ..route.check import route_check
@@ -267,7 +269,8 @@ def _greedy_start(pb: problem.PlaceProblem) -> list[tuple[float, float, int]]:
 def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, side_policy: str | None = None,
                 mode: str = "best", seed: int = 0, route: bool = True,
                 router_timeout_s: int | None = None, intent_path: str | Path | None = None,
-                floorplan: bool = False, schematic_path: str | Path | None = None) -> dict:
+                floorplan: bool = False, schematic_path: str | Path | None = None,
+                cluster_refs: list[str] | None = None) -> dict:
     """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""
     from ..intent.resolve import resolve
     from ..intent.resolve import side_policy as policy_of
@@ -275,16 +278,58 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     src = Path(board_path).resolve()
     reference = read_board(src)
     board, cold = reference, None
+    if cluster_refs is not None and (schematic_path is not None or route):
+        raise ValueError("cluster placement requires the existing layout and route=False")
     if schematic_path is not None:
         from ..io.schematic_input import cold_input
 
         board, cold = cold_input(reference, Path(schematic_path).resolve(strict=True))
     intent, intent_info = resolve(board, intent_path)
     side_policy = policy_of(intent, side_policy)
+    if cluster_refs is not None:
+        if any(ref not in cluster_refs and claim["value"]["mode"] == "region"
+               for ref, claim in intent.get("mechanical", {}).items()):
+            raise ValueError("cluster intent cannot relocate an outside footprint")
+        board, cluster_meta = _cluster_input(reference, cluster_refs)
+        # Cluster placement is a local ECO; all components stay on their current side.
+        side_policy = "expert"
+    else:
+        cluster_meta = None
+    outside = set(board.placement_anchors) if cluster_refs is not None else set()
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = (Path(out_dir) if out_dir else RUNTIME_DIR / "place" / f"{board.name}-{stamp}").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=floorplan)
+    if cluster_refs is not None:
+        relocates = any(row["mode"] == "region" for row in info["mechanical_anchors"])
+        if info["movable"] == 0 and not relocates:
+            raise ValueError("cluster has no movable footprint")
+        original_violations = sum(not finding.fixed for finding in legality.check(board, fixed=outside))
+        before = {"strict_violations": original_violations, "illegal_after_s5": [], "s4_failed": []}
+        guard = _compare_floorplans(placed, info, board, before, intent)
+        # Explicit relocation constraints must still be honored even if the original scores better.
+        kept_original = guard["use_baseline"] and not relocates
+        if kept_original:
+            placed = board
+            info.update(before, cost_final_stage="rejected_cluster_candidate")
+            info["floorplan"].update(selected_variant="original", quality_guard=None, reservations_used=False,
+                                     reserved_pad_count=0, escape=escape.audit(
+                                         board, escape.envelopes(board, intent,
+                                                                  {fp.ref: problem.local_box(fp) for fp in board.footprints})))
+            info.pop("rigid_macros", None)
+        for fp in placed.footprints:
+            fp.locked = reference.fp(fp.ref).locked
+        for ref in outside:
+            info["fixed"].setdefault(ref, board.placement_anchors[ref])
+        if any(
+            (fp.position, fp.rotation, fp.side) != (reference.fp(fp.ref).position, reference.fp(fp.ref).rotation,
+                                                    reference.fp(fp.ref).side)
+            for fp in placed.footprints if fp.ref in outside
+        ):
+            raise RuntimeError("cluster placement moved an anchored footprint")
+        info["cluster_guard"] = {**guard, "kept_original": kept_original}
+        info["cluster"] = {**cluster_meta, **guard, "kept_original": kept_original}
+        info["zones_require_refill"] = cluster_meta["zones_require_refill"]
     if cold is not None:
         for ref, reason in cold["anchors"].items():
             placed.fp(ref).locked = reference.fp(ref).locked
@@ -294,17 +339,19 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
             raise RuntimeError("cold placement did not expose any reset footprints to the solver")
         info["cold_input"] = cold
     out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb", strip_routing=True,
-                            strip_zones=cold is not None)
+                            strip_zones=cold is not None, unfill_zones=cluster_refs is not None)
     routed = (route_check(out_board, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
               if route else None)
     fixed = set(info["fixed"])
     evaluation = evaluate(placed, routed["metrics"] if routed else None, fixed, intent)
     reference_for_score = reference
-    if cold is not None:
+    if cold is not None or cluster_refs is not None:
         reference_for_score = board.copy()
         for fp in reference_for_score.footprints:
             source = reference.fp(fp.ref)
-            fp.x, fp.y, fp.rotation, fp.locked = source.x, source.y, source.rotation, source.locked
+            fp.x, fp.y, fp.rotation, fp.side, fp.locked = (
+                source.x, source.y, source.rotation, source.side, source.locked
+            )
     reference_evaluation = evaluate(reference_for_score, fixed=fixed, intent=intent)
     page = gallery([Panel(f"{board.name} (reference)", reference_for_score, reference_evaluation),
                     Panel(f"{board.name} (placer v2, {mode})",
@@ -316,9 +363,10 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     if routed:
         gates += [g for g in routed["gates"] if g["name"] != "time_budget_s"]
     rep = run_report.build(
-        kind="place_board", inputs={"board": board.source, "intent": intent_info},
+        kind="place_cluster" if cluster_refs is not None else "place_board",
+        inputs={"board": board.source, "intent": intent_info},
         config={"side_policy": side_policy, "mode": mode, "seed": seed, "w_cross": problem.WEIGHT_SIGNAL * W_CROSS,
-                "sa_moves_per_part": SA_MOVES_PER_PART, "floorplan": floorplan},
+                "sa_moves_per_part": SA_MOVES_PER_PART, "floorplan": floorplan, "cluster_refs": cluster_refs},
         stages={"place": info, "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
         metrics={**evaluation["metrics"], "pro_score": evaluation["pro_score"], "fanout_escape": info["floorplan"]["escape"],
                  "route": routed["metrics"] if routed else None},
@@ -327,9 +375,35 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
             {"stage": "legality", "cause": f["kind"], "refs": f["refs"]}
             for f in evaluation["legality"]["findings"] if not f["fixed"]],
         artifacts={"run_dir": str(run_dir), "placed_board": str(out_board), "gallery": str(page)},
-        reference_evaluation=reference_evaluation if cold is not None else None,
+        reference_evaluation=reference_evaluation if cold is not None or cluster_refs is not None else None,
     )
     run_report.write(rep, run_dir / "run_report.json")
     return rep
+
+
+def _cluster_input(reference, refs: list[str]) -> tuple:
+    """Limit movable parts to the requested cluster while keeping zone definitions and layer roles intact."""
+    requested = set(refs)
+    if not requested or requested - {fp.ref for fp in reference.footprints}:
+        raise ValueError("cluster must contain existing footprint references")
+    anchors = problem.fixed_parts(reference)
+    if not requested - set(anchors):
+        raise ValueError("cluster has no movable footprint")
+    board = reference.copy()
+    board.placement_anchors = {fp.ref: anchors.get(fp.ref, "outside requested cluster") for fp in reference.footprints
+                               if fp.ref not in requested or fp.ref in anchors}
+    input_fill = copy.deepcopy(reference.zone_fill_by_layer_mm2)
+    board.routing, board.routing_items, board.teardrops = {}, 0, 0
+    board.zone_fill_by_layer_mm2 = {}
+    for zone in board.zones:
+        zone["filled"] = False
+        zone["filled_area_mm2"] = {layer: 0.0 for layer in zone.get("layers", [])}
+    return board, {
+        "requested_refs": sorted(requested, key=model.natural_key),
+        "outside_anchors": len(board.placement_anchors),
+        "zones_preserved": len(board.zones),
+        "zones_require_refill": bool(board.zones),
+        "input_zone_fill_by_layer_mm2": input_fill,
+    }
 
 

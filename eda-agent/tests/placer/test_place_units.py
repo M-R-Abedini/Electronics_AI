@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
+import json
 import math
+import subprocess
+from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
 from eda_agent.placer.eval.score import evaluate
 from eda_agent.placer.intent import infer, model, validate
 from eda_agent.placer.io import schematic_input
+from eda_agent.placer.io.kicad import read_board
 from eda_agent.placer.ir import (
     Board,
     CopperLayer,
@@ -21,6 +25,7 @@ from eda_agent.placer.ir import (
     Pad,
     derive,
 )
+from eda_agent.placer.mcp import PlacerService
 from eda_agent.placer.place import (
     blocks,
     decap,
@@ -30,7 +35,8 @@ from eda_agent.placer.place import (
     problem,
     rigid,
 )
-from eda_agent.placer.place.pipeline import _compare_floorplans, solve
+from eda_agent.placer.place.pipeline import _compare_floorplans, place_board, solve
+from eda_agent.placer.toolchain import ToolchainError, kicad
 
 BOX = [(-1.0, -0.6), (1.0, -0.6), (1.0, 0.6), (-1.0, 0.6)]
 
@@ -328,3 +334,193 @@ def test_solve_is_legal_better_and_deterministic():
     assert ev["metrics"]["hpwl"]["all_mm"] < start
     assert a.fp("U1").x == 10.0 and a.fp("U1").y == 10.0
     assert set(info["candidates"]) == {"analytical", "sa_only"}
+
+
+def _kicad_cluster_fixture(board_path: Path) -> Path:
+    """Build a filled KiCad board with a non-GND +3V3 pour, footprint keepout, track, and crossed signals."""
+    try:
+        kc = kicad()
+    except ToolchainError as exc:
+        pytest.skip(str(exc))
+    script = """import sys, pcbnew
+out = sys.argv[1]
+b = pcbnew.NewBoard(out)
+b.GetDesignSettings().SetCopperLayerCount(2)
+rect = pcbnew.PCB_SHAPE(b, pcbnew.SHAPE_T_RECT)
+rect.SetLayer(pcbnew.Edge_Cuts)
+rect.SetStart(pcbnew.VECTOR2I(0, 0))
+rect.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(30), pcbnew.FromMM(20)))
+b.Add(rect)
+nets = {}
+for name in ('+3V3', 'SIG_A', 'SIG_B'):
+    net = pcbnew.NETINFO_ITEM(b, name)
+    b.Add(net)
+    nets[name] = net
+lset = pcbnew.LSET()
+lset.AddLayer(pcbnew.F_Cu)
+parts = (
+    ('U1', 5.0, 5.0, ('+3V3', 'SIG_A'), True),
+    ('R1', 5.0, 15.0, ('+3V3', 'SIG_B'), False),
+    ('R2', 25.0, 5.0, ('+3V3', 'SIG_B'), False),
+    ('R3', 25.0, 15.0, ('+3V3', 'SIG_A'), False),
+)
+for ref, x, y, pnets, locked in parts:
+    fp = pcbnew.FOOTPRINT(b)
+    fp.SetReference(ref)
+    for i, netname in enumerate(pnets):
+        pad = pcbnew.PAD(fp)
+        pad.SetNumber(str(i + 1))
+        pad.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(-0.6 + 1.2 * i), 0))
+        pad.SetSize(pcbnew.VECTOR2I(pcbnew.FromMM(0.5), pcbnew.FromMM(0.6)))
+        pad.SetLayerSet(lset)
+        pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+        pad.SetNet(nets[netname])
+        fp.Add(pad)
+    cy = pcbnew.PCB_SHAPE(fp, pcbnew.SHAPE_T_RECT)
+    cy.SetLayer(pcbnew.F_CrtYd)
+    cy.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(-1.0), pcbnew.FromMM(-0.6)))
+    cy.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(1.0), pcbnew.FromMM(0.6)))
+    fp.Add(cy)
+    fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y)))
+    fp.SetLocked(locked)
+    b.Add(fp)
+zone = pcbnew.ZONE(b)
+zone.SetLayer(pcbnew.B_Cu)
+zone.SetNet(nets['+3V3'])
+zone.SetAssignedPriority(3)
+zo = zone.Outline()
+zo.NewOutline()
+for px, py in ((1, 1), (29, 1), (29, 19), (1, 19)):
+    zo.Append(pcbnew.FromMM(px), pcbnew.FromMM(py))
+b.Add(zone)
+keepout = pcbnew.ZONE(b)
+keepout.SetIsRuleArea(True)
+keepout.SetLayer(pcbnew.F_Cu)
+keepout.SetDoNotAllowFootprints(True)
+ko = keepout.Outline()
+ko.NewOutline()
+for px, py in ((15, 14), (19, 14), (19, 19), (15, 19)):
+    ko.Append(pcbnew.FromMM(px), pcbnew.FromMM(py))
+b.Add(keepout)
+region = pcbnew.ZONE(b)
+region.SetIsRuleArea(True)
+region.SetLayer(pcbnew.F_Cu)
+region.SetDoNotAllowFootprints(False)
+region.SetDoNotAllowTracks(False)
+region.SetDoNotAllowVias(False)
+region.SetDoNotAllowPads(False)
+region.SetDoNotAllowZoneFills(False)
+ro = region.Outline()
+ro.NewOutline()
+for px, py in ((10, 14), (14, 14), (14, 19), (10, 19)):
+    ro.Append(pcbnew.FromMM(px), pcbnew.FromMM(py))
+b.Add(region)
+track = pcbnew.PCB_TRACK(b)
+track.SetLayer(pcbnew.F_Cu)
+track.SetNet(nets['SIG_A'])
+track.SetWidth(pcbnew.FromMM(0.25))
+track.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(5), pcbnew.FromMM(5)))
+track.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(25), pcbnew.FromMM(15)))
+b.Add(track)
+pcbnew.ZONE_FILLER(b).Fill(b.Zones())
+pcbnew.SaveBoard(out, b)
+"""
+    subprocess.run([str(kc.python), "-I", "-c", script, str(board_path)], check=True)
+    return board_path
+
+
+def test_place_cluster_preserves_power_zone_and_keepout_and_clears_old_fill(tmp_path):
+    board_path = _kicad_cluster_fixture(tmp_path / "cluster_power_zone.kicad_pcb")
+    reference = read_board(board_path)
+    assert reference.zones[0]["net"] == "+3V3" and reference.zones[0]["filled"] is True
+    assert reference.routing_items == 1 and len(reference.rule_areas) == 2
+
+    res = PlacerService(tmp_path / "runs").place_cluster(str(board_path), ["R1", "R2"], seed=0)
+    rep = json.loads(Path(res["run_report"]).read_text(encoding="utf-8"))
+    assert res["passed"] is True
+    assert res["zones_require_refill"] is True
+    assert rep["stages"]["place"]["zones_require_refill"] is True
+    cluster_info = rep["stages"]["place"]["cluster"]
+    assert cluster_info["zones_preserved"] == 1
+    assert cluster_info["input_zone_fill_by_layer_mm2"]["B.Cu"]["+3V3"] > 0.0
+
+    reloaded = read_board(res["placed_board"])
+    assert len(reloaded.zones) == len(reference.zones) == 1
+    z_out, z_ref = reloaded.zones[0], reference.zones[0]
+    assert (z_out["uuid"], z_out["net"], z_out["layers"], z_out["priority"], z_out["outline"]) == (
+        z_ref["uuid"], z_ref["net"], z_ref["layers"], z_ref["priority"], z_ref["outline"])
+    assert z_out["filled"] is False
+    assert all(area == 0.0 for area in z_out["filled_area_mm2"].values())
+    assert all(area == 0.0 for layers in reloaded.zone_fill_by_layer_mm2.values() for area in layers.values())
+    assert reloaded.rule_areas == reference.rule_areas
+    assert reloaded.routing_items == 0
+    for ref in ("U1", "R3"):
+        out_fp, ref_fp = reloaded.fp(ref), reference.fp(ref)
+        assert (out_fp.position, out_fp.rotation, out_fp.side, out_fp.locked) == (
+            ref_fp.position, ref_fp.rotation, ref_fp.side, ref_fp.locked)
+
+
+def test_place_cluster_identity_pose_matches_reference_hpwl_and_crossings_with_power_plane(tmp_path, monkeypatch):
+    board_path = _kicad_cluster_fixture(tmp_path / "cluster_identity.kicad_pcb")
+
+    def noop_solve(board, *, side_policy="expert", mode="best", seed=0, intent=None, floorplan=False):
+        fixed = problem.fixed_parts(board)
+        return board.copy(), {
+            "mode": mode, "side_policy": side_policy, "seed": seed, "movable": 2, "fixed": fixed,
+            "s4_failed": [], "illegal_after_s5": [], "strict_violations": 0, "seconds_s0_s5": 0.01,
+            "mechanical_anchors": [],
+            "floorplan": {"requested": floorplan, "selected_variant": "baseline",
+                          "escape": escape.audit(board, escape.envelopes(board, intent or {},
+                                                                         {fp.ref: problem.local_box(fp)
+                                                                          for fp in board.footprints}))},
+        }
+
+    monkeypatch.setattr(pipeline, "solve", noop_solve)
+    rep = place_board(board_path, out_dir=tmp_path / "out", route=False, floorplan=True, cluster_refs=["R1", "R2"])
+    assert rep["metrics"]["hpwl"] == rep["reference_evaluation"]["metrics"]["hpwl"]
+    assert rep["metrics"]["crossings"] == rep["reference_evaluation"]["metrics"]["crossings"]
+    assert rep["metrics"]["crossings"]["count"] == 1
+    assert rep["metrics"]["hpwl"]["signal_mm"] < rep["metrics"]["hpwl"]["all_mm"]
+
+
+def test_place_cluster_validation_and_mechanical_constraints(tmp_path):
+    board_path = _kicad_cluster_fixture(tmp_path / "cluster_mech.kicad_pcb")
+    reference = read_board(board_path)
+
+    with pytest.raises(ValueError, match="route=False"):
+        place_board(board_path, out_dir=tmp_path / "r1", route=True, cluster_refs=["R1"])
+    with pytest.raises(ValueError, match="existing footprint"):
+        place_board(board_path, out_dir=tmp_path / "r2", route=False, cluster_refs=["NO_SUCH_REF"])
+    with pytest.raises(ValueError, match="no movable footprint"):
+        place_board(board_path, out_dir=tmp_path / "r3", route=False, cluster_refs=["U1"])
+
+    intent_preserve = infer.draft(reference)
+    intent_preserve["mechanical"] = {"R1": model.claim({"mode": "preserve"}, "board", 1)}
+    p_preserve = tmp_path / "preserve.json"
+    model.dump(intent_preserve, p_preserve)
+    with pytest.raises(ValueError, match="no movable footprint"):
+        place_board(board_path, out_dir=tmp_path / "r5", route=False, intent_path=p_preserve, cluster_refs=["R1"])
+
+    region_id = next(area["uuid"] for area in reference.rule_areas if not area["keepout"]["footprints"])
+
+    intent_outside_region = infer.draft(reference)
+    intent_outside_region["mechanical"] = {
+        "R3": model.claim({"mode": "region", "region": region_id, "angles_deg": [0]}, "board", 1),
+    }
+    p_outside = tmp_path / "outside_region.json"
+    model.dump(intent_outside_region, p_outside)
+    with pytest.raises(ValueError, match="relocate an outside"):
+        place_board(board_path, out_dir=tmp_path / "r4", route=False, intent_path=p_outside, cluster_refs=["R1"])
+
+    intent_reloc = infer.draft(reference)
+    intent_reloc["mechanical"] = {
+        "R1": model.claim({"mode": "region", "region": region_id, "angles_deg": [0]}, "board", 1),
+    }
+    p_reloc = tmp_path / "reloc.json"
+    model.dump(intent_reloc, p_reloc)
+    rep_reloc = place_board(board_path, out_dir=tmp_path / "r6", route=False, floorplan=True,
+                            intent_path=p_reloc, cluster_refs=["R1", "R2"])
+    reloc_out = read_board(rep_reloc["artifacts"]["placed_board"])
+    assert 10.0 <= reloc_out.fp("R1").x <= 14.0 and 14.0 <= reloc_out.fp("R1").y <= 19.0
+    assert reloc_out.fp("R1").locked == reference.fp("R1").locked
+    assert reloc_out.fp("R3").position == reference.fp("R3").position

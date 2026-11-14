@@ -114,6 +114,13 @@ class PlacerService:
               "seed": {"type": "integer", "minimum": 0, "default": 0}, "route": {"type": "boolean", "default": True},
               "intent_path": _STRING, "schematic_path": _STRING, "floorplan": {"type": "boolean", "default": False}},
              ["board_path"], False),
+            ("place_cluster",
+             ("Optimize selected footprints in an existing KiCad board. Holds all other poses fixed and writes a new "
+              "placement-only board with tracks and stale copper zone fills cleared while preserving zone definitions "
+              "and rule areas. Returns placement legality, refill status, and a comparison gallery."),
+             {"board_path": _STRING, "refs": {"type": "array", "items": _STRING, "minItems": 1, "uniqueItems": True},
+              "intent_path": _STRING, "seed": {"type": "integer", "minimum": 0, "default": 0}},
+             ["board_path", "refs"], False),
             ("gallery",
              ("Build one side-by-side HTML gallery from run folders of placer__score or placer__place_board "
               "(run_report.json paths or their folders): placements with ratsnest, routed copper and metrics."),
@@ -195,6 +202,17 @@ class PlacerService:
             "gallery": rep["artifacts"]["gallery"],
         }
 
+    def place_cluster(self, board_path: str, refs: list[str], intent_path: str | None = None, seed: int = 0) -> dict:
+        from .place.pipeline import place_board
+
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        rep = place_board(board_path, out_dir=self.runs / f"{Path(board_path).stem}-cluster-{stamp}",
+                          seed=seed, route=False, intent_path=intent_path, floorplan=True, cluster_refs=refs)
+        return {"passed": rep["passed"], "gates": rep["gates"], "refs": refs,
+                "zones_require_refill": rep["stages"]["place"].get("zones_require_refill", False),
+                "placed_board": rep["artifacts"]["placed_board"], "gallery": rep["artifacts"]["gallery"],
+                "run_report": str(Path(rep["artifacts"]["run_dir"]) / "run_report.json")}
+
     def gallery(self, runs: list[str], title: str = "Placement gallery") -> dict:
         import json as _json
 
@@ -271,6 +289,7 @@ class PlacerService:
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         functions = {"inspect": self.inspect, "score": self.score, "place_board": self.place_board,
+                     "place_cluster": self.place_cluster,
                      "gallery": self.gallery, "intent_draft": self.intent_draft,
                      "intent_validate": self.intent_validate}
         if name not in functions:

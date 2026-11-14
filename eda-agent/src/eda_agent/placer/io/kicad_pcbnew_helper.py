@@ -612,15 +612,25 @@ def place(board_path, placement_json, out_board, strip_routing, out_json):
         if "locked" in pose:
             fp.SetLocked(bool(pose["locked"]))
         moved += 1
-    removed = list(board.GetTracks()) if strip_routing in ("1", "2") else []
+    removed = list(board.GetTracks()) if strip_routing in ("1", "2", "3") else []
+    unfilled = 0
     if strip_routing == "2":
         removed.extend(zone for zone in board.Zones() if not zone.GetIsRuleArea())
+    elif strip_routing == "3":
+        for zone in list(board.Zones()):
+            if zone.GetIsRuleArea():
+                continue
+            if hasattr(zone, "IsTeardropArea") and zone.IsTeardropArea():
+                removed.append(zone)
+            else:
+                zone.UnFill()
+                unfilled += 1
     for item in removed:
         board.Remove(item)
     pcbnew.SaveBoard(out_board, board)
     with open(out_json, "w", encoding="utf-8") as fh:  # not stdout: SWIG writes leak notices there
         json.dump({"placed": moved, "flipped": flipped, "missing": sorted(set(placement) - set(by_uuid)),
-                   "removed_routing": len(removed)}, fh)
+                   "removed_routing": len(removed), "unfilled_zones": unfilled}, fh)
     del removed
 
 
