@@ -13,16 +13,21 @@ Both tools only read the user's board; every output goes to a new run folder.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import subprocess
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mcp import types
+
 from . import report as run_report
 from .eval.score import evaluate
 from .io.kicad import read_board
 from .ir import Board
-from .render import Panel, gallery
+from .render import Panel, gallery, review_images
 from .route.check import route_check
 from .toolchain import RUNTIME_DIR
 
@@ -123,8 +128,11 @@ class PlacerService:
              ["board_path", "refs"], False),
             ("gallery",
              ("Build one side-by-side HTML gallery from run folders of placer__score or placer__place_board "
-              "(run_report.json paths or their folders): placements with ratsnest, routed copper and metrics."),
-             {"runs": {"type": "array", "items": _STRING, "minItems": 1}, "title": _STRING}, ["runs"], True),
+              "(run_report.json paths or their folders): placements with ratsnest, routed copper and metrics. "
+              "Set include_images=true with one or two runs to also return native top and bottom PCB images "
+              "in the MCP response for visual review."),
+             {"runs": {"type": "array", "items": _STRING, "minItems": 1}, "title": _STRING,
+              "include_images": {"type": "boolean", "default": False}}, ["runs"], True),
         ]
         return [{"name": name, "description": description,
                  "inputSchema": {"type": "object", "properties": props, "required": required,
@@ -213,28 +221,51 @@ class PlacerService:
                 "placed_board": rep["artifacts"]["placed_board"], "gallery": rep["artifacts"]["gallery"],
                 "run_report": str(Path(rep["artifacts"]["run_dir"]) / "run_report.json")}
 
-    def gallery(self, runs: list[str], title: str = "Placement gallery") -> dict:
-        import json as _json
-
+    def gallery(self, runs: list[str], title: str = "Placement gallery",
+                include_images: bool = False) -> dict[str, Any] | types.CallToolResult:
+        if include_images and len(runs) > 2:
+            raise ValueError("Image review supports at most two runs per request")
         panels = []
+        sources = []
         for run in runs:
             path = Path(run)
             report = path / "run_report.json" if path.is_dir() else path
-            rep = _json.loads(report.read_text(encoding="utf-8"))
+            rep = json.loads(report.read_text(encoding="utf-8"))
             art = rep.get("artifacts", {})
             board_file = art.get("placed_board") or rep["inputs"]["board"]["path"]
             route_dir = Path(art.get("run_dir", report.parent)) / "route" / "run_report.json"
             shown = board_file
             route_metrics = None
             if route_dir.is_file():
-                rr = _json.loads(route_dir.read_text(encoding="utf-8"))
+                rr = json.loads(route_dir.read_text(encoding="utf-8"))
                 shown = rr["artifacts"].get("routed_board", board_file)
                 route_metrics = rr["metrics"]
             board = read_board(shown)
             panels.append(Panel(f"{board.name} ({rep['kind']})", board, evaluate(board, route_metrics), route_metrics))
+            sources.append((Path(shown), board.name, rep["kind"]))
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out = gallery(panels, self.runs / f"gallery-{stamp}.html", title=title)
-        return {"gallery": str(out), "panels": len(panels)}
+        value = {"gallery": str(out), "panels": len(panels)}
+        if not include_images:
+            return value
+
+        content = []
+        views = []
+        for index, (source, name, kind) in enumerate(sources, 1):
+            try:
+                images = review_images(source)
+            except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
+                views.append({"panel": index, "board": name, "render_status": type(exc).__name__})
+                continue
+            for side, data in images:
+                views.append({"panel": index, "board": name, "side": side})
+                content.append(types.TextContent(type="text", text=f"Panel {index} · {name} ({kind}) · {side}"))
+                content.append(types.ImageContent(type="image", mimeType="image/png", data=base64.b64encode(data).decode("ascii")))
+        value["views"] = views
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=False)), *content],
+            structuredContent=value,
+        )
 
     def score(self, board_path: str, route: bool = True, intent_path: str | None = None) -> dict:
         from .intent.resolve import resolve
@@ -287,7 +318,7 @@ class PlacerService:
             "gallery": str(page),
         }
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any] | types.CallToolResult:
         functions = {"inspect": self.inspect, "score": self.score, "place_board": self.place_board,
                      "place_cluster": self.place_cluster,
                      "gallery": self.gallery, "intent_draft": self.intent_draft,
@@ -296,15 +327,12 @@ class PlacerService:
             raise ValueError(f"Unknown placer tool: {name}")
         return await asyncio.to_thread(functions[name], **(arguments or {}))
 
-    async def call_tool_async(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def call_tool_async(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any] | types.CallToolResult:
         return await self.call_tool(name, arguments)
 
 
 def serve() -> None:
     """Standalone stdio server exposing the tools as ``placer__<name>`` (development use)."""
-    import json
-
-    from mcp import types
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
 
@@ -317,10 +345,12 @@ def serve() -> None:
                            annotations=types.ToolAnnotations(**t["annotations"])) for t in service.list_tools()]
 
     @server.call_tool()
-    async def _call(name: str, arguments: dict) -> list[types.TextContent]:
+    async def _call(name: str, arguments: dict) -> list[types.TextContent] | types.CallToolResult:
         if not name.startswith("placer__"):
             raise ValueError(f"Unknown tool: {name}")
         result = await service.call_tool(name.removeprefix("placer__"), arguments)
+        if isinstance(result, types.CallToolResult):
+            return result
         return [types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=1))]
 
     async def _run() -> None:

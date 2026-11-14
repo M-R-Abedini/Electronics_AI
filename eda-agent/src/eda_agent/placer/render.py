@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import html
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from .eval import metrics
 from .ir import Board
+from .toolchain import kicad
 
 _LAYER_COLOURS = {"F.Cu": "#c83434", "B.Cu": "#3434c8"}
 _INNER = ("#c2c200", "#c200c2", "#00c2c2", "#c27000", "#00c270", "#7000c2")
@@ -28,6 +31,20 @@ class Panel:
     board: Board
     evaluation: dict | None = None
     route: dict | None = None  # route-check metrics for this placement
+
+
+def review_images(board_path: Path) -> list[tuple[str, bytes]]:
+    """Render front and back views without writing files beside the PCB."""
+    cli = str(kicad().cli)
+    images = []
+    with TemporaryDirectory(prefix="electronics-ai-review-") as tmp:
+        for side in ("top", "bottom"):
+            target = Path(tmp) / f"{side}.png"
+            subprocess.run([cli, "pcb", "render", "--side", side, "--width", "1000", "--height", "1000",
+                            "--quality", "basic", "--background", "opaque", "-o", str(target), str(board_path)],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=90, check=True)
+            images.append((side, target.read_bytes()))
+    return images
 
 
 def _layer_colour(name: str) -> str:

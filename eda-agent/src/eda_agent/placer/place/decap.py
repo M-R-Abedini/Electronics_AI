@@ -8,12 +8,13 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import replace
 
+from shapely import STRtree
 from shapely.geometry import LineString
 
 from ..eval import legality, metrics
 from ..geometry import transform
 from ..intent import model
-from ..ir import Board
+from ..ir import Board, Box, Footprint
 
 
 def _tail(distances: dict[str, float]) -> float:
@@ -63,63 +64,62 @@ class CrossingTracker:
                 if p.net and p.net not in self.planes:
                     self.net_fps.setdefault(p.net, []).append((fp, p))
         self.edges_by_net = {net: self._compute_net_edges(net) for net in self.net_fps}
+        self._index = None
         self.total = metrics.crossings(board)["count"]
 
-    def _compute_net_edges(self, net: str) -> list[tuple[float, float, float, float, LineString]]:
+    def _compute_net_edges(self, net: str) -> list[LineString]:
         pts = [fp.pad_world(p) for fp, p in self.net_fps.get(net, ())]
-        if len(pts) < 2:
-            return []
-        out = []
-        for a, b in metrics.mst_edges(pts):
-            if a != b:
-                out.append((min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]), LineString([a, b])))
-        return out
+        return [LineString([a, b]) for a, b in metrics.mst_edges(pts) if a != b]
 
-    def _count_nets_vs_all(self, nets: set[str], edges_map: dict[str, list]) -> int:
-        c = 0
-        net_list = sorted(nets)
-        for idx, n1 in enumerate(net_list):
-            e1 = edges_map.get(n1, ())
-            if not e1:
-                continue
-            for n2, e2 in self.edges_by_net.items():
-                if n2 in nets or not e2:
-                    continue
-                for ax0, ay0, ax1, ay1, ls1 in e1:
-                    for bx0, by0, bx1, by1, ls2 in e2:
-                        if ax0 <= bx1 and ax1 >= bx0 and ay0 <= by1 and ay1 >= by0 and ls1.crosses(ls2):
-                            c += 1
-            for n2 in net_list[idx + 1:]:
-                e2 = edges_map.get(n2, ())
-                for ax0, ay0, ax1, ay1, ls1 in e1:
-                    for bx0, by0, bx1, by1, ls2 in e2:
-                        if ax0 <= bx1 and ax1 >= bx0 and ay0 <= by1 and ay1 >= by0 and ls1.crosses(ls2):
-                            c += 1
-        return c
+    def _count_nets_vs_all(self, edges_map: dict[str, list[LineString]]) -> int:
+        lines, owners = [], []
+        for net, edges in edges_map.items():
+            lines.extend(edges)
+            owners.extend([net] * len(edges))
+        if not lines:
+            return 0
+        if self._index is None:
+            all_lines, all_owners = [], []
+            for net, edges in self.edges_by_net.items():
+                all_lines.extend(edges)
+                all_owners.extend([net] * len(edges))
+            self._index = STRtree(all_lines), all_owners
+        tree, all_owners = self._index
+        external = sum(1 for j in tree.query(lines, predicate="crosses")[1] if all_owners[j] not in edges_map)
+        internal = 0
+        if len(edges_map) > 1:
+            internal = sum(1 for i, j in zip(*STRtree(lines).query(lines, predicate="crosses"))
+                           if i < j and owners[i] != owners[j])
+        return external + internal
 
     def prepare(self, moved_fps: tuple) -> tuple[Callable[[], tuple[int, dict]], Callable[[int, dict], None]]:
         """Prepare query/commit closures for the nets touched by ``moved_fps``."""
         touched = {p.net for fp in moved_fps for p in fp.pads
                    if p.net and p.net not in self.planes and p.net in self.edges_by_net}
-        base_contrib = self._count_nets_vs_all(touched, self.edges_by_net) if touched else 0
-        base_other = self.total - base_contrib
+        base_other = None
 
         def query() -> tuple[int, dict]:
+            nonlocal base_other
             if not touched:
                 return self.total, {}
+            if base_other is None:
+                base_other = self.total - self._count_nets_vs_all({n: self.edges_by_net[n] for n in touched})
             new_map = {n: self._compute_net_edges(n) for n in touched}
-            return base_other + self._count_nets_vs_all(touched, new_map), new_map
+            return base_other + self._count_nets_vs_all(new_map), new_map
 
         def commit(new_count: int, new_map: dict) -> None:
             self.total = new_count
+            if any(new_map.values()) or any(self.edges_by_net[n] for n in new_map):
+                self._index = None
             self.edges_by_net.update(new_map)
 
         return query, commit
 
 
-def _find_blockers(board: Board, fp, outline_bounds: tuple[float, float, float, float] | None) -> list | None:
+def _find_blockers(board: Board, fp: Footprint, outline_bounds: Box | None,
+                   box: Callable[[Footprint], Box] = Footprint.box) -> list | None:
     """Return same-side AABB blockers for ``fp``, or None if outside ``outline_bounds``."""
-    ax0, ay0, ax1, ay1 = fp.box()
+    ax0, ay0, ax1, ay1 = box(fp)
     if outline_bounds is not None:
         bx0, by0, bx1, by1 = outline_bounds
         if ax0 < bx0 or ay0 < by0 or ax1 > bx1 or ay1 > by1:
@@ -128,7 +128,7 @@ def _find_blockers(board: Board, fp, outline_bounds: tuple[float, float, float, 
     for other in board.footprints:
         if other is fp or other.side != fp.side:
             continue
-        ox0, oy0, ox1, oy1 = other.box()
+        ox0, oy0, ox1, oy1 = box(other)
         if max(ax0, ox0) < min(ax1, ox1) - 0.01 and max(ay0, oy0) < min(ay1, oy1) - 0.01:
             out.append(other)
     return out
@@ -415,6 +415,18 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
         tracker = CrossingTracker(result)
         outline = legality.board_polygon(result)
         outline_bounds = outline.bounds if outline is not None else None
+        boxes = {}
+
+        def box(fp):
+            pose = fp.x, fp.y, fp.rotation
+            cached = boxes.get(fp.ref)
+            if cached is None or cached[0] != pose:
+                cached = boxes[fp.ref] = (pose, fp.box())
+            return cached[1]
+
+        def blockers(fp):
+            return _find_blockers(result, fp, outline_bounds, box)
+
         clearance = max(board.rules.get("courtyard_clearance", 0), 0.06)
         base_rudy = metrics.rudy(result).get("over_capacity_fraction", 0.0)
         movable_fps = [fp for fp in sorted(result.footprints, key=lambda f: f.ref)
@@ -425,25 +437,24 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                 moved.append(ref)
                 moved_set.add(ref)
 
-        def _full_accept_ok(moved_fps: tuple, next_cross: int) -> tuple[bool, dict, dict, dict]:
+        def _full_accept_ok(moved_fps: tuple) -> tuple[bool, dict, dict]:
             nonlocal trials
-            t_reg = metrics.regularity(result)
             ok_d, n_res, n_all = _decap_ok(result, intent, has_res, has_all, before_res, before_all)
             if not ok_d:
-                return False, t_reg, cur_res, cur_all
+                return False, cur_res, cur_all
             if any(_touches_same_side_neighbor(result, f) for f in moved_fps):
-                return False, t_reg, cur_res, cur_all
+                return False, cur_res, cur_all
             if not _local_legal(result, moved_fps, fixed, outline_bounds):
-                return False, t_reg, cur_res, cur_all
+                return False, cur_res, cur_all
             if metrics.rudy(result).get("over_capacity_fraction", 0.0) > base_rudy + 1e-6:
-                return False, t_reg, cur_res, cur_all
+                return False, cur_res, cur_all
             if trials >= max_trials:
-                return False, t_reg, cur_res, cur_all
+                return False, cur_res, cur_all
             trials += 1
             if (preserve_escapes is not None and not preserve_escapes(result)) or any(
                     not f.fixed for f in legality.check(result, fixed=fixed)):
-                return False, t_reg, cur_res, cur_all
-            return True, t_reg, n_res, n_all
+                return False, cur_res, cur_all
+            return True, n_res, n_all
 
         # Multi-round refinement: rotation/swap (Pass A) + analytic stacking/co-alignment (Pass B).
         for _round in range(4):
@@ -465,7 +476,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                     if r == orot:
                         continue
                     _set_body_center_pose(fp, cx, cy, r)
-                    if _find_blockers(result, fp, outline_bounds) != []:
+                    if blockers(fp) != []:
                         continue
                     nr = metrics.regularity(result)
                     if nr["aligned_fraction"] < best_reg["aligned_fraction"] - 1e-9:
@@ -476,7 +487,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                     key = (-nc, nr["aligned_fraction"], nr["dominant_axis_fraction"])
                     if key <= best_key:
                         continue
-                    ok, nr, n_res, n_all = _full_accept_ok((fp,), nc)
+                    ok, n_res, n_all = _full_accept_ok((fp,))
                     if not ok:
                         continue
                     best_key = key
@@ -513,8 +524,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                             for rt in (s0[5], (s0[5] + 180) % 360):
                                 _set_body_center_pose(a, tcx, tcy, ra)
                                 _set_body_center_pose(target, acx, acy, rt)
-                                if _find_blockers(result, a, outline_bounds) != [] or _find_blockers(
-                                        result, target, outline_bounds) != []:
+                                if blockers(a) != [] or blockers(target) != []:
                                     continue
                                 nc, nmap = query()
                                 if nc > tracker.total:
@@ -523,7 +533,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                                 key = (-nc, nr["aligned_fraction"], nr["dominant_axis_fraction"])
                                 if key <= best_key:
                                     continue
-                                ok, nr, n_res, n_all = _full_accept_ok((a, target), nc)
+                                ok, n_res, n_all = _full_accept_ok((a, target))
                                 if not ok:
                                     continue
                                 best_key = key
@@ -583,7 +593,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         if math.hypot(tx - ox, ty - oy) > 22.0:
                             continue
                         a.x, a.y, a.rotation = tx, ty, trot
-                        if _find_blockers(result, a, outline_bounds) != []:
+                        if blockers(a) != []:
                             continue
                         nr = metrics.regularity(result)
                         if (nr["aligned_fraction"], nr["dominant_axis_fraction"]) <= best_key[:2]:
@@ -594,7 +604,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         key = (nr["aligned_fraction"], nr["dominant_axis_fraction"], -nc)
                         if key <= best_key:
                             continue
-                        ok, nr, n_res, n_all = _full_accept_ok((a,), nc)
+                        ok, n_res, n_all = _full_accept_ok((a,))
                         if not ok:
                             continue
                         best_key = key
@@ -625,7 +635,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                             ntx, nty = round(s0[3] + dtx, 4), round(s0[4] + dty, 4)
                             for trot in (s0[5], (s0[5] + 180) % 360, (s0[5] + 90) % 360, (s0[5] + 270) % 360):
                                 target.x, target.y, target.rotation = ntx, nty, trot
-                                if _find_blockers(result, target, outline_bounds) != []:
+                                if blockers(target) != []:
                                     continue
                                 lx_t, ly_t, rx_t, ry_t = target.box(0.0, 0.0, trot)
                                 for arot in (trot, (trot + 180) % 360):
@@ -644,7 +654,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                                             if math.hypot(ax - ntx, ay - nty) > metrics.ALIGN_RADIUS_MM:
                                                 continue
                                             a.x, a.y, a.rotation = ax, ay, arot
-                                            if _find_blockers(result, a, outline_bounds) != []:
+                                            if blockers(a) != []:
                                                 continue
                                             nr = metrics.regularity(result)
                                             if (nr["aligned_fraction"], nr["dominant_axis_fraction"]) <= best_key[:2]:
@@ -655,7 +665,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                                             key = (nr["aligned_fraction"], nr["dominant_axis_fraction"], -nc)
                                             if key <= best_key:
                                                 continue
-                                            ok, nr, n_res, n_all = _full_accept_ok((a, target), nc)
+                                            ok, n_res, n_all = _full_accept_ok((a, target))
                                             if not ok:
                                                 continue
                                             best_key = key

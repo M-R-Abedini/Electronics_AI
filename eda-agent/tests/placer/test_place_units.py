@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import subprocess
@@ -10,7 +11,8 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
-from eda_agent.placer.eval import legality
+from eda_agent.placer import mcp as placer_mcp
+from eda_agent.placer.eval import legality, metrics
 from eda_agent.placer.eval.score import evaluate
 from eda_agent.placer.intent import infer, model, validate
 from eda_agent.placer.io import schematic_input
@@ -57,6 +59,45 @@ def _board():
               board_area_mm2=400.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
               netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)], nets=[Net(n, "Default", 3) for n in nets])
     return derive(b)
+
+
+def test_gallery_returns_optional_images_with_panel_and_side(tmp_path, monkeypatch):
+    report = tmp_path / "run_report.json"
+    board_path = tmp_path / "placed.kicad_pcb"
+    report.write_text(json.dumps({"kind": "place", "artifacts": {"placed_board": str(board_path)}}), encoding="utf-8")
+    monkeypatch.setattr(placer_mcp, "read_board", lambda path: _board())
+    monkeypatch.setattr(placer_mcp, "review_images", lambda path: [("top", b"view from top"), ("bottom", b"view from bottom")])
+    service = PlacerService(tmp_path)
+
+    assert service.gallery([str(report)])["panels"] == 1
+    result = service.gallery([str(report)], include_images=True)
+    assert [view["side"] for view in result.structuredContent["views"]] == ["top", "bottom"]
+    assert [base64.b64decode(item.data) for item in result.content if item.type == "image"] == [
+        b"view from top", b"view from bottom",
+    ]
+    with pytest.raises(ValueError, match="at most two"):
+        service.gallery([str(report)] * 3, include_images=True)
+
+
+def test_crossing_tracker_matches_full_count_after_trial_and_commit():
+    board = _board()
+    tracker = decap.CrossingTracker(board)
+    a, b = board.fp("R1"), board.fp("R2")
+    query, commit = tracker.prepare((a, b))
+    a.x, b.y = 9.0, 13.0
+    count, edges = query()
+    assert count == metrics.crossings(board)["count"]
+    a.rotation = 90.0
+    count, edges = query()
+    assert count == metrics.crossings(board)["count"]
+    commit(count, edges)
+
+    query, commit = tracker.prepare((board.fp("R3"),))
+    board.fp("R3").y = 14.0
+    count, edges = query()
+    assert count == metrics.crossings(board)["count"]
+    commit(count, edges)
+    assert tracker.total == count
 
 
 def test_decap_refinement_moves_only_resolved_unlocked_capacitor():

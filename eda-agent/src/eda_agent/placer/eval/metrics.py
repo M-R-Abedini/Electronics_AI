@@ -245,13 +245,16 @@ def regularity(board: Board) -> dict:
     if not passives:
         return {"n": 0}
     on_grid = sum(1 for fp in board.footprints if abs(fp.rotation / 90 - round(fp.rotation / 90)) < 1e-6)
+    groups: dict[tuple[str, str], list[Footprint]] = {}
+    for fp in passives:
+        groups.setdefault((fp.lib_id, fp.side), []).append(fp)
     aligned = 0
     for fp in passives:
-        for other in passives:
-            if other is fp or other.lib_id != fp.lib_id or other.side != fp.side:
+        for other in groups[(fp.lib_id, fp.side)]:
+            if other is fp:
                 continue
             dx, dy = abs(other.x - fp.x), abs(other.y - fp.y)
-            if math.hypot(dx, dy) <= ALIGN_RADIUS_MM and (dx <= ALIGN_TOL_MM or dy <= ALIGN_TOL_MM):
+            if (dx <= ALIGN_TOL_MM or dy <= ALIGN_TOL_MM) and math.hypot(dx, dy) <= ALIGN_RADIUS_MM:
                 aligned += 1
                 break
     axis = Counter(round(fp.rotation) % 180 for fp in passives)
