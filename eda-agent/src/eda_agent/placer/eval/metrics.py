@@ -150,19 +150,20 @@ def _stats(v: list[float]) -> dict:
             "max_mm": round(s[-1], 3)}
 
 
-def critical_loops_intent(board: Board, intent: dict, *, resolved_by_ref: dict[str, float] | None = None) -> dict:
+def critical_loops_intent(board: Board, intent: dict, *, resolved_by_ref: dict[str, float] | None = None,
+                          witnesses: dict | None = None) -> dict:
     """Distances that the roles in ``intent`` make critical, measured pad to pad on the same net."""
     from ..intent import model
 
     fps = {fp.ref: fp for fp in board.footprints}
     parts = intent.get("parts", {})
 
-    def pins(ref: str, net: str, numbers: set[str]) -> list[tuple[float, float]]:
+    def pins(ref: str, net: str, numbers: set[str]) -> list[tuple]:
         fp = fps.get(ref)
-        return [pos for pad, pos in fp.pads_world()
+        return [(pad, pos) for pad, pos in fp.pads_world()
                 if pad.net == net and (not numbers or pad.number in numbers)] if fp else []
 
-    def nearest(ref: str, targets: list[str], net: str | None, numbers: set[str]) -> float | None:
+    def nearest(ref: str, targets: list[str], net: str | None, numbers: set[str]) -> tuple | None:
         fp = fps.get(ref)
         if fp is None:
             return None
@@ -171,9 +172,10 @@ def critical_loops_intent(board: Board, intent: dict, *, resolved_by_ref: dict[s
             if not pad.net or is_ground_net(pad.net) or (net and pad.net != net):
                 continue
             for t in targets:
-                for a, b in pins(t, pad.net, numbers):
+                for other_pad, (a, b) in pins(t, pad.net, numbers):
                     d = math.hypot(a - x, b - y)
-                    best = d if best is None or d < best else best
+                    if best is None or d < best[0]:
+                        best = (d, pad, (x, y), t, other_pad, (a, b))
         return best
 
     decap, resolved_decap, load, crystal, unsettled = [], [], [], [], 0
@@ -184,9 +186,10 @@ def critical_loops_intent(board: Board, intent: dict, *, resolved_by_ref: dict[s
         if not targets:
             continue
         numbers = set(tv.get("pins", ())) if tv.get("ref") else set()
-        d = nearest(ref, targets, tv.get("net"), numbers)
-        if d is None:
+        match = nearest(ref, targets, tv.get("net"), numbers)
+        if match is None:
             continue
+        d, pad, xy, target, other_pad, target_xy = match
         if role == "decap":
             decap.append(d)
             unsettled += tv.get("ref") is None
@@ -194,6 +197,11 @@ def critical_loops_intent(board: Board, intent: dict, *, resolved_by_ref: dict[s
                 resolved_decap.append(d)
                 if resolved_by_ref is not None:
                     resolved_by_ref[ref] = d
+                if witnesses is not None:
+                    witnesses[ref] = {"distance_mm": d, "points": [
+                        {"ref": owner, "pad": p.number, "net": p.net, "layers": list(p.layers),
+                         "x_mm": pos[0], "y_mm": pos[1]}
+                        for owner, p, pos in ((ref, pad, xy), (target, other_pad, target_xy))]}
         elif role == "crystal_load_cap":
             load.append(d)
         elif role == "crystal":

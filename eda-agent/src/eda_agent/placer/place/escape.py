@@ -135,5 +135,7 @@ def audit(board: Board, exits: dict[str, list[Escape]], *, flipped: set[str] | N
                           for geom, kind in ((strip, "tracks"), (via, "vias")))
             if blockers or outside or keepout:
                 blocked.append({"ref": ref, "pin": exit.pin, "net": exit.net, "blocked_by": blockers,
-                                "outside_outline": outside, "keepout": keepout})
+                                "outside_outline": outside, "keepout": keepout, "layer": f"{fp.side}.Cu",
+                                "start_mm": start, "end_mm": end, "track_envelope_mm": exit.width,
+                                "via_envelope_mm": exit.via_space})
     return {"total": total, "clear": total - len(blocked), "blocked": blocked}

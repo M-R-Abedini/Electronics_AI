@@ -36,3 +36,4 @@ test-core = { cmd = "cargo test --lib", cwd = "crates/placer-core" }
 
 [pypi-dependencies]
 eda-agent = { path = "eda-agent", editable = true }
+pillow = ">=11.1, <12"

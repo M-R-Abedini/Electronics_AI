@@ -27,7 +27,7 @@ from . import report as run_report
 from .eval.score import evaluate
 from .io.kicad import read_board
 from .ir import Board
-from .render import Panel, gallery, review_images
+from .render import Panel, finding_image, gallery, review_images
 from .route.check import route_check
 from .toolchain import RUNTIME_DIR
 
@@ -133,6 +133,20 @@ class PlacerService:
               "in the MCP response for visual review."),
              {"runs": {"type": "array", "items": _STRING, "minItems": 1}, "title": _STRING,
               "include_images": {"type": "boolean", "default": False}}, ["runs"], True),
+            ("diagnose",
+             ("Review a placement or route-check run with localized findings, numeric evidence and PNG crops. "
+              "Reads existing artifacts only. Timeout results show observations with an inconclusive route status."),
+             {"run": _STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12},
+              "include_images": {"type": "boolean", "default": True}}, ["run"], True),
+            ("refine",
+             ("Experimentally test one local placement proposal on independent copies using equal routing budgets. "
+              "Returns the prior board on regressions or an inconclusive result. Never applies changes to the source."),
+             {"run": _STRING, "change": {"type": "object", "additionalProperties": False, "properties": {
+                 "ref": _STRING, "rotation_deg": {"type": "integer", "enum": [0, 90, 180, 270]},
+                 "toward_ref": _STRING, "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
+                 "required": ["ref", "confidence"],
+                 "anyOf": [{"required": ["rotation_deg"]}, {"required": ["toward_ref"]}]},
+              "route_timeout_s": {"type": "integer", "minimum": 15, "maximum": 600, "default": 180}}, ["run", "change"], False),
         ]
         return [{"name": name, "description": description,
                  "inputSchema": {"type": "object", "properties": props, "required": required,
@@ -318,11 +332,37 @@ class PlacerService:
             "gallery": str(page),
         }
 
+    def diagnose(self, run: str, limit: int = 8, include_images: bool = True) -> dict[str, Any] | types.CallToolResult:
+        from .diagnose import diagnose
+
+        value, boards = diagnose(run, limit)
+        if not include_images:
+            return value
+        images = []
+        for index, finding in enumerate(value["findings"], 1):
+            if not finding["points"]:
+                continue
+            board = boards.get(finding["source"], boards[value["run"]])
+            data = finding_image(board, finding)
+            finding["image_label"] = f"Finding {index} · {finding['kind']}"
+            images.extend([types.TextContent(type="text", text=finding["image_label"]),
+                           types.ImageContent(type="image", mimeType="image/png",
+                                              data=base64.b64encode(data).decode("ascii"))])
+        return types.CallToolResult(
+            content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=False)), *images],
+            structuredContent=value,
+        )
+
+    def refine(self, run: str, change: dict, route_timeout_s: int = 180) -> dict[str, Any]:
+        from .refine import refine
+
+        return refine(run, change, self.runs, route_timeout_s=route_timeout_s)
+
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any] | types.CallToolResult:
         functions = {"inspect": self.inspect, "score": self.score, "place_board": self.place_board,
                      "place_cluster": self.place_cluster,
                      "gallery": self.gallery, "intent_draft": self.intent_draft,
-                     "intent_validate": self.intent_validate}
+                     "intent_validate": self.intent_validate, "diagnose": self.diagnose, "refine": self.refine}
         if name not in functions:
             raise ValueError(f"Unknown placer tool: {name}")
         return await asyncio.to_thread(functions[name], **(arguments or {}))

@@ -11,6 +11,7 @@ layer underneath.
 from __future__ import annotations
 
 import html
+import io
 import json
 import subprocess
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .eval import metrics
+from .eval.legality import _pad_polygon
 from .ir import Board
 from .toolchain import kicad
 
@@ -45,6 +47,85 @@ def review_images(board_path: Path) -> list[tuple[str, bytes]]:
                            stdin=subprocess.DEVNULL, capture_output=True, timeout=90, check=True)
             images.append((side, target.read_bytes()))
     return images
+
+
+def finding_image(board: Board, finding: dict) -> bytes:
+    """Draw a layer-local crop in the same coordinate frame as the evidence."""
+    from PIL import Image, ImageDraw
+
+    points = finding["points"]
+    layers = sorted({layer.replace(".Mask", ".Cu").replace(".SilkS", ".Cu")
+                     for p in points for layer in ([p["layer"]] if p.get("layer") else p.get("layers", ()))}) or [None]
+    locations = [(p["x_mm"], p["y_mm"]) for p in points]
+    if finding.get("end_mm"):
+        locations.append(finding["end_mm"])
+    x0, x1 = min(x for x, _ in locations), max(x for x, _ in locations)
+    y0, y1 = min(y for _, y in locations), max(y for _, y in locations)
+    span = max(x1 - x0, y1 - y0, 6.0) + 4.0
+    scale = 450 / span
+    left, top = (x0 + x1 - span) / 2, (y0 + y1 - span) / 2
+    image = Image.new("RGB", (450 * len(layers), 490), "#102126")
+    for index, layer in enumerate(layers):
+        panel = Image.new("RGB", (450, 490), "#102126")
+        draw = ImageDraw.Draw(panel)
+
+        def px(point):
+            x, y = point
+            return (x - left) * scale, 40 + (y - top) * scale
+
+        def polygon(ring, fill, outline=None, *, draw=draw):
+            draw.polygon([px(p) for p in ring], fill=fill, outline=outline)
+
+        for shape in board.outline:
+            polygon(shape.outer, "#183c34", "#95bcae")
+            for hole in shape.holes:
+                polygon(hole, "#102126", "#95bcae")
+        for track in board.routing.get("tracks", []):
+            if layer is None or track["layer"] == layer:
+                draw.line([px(p) for p in track["points"]], fill="#678db2", width=max(1, round(track["width"] * scale)))
+        for zone in board.zones:
+            if layer is None or layer in zone.get("layers", []):
+                for ring in zone.get("outline", []):
+                    polygon(ring, None, "#688743")
+        for via in board.routing.get("vias", []):
+            via_layers = via.get("layers", [])
+            if layer is None or layer in via_layers or via_layers == ["F.Cu", "B.Cu"]:
+                x, y = px((via["x"], via["y"]))
+                radius = max(2, via["diameter"] * scale / 2)
+                draw.ellipse((x - radius, y - radius, x + radius, y + radius), outline="#bcc6c8")
+        for fp in board.footprints:
+            x, y, right, bottom = fp.box()
+            outside = right < left - 2 or bottom < top - 2 or x > left + span + 2 or y > top + span + 2
+            if outside and not any(point.get("ref") == fp.ref for point in points):
+                continue
+            if layer in (None, f"{fp.side}.Cu"):
+                tint = "#ff6647" if fp.ref in finding.get("blocked_by", []) else "#5c898a"
+                for ring in fp.courtyard_world():
+                    polygon(ring, None, tint)
+                draw.text(px(fp.position), fp.ref, fill=tint)
+            for pad in fp.pads:
+                if layer is not None and layer not in pad.layers:
+                    continue
+                geometry = _pad_polygon(fp, pad)
+                if geometry is not None:
+                    polygon(geometry.exterior.coords, "#b89f54")
+        if finding.get("start_mm") and finding.get("end_mm"):
+            draw.line([px(finding[key]) for key in ("start_mm", "end_mm")], fill="#73eff8", width=3)
+        for i, point in enumerate(points):
+            point_layers = [point["layer"]] if point.get("layer") else point.get("layers", [])
+            if point_layers and layer and all(p.split(".")[0] != layer.split(".")[0] for p in point_layers):
+                continue
+            x, y = px((point["x_mm"], point["y_mm"]))
+            draw.ellipse((x - 6, y - 6, x + 6, y + 6), outline="#ff7454", width=2)
+            label = ".".join(p for p in (point.get("ref"), point.get("pad")) if p) or str(i + 1)
+            draw.text((x + 8, y + 5), label, fill="white", stroke_width=1, stroke_fill="#102126")
+        draw.rectangle((0, 0, 449, 39), fill="#102126")
+        draw.text((8, 8), f"{finding['kind']}  |  {layer or 'layer unknown'}", fill="white")
+        draw.text((8, 23), f"{span:.2f} mm  |  X right, Y down  |  green outlines: zone boundaries", fill="#bdced0")
+        image.paste(panel, (index * 450, 0))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _layer_colour(name: str) -> str:
