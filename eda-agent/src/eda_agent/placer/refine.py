@@ -17,7 +17,7 @@ from .route.check import RouteCheckError, route_check
 from .toolchain import sha256_file
 
 
-def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180) -> dict:
+def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180, preview: bool = False) -> dict:
     report_path = Path(run).resolve()
     if report_path.is_dir():
         report_path /= "run_report.json"
@@ -53,16 +53,31 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     fp = after.fp(ref)
     angle = change.get("rotation_deg")
     if angle is not None:
+        if angle not in (0, 90, 180, 270):
+            raise ValueError("Refinement rotation must be orthogonal")
         fp.rotation = angle
-    if target_ref := change.get("toward_ref"):
+    if change.get("toward_ref") and change.get("away_from_ref"):
+        raise ValueError("Choose one movement direction")
+    if ("target_pad" in change or "step_mm" in change) and not (change.get("toward_ref") or change.get("away_from_ref")):
+        raise ValueError("A target pad or step requires a movement direction")
+    if target_ref := change.get("toward_ref") or change.get("away_from_ref"):
         if sum(other.ref == target_ref for other in after.footprints) != 1:
             raise ValueError("Refinement target must be a unique existing footprint")
         target = after.fp(target_ref)
-        distance = math.dist(fp.position, target.position)
+        target_xy = target.position
+        if number := change.get("target_pad"):
+            pads = [pad for pad in target.pads if pad.number == number]
+            if len(pads) != 1:
+                raise ValueError("Target pad must identify one pad on the target footprint")
+            target_xy = target.pad_world(pads[0])
+        distance = math.dist(fp.position, target_xy)
+        step = change.get("step_mm", 1.0)
+        if not 0.05 <= step <= 3.0:
+            raise ValueError("Refinement step must be between 0.05 and 3 mm")
         if distance:
-            step = min(1.0, distance) / distance
-            fp.x += (target.x - fp.x) * step
-            fp.y += (target.y - fp.y) * step
+            fraction = -step / distance if change.get("away_from_ref") else min(step, distance) / distance
+            fp.x += (target_xy[0] - fp.x) * fraction
+            fp.y += (target_xy[1] - fp.y) * fraction
     if before.fp(ref).position == fp.position and before.fp(ref).rotation == fp.rotation:
         return {**delta, "status": "rejected", "reason": "Proposal produced no placement change"}
 
@@ -87,6 +102,16 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
                for board in (before, after)]
     if blocked[1] - blocked[0]:
         return {**delta, "status": "rejected", "reason": "Proposal blocked an additional pad exit"}
+    comparison = {"baseline_blocked_exits": len(blocked[0]), "candidate_blocked_exits": len(blocked[1]),
+                  "freed_exits": [dict(zip(("ref", "pad", "net"), row, strict=True))
+                                  for row in sorted(blocked[0] - blocked[1])],
+                  "baseline_crossings": metrics.crossings(before)["count"],
+                  "candidate_crossings": metrics.crossings(after)["count"]}
+    if preview:
+        return {**delta, "status": "preview", **comparison,
+                "pose_before": {"x_mm": before.fp(ref).x, "y_mm": before.fp(ref).y,
+                                "rotation_deg": before.fp(ref).rotation, "side": before.fp(ref).side},
+                "pose_after": {"x_mm": fp.x, "y_mm": fp.y, "rotation_deg": fp.rotation, "side": fp.side}}
 
     work = out_root.resolve() / f"{src.stem}-refine-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}"
     candidate = write_board(src, after, work / src.name, strip_routing=True, unfill_zones=True)
@@ -99,16 +124,21 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     before_route, after_route = a["metrics"], b["metrics"]
     if sha256_file(src) != original_hash:
         raise RuntimeError("Baseline board changed while refinement was running")
-    comparison = {"baseline": before_route["unrouted"], "candidate": after_route["unrouted"],
-                  "baseline_blocked_exits": len(blocked[0]), "candidate_blocked_exits": len(blocked[1]),
-                  "router_timeout_s": route_timeout_s,
-                  "reports": [str(work / name / "run_report.json") for name in ("route_before", "route_after")]}
+    comparison.update(baseline=before_route["unrouted"], candidate=after_route["unrouted"],
+                      baseline_coverage=before_route["coverage"], candidate_coverage=after_route["coverage"],
+                      baseline_settled=before_route["settled"], candidate_settled=after_route["settled"],
+                      baseline_drc={key: len(a["drc"][key]) for key in ("router_caused", "new_non_routing")},
+                      candidate_drc={key: len(b["drc"][key]) for key in ("router_caused", "new_non_routing")},
+                      router_timeout_s=route_timeout_s,
+                      reports=[str(work / name / "run_report.json") for name in ("route_before", "route_after")])
     if not before_route["settled"] or not after_route["settled"]:
         return {**delta, "status": "inconclusive", "reason": "Both route runs must settle", **comparison}
-    if not a["passed"]:
-        return {**delta, "status": "inconclusive", "reason": "Baseline route failed verification", **comparison}
-    if (before_route["denominator"] != after_route["denominator"] or b["drc"]["new_non_routing"]
-            or b["drc"]["router_caused"] or after_route["unrouted_signal"] > before_route["unrouted_signal"]
+    if before_route["denominator"] != after_route["denominator"]:
+        return {**delta, "status": "inconclusive", "reason": "Route denominators differ", **comparison}
+    if any(not g["passed"] for g in a.get("gates", []) if not g["name"].startswith("drc_")):
+        return {**delta, "status": "inconclusive", "reason": "Baseline route accounting or import failed", **comparison}
+    if (b["drc"]["new_non_routing"] or b["drc"]["router_caused"]
+            or after_route["unrouted_signal"] > before_route["unrouted_signal"]
             or after_route["unrouted_plane"] > before_route["unrouted_plane"] or not b["passed"]):
         return {**delta, "status": "rejected", "reason": "Route constraints or DRC failed", **comparison}
     if after_route["unrouted"] >= before_route["unrouted"]:

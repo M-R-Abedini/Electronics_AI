@@ -17,6 +17,8 @@ from .place import escape, problem
 _LAYER = re.compile(r"\bon ([\w.]+\.(?:Cu|Mask|SilkS))\b")
 _PIN = re.compile(r"\b[Pp]ad (\S+) \[([^\]]*)\] of (\S+)")
 _DISTANCE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*mm")
+# KiCad 10 applies its extended per-check limit to unconnected items.
+_KICAD_OPEN_LINK_LIMIT = 499
 
 
 def _load(path: Path) -> dict:
@@ -186,13 +188,23 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
     for row in findings:
         (rest if row["kind"] in unique_types else first).append(row)
         unique_types.add(row["kind"])
+    unrouted = route_metrics.get("unrouted")
+    localized = counts.get("unrouted", 0)
+    unlocalized = max(0, unrouted - localized) if unrouted is not None else None
+    locations_status = None
+    if unrouted is not None:
+        locations_status = "complete" if localized == unrouted else "count_mismatch"
+        kicad_version = route_report.get("tools", {}).get("kicad", {}).get("version", "")
+        if unlocalized and localized == _KICAD_OPEN_LINK_LIMIT and kicad_version.startswith("10."):
+            locations_status = "kicad_drc_limit"
     value = {"run": source, "board": str(board_path), "finding_counts": dict(counts),
              "image_scope": "Placement IR with board outline, pads, tracks and zone boundaries; zone fill is omitted",
              "open_link_deltas": open_link_deltas,
              "reported_findings": min(len(findings), limit),
              "route": {"status": ("settled" if settled else "inconclusive") if stop else "not_run",
-                       "stop": stop, "unrouted": route_metrics.get("unrouted"),
-                       "localized_open_links": counts.get("unrouted", 0)}, "findings": (first + rest)[:limit]}
+                       "stop": stop, "unrouted": unrouted, "localized_open_links": localized,
+                       "unlocalized_open_links": unlocalized, "locations_status": locations_status},
+             "findings": (first + rest)[:limit]}
     boards = {source: board}
     if route_path and any(finding["source"] == route_path for finding in value["findings"]):
         boards[route_path] = read_board(routed_path)

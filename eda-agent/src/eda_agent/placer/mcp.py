@@ -140,12 +140,16 @@ class PlacerService:
               "include_images": {"type": "boolean", "default": True}}, ["run"], True),
             ("refine",
              ("Experimentally test one local placement proposal on independent copies using equal routing budgets. "
+              "Use preview=true to see legal pad-relative moves and escape changes before routing. "
               "Returns the prior board on regressions or an inconclusive result. Never applies changes to the source."),
              {"run": _STRING, "change": {"type": "object", "additionalProperties": False, "properties": {
                  "ref": _STRING, "rotation_deg": {"type": "integer", "enum": [0, 90, 180, 270]},
-                 "toward_ref": _STRING, "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
+                 "toward_ref": _STRING, "away_from_ref": _STRING, "target_pad": _STRING,
+                 "step_mm": {"type": "number", "minimum": 0.05, "maximum": 3},
+                 "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
                  "required": ["ref", "confidence"],
-                 "anyOf": [{"required": ["rotation_deg"]}, {"required": ["toward_ref"]}]},
+                 "anyOf": [{"required": ["rotation_deg"]}, {"required": ["toward_ref"]}, {"required": ["away_from_ref"]}]},
+              "preview": {"type": "boolean", "default": False},
               "route_timeout_s": {"type": "integer", "minimum": 15, "maximum": 600, "default": 180}}, ["run", "change"], False),
         ]
         return [{"name": name, "description": description,
@@ -353,10 +357,10 @@ class PlacerService:
             structuredContent=value,
         )
 
-    def refine(self, run: str, change: dict, route_timeout_s: int = 180) -> dict[str, Any]:
+    def refine(self, run: str, change: dict, route_timeout_s: int = 180, preview: bool = False) -> dict[str, Any]:
         from .refine import refine
 
-        return refine(run, change, self.runs, route_timeout_s=route_timeout_s)
+        return refine(run, change, self.runs, route_timeout_s=route_timeout_s, preview=preview)
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any] | types.CallToolResult:
         functions = {"inspect": self.inspect, "score": self.score, "place_board": self.place_board,
