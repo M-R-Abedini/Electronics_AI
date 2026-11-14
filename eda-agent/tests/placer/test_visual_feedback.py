@@ -10,6 +10,7 @@ from eda_agent.placer import diagnose, refine
 from eda_agent.placer.intent.resolve import resolve
 from eda_agent.placer.ir import Board, Courtyard, Footprint, Outline, Pad
 from eda_agent.placer.mcp import PlacerService
+from eda_agent.placer.route import drc
 
 
 def _board():
@@ -69,9 +70,58 @@ def test_refinement_preview_moves_away_from_named_pad_without_writing(tmp_path, 
     assert source.read_bytes() == b"original PCB"
 
 
-@pytest.mark.parametrize(("after", "settled", "expected"), [(2, True, "rejected"), (0, True, "accepted"),
-                                                              (0, False, "inconclusive")])
-def test_refinement_guards_source_and_continues_only_from_verified_run(tmp_path, monkeypatch, after, settled, expected):
+def test_mask_bridge_delta_keeps_artwork_identity_and_tolerates_marker_churn():
+    def bridge(artwork, track):
+        return {"type": "solder_mask_bridge", "severity": "error", "items": [
+            {"uuid": artwork, "description": "Polygon on F.Mask"},
+            {"uuid": track, "description": "Track [GND] on F.Cu, length 1.0 mm"},
+        ]}
+
+    before = {"violations": [bridge("art-1", "old-track")]}
+    after = {"violations": [bridge("art-1", "new-track"), bridge("art-2", "new-track"),
+                            bridge("art-1", "other-track")]}
+    assert drc.new_mask_bridges(before, after, {"R1"}) == after["violations"][1:]
+
+    first = bridge("art-1", "pad-a")
+    second = bridge("art-1", "pad-b")
+    first["items"][1]["description"] = "Pad 1 [GND] of R1 on F.Cu"
+    second["items"][1]["description"] = "Pad 2 [VCC] of R2 on F.Cu"
+    assert drc.new_mask_bridges({"violations": [first]}, {"violations": [second]}, {"R8"}) == []
+    assert drc.new_mask_bridges({"violations": [first]}, {"violations": [second]}, {"R2"}) == [second]
+
+
+def test_refinement_rejects_new_pre_route_mask_bridge(tmp_path, monkeypatch):
+    source = _report(tmp_path)
+    board = _board()
+    board.obstacles = [{"kind": "mask_aperture"}]
+    monkeypatch.setattr(refine, "read_board", lambda _: board)
+    monkeypatch.setattr(refine.legality, "check", lambda *a, **kw: [])
+    monkeypatch.setattr(refine, "write_board", lambda _src, _board, dest, **kw: dest)
+
+    def mask_check(path, report):
+        row = {"type": "solder_mask_bridge", "severity": "error", "items": [
+            {"uuid": path.parent.name, "description": "Polygon on F.Mask"},
+            {"description": "Pad 1 [VCC] of R1 on F.Cu"},
+        ]}
+        return {"violations": [row]}
+
+    monkeypatch.setattr(refine.drc, "run", mask_check)
+    monkeypatch.setattr(refine, "route_check", lambda *a, **kw: pytest.fail("DRC must reject before routing"))
+    result = refine.refine(str(tmp_path), {"ref": "R1", "rotation_deg": 90, "confidence": 0.8},
+                           tmp_path / "trials")
+    assert result["status"] == "rejected" and result["new_mask_bridge_count"] == 1
+    assert source.read_bytes() == b"original PCB"
+
+
+@pytest.mark.parametrize(("after", "settled", "drc_error", "expected"), [
+    (2, True, False, "rejected"),
+    (0, True, False, "accepted"),
+    (0, False, False, "inconclusive"),
+    (0, False, True, "rejected"),
+])
+def test_refinement_guards_source_and_continues_only_from_verified_run(
+    tmp_path, monkeypatch, after, settled, drc_error, expected,
+):
     source = _report(tmp_path)
     monkeypatch.setattr(refine, "read_board", lambda _: _board())
     monkeypatch.setattr(refine.legality, "check", lambda *a, **kw: [])
@@ -87,16 +137,19 @@ def test_refinement_guards_source_and_continues_only_from_verified_run(tmp_path,
         assert router_timeout_s == 15 and Path(path) != source
         baseline = path.parent.name == "baseline"
         unrouted = 1 if baseline else after
+        fails_drc = baseline or drc_error
         return {"metrics": {"settled": baseline or settled, "denominator": 3, "unrouted": unrouted,
                             "unrouted_signal": unrouted, "unrouted_plane": 0, "coverage": 1 - unrouted / 3},
-                "drc": {"router_caused": [{}] if baseline else [], "new_non_routing": []}, "passed": not baseline,
-                "gates": [{"name": "drc_router_caused", "passed": not baseline}],
+                "drc": {"router_caused": [{}] if fails_drc else [], "new_non_routing": []}, "passed": not fails_drc,
+                "gates": [{"name": "drc_router_caused", "passed": not fails_drc}],
                 "artifacts": {"routed_board": str(path)}}
 
     monkeypatch.setattr(refine, "route_check", route)
     result = refine.refine(str(tmp_path), {"ref": "R1", "rotation_deg": 90, "confidence": 0.8},
                            tmp_path / "trials", route_timeout_s=15)
     assert result["status"] == expected
+    if drc_error:
+        assert result["reason"] == "Candidate failed native DRC"
     assert result["baseline"] == 1 and result["candidate"] == after
     assert source.read_bytes() == b"original PCB"
     if expected == "accepted":

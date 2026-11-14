@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from ..toolchain import RUNTIME_DIR, kicad, sha256_file
 
 _ROUTING = re.compile(r"^(Track|Via|Arc|Blind/buried via|Micro via|Through via)\b")
 _NET = re.compile(r"\[([^\]]*)\]")
+_PAD_REF = re.compile(r"\b[Pp]ad .* of (\S+)")
 _GATED = ("error",)
 
 
@@ -67,6 +69,35 @@ def run_cached(board: Path, out_json: Path) -> dict:
 
 def _key(v: dict) -> tuple:
     return (v.get("type"), tuple(sorted(i.get("description", "") for i in v.get("items", []))))
+
+
+def new_mask_bridges(before: dict, after: dict, moved_refs: set[str]) -> list[dict]:
+    """Find new affected pads or growth on an aperture despite DRC witness churn."""
+    def aperture(row):
+        return tuple(sorted(item.get("uuid") or item["description"] for item in row["items"]
+                            if ".Mask" in item.get("description", "")))
+
+    def moved_pads(row):
+        return tuple(sorted(item.get("uuid") or item["description"] for item in row["items"]
+                            if (part := _PAD_REF.search(item.get("description", "")))
+                            and part[1] in moved_refs))
+
+    def bridges(report):
+        return [row for row in report.get("violations", [])
+                if row["type"] == "solder_mask_bridge" and row["severity"] == "error"]
+
+    previous = bridges(before)
+    counts = Counter(map(aperture, previous))
+    known = {(aperture(row), moved_pads(row)) for row in previous if moved_pads(row)}
+    added = []
+    for row in bridges(after):
+        artwork = aperture(row)
+        identity = artwork, moved_pads(row)
+        if counts[artwork] <= 0 or (identity[1] and identity not in known):
+            added.append(row)
+        counts[artwork] -= 1
+        known.add(identity)
+    return added
 
 
 def is_routing_item(description: str) -> bool:

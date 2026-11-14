@@ -13,6 +13,7 @@ from .eval import legality, metrics, score
 from .intent.resolve import resolve
 from .io.kicad import read_board, write_board
 from .place import escape, problem
+from .route import drc
 from .route.check import RouteCheckError, route_check
 from .toolchain import sha256_file
 
@@ -58,6 +59,8 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
         fp.rotation = angle
     if change.get("toward_ref") and change.get("away_from_ref"):
         raise ValueError("Choose one movement direction")
+    if change.get("away_from_ref") == ref or change.get("toward_ref") == ref:
+        raise ValueError("Movement target must be on a different footprint")
     if ("target_pad" in change or "step_mm" in change) and not (change.get("toward_ref") or change.get("away_from_ref")):
         raise ValueError("A target pad or step requires a movement direction")
     if target_ref := change.get("toward_ref") or change.get("away_from_ref"):
@@ -116,6 +119,17 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     work = out_root.resolve() / f"{src.stem}-refine-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}"
     candidate = write_board(src, after, work / src.name, strip_routing=True, unfill_zones=True)
     original = write_board(src, before, work / "baseline" / src.name, strip_routing=True, unfill_zones=True)
+    if any(item["kind"] == "mask_aperture" for item in before.obstacles):
+        mask_before = work / "mask-before.drc.json"
+        # The candidate report also follows the placement report's sidecar naming convention.
+        mask_after = candidate.with_suffix(".drc.json")
+        old_mask = drc.run(original, mask_before)
+        new_mask = drc.run(candidate, mask_after)
+        added = drc.new_mask_bridges(old_mask, new_mask, {ref})
+        if added:
+            return {**delta, "status": "rejected", "reason": "New solder mask bridges before routing",
+                    "new_mask_bridge_count": len(added), "new_mask_bridges": added[:12],
+                    "drc_reports": [str(mask_before), str(mask_after)], **comparison}
     try:
         a, b = (route_check(path, out_dir=work / name, reference_board=reference, router_timeout_s=route_timeout_s)
                 for path, name in ((original, "route_before"), (candidate, "route_after")))
@@ -131,14 +145,15 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
                       candidate_drc={key: len(b["drc"][key]) for key in ("router_caused", "new_non_routing")},
                       router_timeout_s=route_timeout_s,
                       reports=[str(work / name / "run_report.json") for name in ("route_before", "route_after")])
+    if comparison["candidate_drc"]["router_caused"] or comparison["candidate_drc"]["new_non_routing"]:
+        return {**delta, "status": "rejected", "reason": "Candidate failed native DRC", **comparison}
     if not before_route["settled"] or not after_route["settled"]:
         return {**delta, "status": "inconclusive", "reason": "Both route runs must settle", **comparison}
     if before_route["denominator"] != after_route["denominator"]:
         return {**delta, "status": "inconclusive", "reason": "Route denominators differ", **comparison}
     if any(not g["passed"] for g in a.get("gates", []) if not g["name"].startswith("drc_")):
         return {**delta, "status": "inconclusive", "reason": "Baseline route accounting or import failed", **comparison}
-    if (b["drc"]["new_non_routing"] or b["drc"]["router_caused"]
-            or after_route["unrouted_signal"] > before_route["unrouted_signal"]
+    if (after_route["unrouted_signal"] > before_route["unrouted_signal"]
             or after_route["unrouted_plane"] > before_route["unrouted_plane"] or not b["passed"]):
         return {**delta, "status": "rejected", "reason": "Route constraints or DRC failed", **comparison}
     if after_route["unrouted"] >= before_route["unrouted"]:

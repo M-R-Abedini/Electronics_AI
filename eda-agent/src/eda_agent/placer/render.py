@@ -87,6 +87,12 @@ def finding_image(board: Board, finding: dict) -> bytes:
             if layer is None or layer in zone.get("layers", []):
                 for ring in zone.get("outline", []):
                     polygon(ring, None, "#688743")
+        witnesses = {point["uuid"] for point in points if point.get("uuid")}
+        for obstacle in board.obstacles:
+            if obstacle["kind"] != "mask_aperture" or layer not in (None, obstacle["copper"]):
+                continue
+            for ring in obstacle["outlines"]:
+                polygon(ring, None, "#ef7cde" if obstacle["uuid"] in witnesses else "#7e557d")
         for via in board.routing.get("vias", []):
             via_layers = via.get("layers", [])
             if layer is None or layer in via_layers or via_layers == ["F.Cu", "B.Cu"]:
@@ -121,7 +127,7 @@ def finding_image(board: Board, finding: dict) -> bytes:
             draw.text((x + 8, y + 5), label, fill="white", stroke_width=1, stroke_fill="#102126")
         draw.rectangle((0, 0, 449, 39), fill="#102126")
         draw.text((8, 8), f"{finding['kind']}  |  {layer or 'layer unknown'}", fill="white")
-        draw.text((8, 23), f"{span:.2f} mm  |  X right, Y down  |  green outlines: zone boundaries", fill="#bdced0")
+        draw.text((8, 23), f"{span:.2f} mm  |  purple: mask artwork  |  green: zone boundaries", fill="#bdced0")
         image.paste(panel, (index * 450, 0))
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")

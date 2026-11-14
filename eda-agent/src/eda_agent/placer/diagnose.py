@@ -35,6 +35,7 @@ def _points(items: list[dict]) -> list[dict]:
         layer = _LAYER.search(description)
         pin = _PIN.search(description)
         points.append({"x_mm": data["x"], "y_mm": data["y"], "layer": layer[1] if layer else None,
+                       "uuid": item.get("uuid"),
                        "ref": pin[3] if pin else None, "pad": pin[1] if pin else None,
                        "net": pin[2] if pin else None, "description": description})
     return points
@@ -198,7 +199,7 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
         if unlocalized and localized == _KICAD_OPEN_LINK_LIMIT and kicad_version.startswith("10."):
             locations_status = "kicad_drc_limit"
     value = {"run": source, "board": str(board_path), "finding_counts": dict(counts),
-             "image_scope": "Placement IR with board outline, pads, tracks and zone boundaries; zone fill is omitted",
+             "image_scope": "Placement IR with board outline, pads, tracks, mask artwork and zone boundaries; zone fill is omitted",
              "open_link_deltas": open_link_deltas,
              "reported_findings": min(len(findings), limit),
              "route": {"status": ("settled" if settled else "inconclusive") if stop else "not_run",
