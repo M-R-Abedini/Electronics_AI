@@ -131,7 +131,7 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
 
 def _resolve_movable_th_collisions(placed, pb, solver_pb, core, retained, macros, diag, th_findings, findings):
     idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
-    member_to_anchor = {p.ref: anchor for anchor, m in (macros or {}).items() for p in m.parts}
+    member_to_anchor = {p.ref: pb.refs[anchor] for anchor, m in (macros or {}).items() for p in m.parts}
     max_clear = max([0.15, float(pb.board.rules.get("min_clearance") or 0.0),
                      *(float(nc.clearance or 0.0) for nc in pb.board.netclasses)])
 
@@ -372,7 +372,8 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             return blocked_exits(measure(board_state)) <= blocked
 
         placed, passive_alignment = decap.align_passives(
-            placed, intent, refine_fixed, preserve_escapes=preserve_align
+            placed, intent, refine_fixed, preserve_escapes=preserve_align,
+            max_trials=400, extend=True,
         )
         if passive_alignment["moved"]:
             audit = measure(placed)
@@ -401,7 +402,8 @@ def _floorplan_metrics(board, intent: dict) -> dict:
     loops = critical_loops_intent(board, intent)
     distance = loops["resolved_decap_pin_distance"]
     return {"crossings": crossings(board)["count"], "decap_p90_mm": distance.get("p90_mm"),
-            "resolved_decaps": distance["n"], "all_decap_p90_mm": loops["decap_pin_distance"].get("p90_mm")}
+            "resolved_decaps": distance["n"], "all_decap_p90_mm": loops["decap_pin_distance"].get("p90_mm"),
+            "decap_median_mm": loops["decap_pin_distance"].get("median_mm")}
 
 
 def _floorplan_rank(info: dict, metrics: dict, audit: dict) -> tuple:
@@ -413,8 +415,8 @@ def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, inte
     """Prefer the baseline when an equally legal trial worsens a measured objective."""
     trial = _floorplan_metrics(candidate, intent)
     base = base_metrics if base_metrics is not None else _floorplan_metrics(baseline, intent)
-    regressions = [key for key in ("crossings", "decap_p90_mm")
-                   if base[key] is not None and (trial[key] is None or trial[key] > base[key])]
+    regressions = [key for key in ("crossings", "decap_p90_mm", "all_decap_p90_mm")
+                   if base.get(key) is not None and (trial.get(key) is None or trial[key] > base[key])]
     if trial["resolved_decaps"] < base["resolved_decaps"]:
         regressions.append("resolved_decap_coverage")
     trial_key, base_key = _legality_key(candidate_info), _legality_key(baseline_info)

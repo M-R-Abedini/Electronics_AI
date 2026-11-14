@@ -703,6 +703,44 @@ def test_opposite_side_th_pad_collision_check_and_avoidance():
     _placed_mov, info_mov = solve(movable_th, seed=0)
     assert info_mov["strict_violations"] == 0
 
+    # Regression check: non-empty `macros` (dict[int, Macro]) must map member refs to str anchor refs.
+    macro_board = derive(Board(
+        name="th_macro",
+        footprints=[
+            Footprint("U1", "ic", "lib:ic", 4.0, 4.0, 0.0, "F", locked=False,
+                      pads=[Pad("1", "A", (0.0, 0.0), (0.8, 0.8), layers=("F.Cu",))],
+                      courtyard=Courtyard("file", [BOX]), uuid="u-U1m"),
+            Footprint("C1", "100n", "lib:c", 7.0, 4.0, 0.0, "F", locked=False,
+                      pads=[Pad("1", "A", (0.0, 0.0), (1.0, 1.0), layers=("F.Cu",))],
+                      courtyard=Courtyard("file", [BOX]), uuid="u-C1m"),
+            Footprint("U2", "conn", "lib:conn", 14.0, 14.0, 0.0, "B", locked=False,
+                      pads=[Pad("1", "A", (0.0, 0.0), (1.8, 1.8), shape="Circle", kind="thru_hole",
+                                layers=("F.Cu", "B.Cu"), drill=0.8)],
+                      courtyard=Courtyard("file", [BOX]), uuid="u-U2m"),
+        ],
+        outline=[Outline([(0, 0), (24, 0), (24, 24), (0, 24)])],
+        board_area_mm2=576.0,
+        copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)],
+        nets=[Net("A", "Default", 3)],
+    ))
+    pb_m = problem.build(macro_board)
+    macros = rigid.compile_macros(pb_m, pb_m.poses(), {0: [1]})
+    assert macros
+    solver_pb_m, retained_m = rigid.collapse(pb_m, macros)
+    core_m = problem.rust_problem(solver_pb_m)
+    # Place U2 (index 1 in solver_pb_m) directly over macro member C1 at (7.0, 4.0).
+    core_m.set_positions([(4.0, 4.0, 0), (7.0, 4.0, 0)])
+    full_poses_m = rigid.expand(pb_m, core_m.positions(), retained_m, macros)
+    coll_m = problem.apply(pb_m, full_poses_m)
+    hits_m = [f for f in legality.check(coll_m, fixed=set(pb_m.fixed)) if f.detail.startswith("thru_hole_pads:")]
+    assert hits_m
+    res_m, _cm, res_hits_m = pipeline._resolve_movable_th_collisions(
+        coll_m, pb_m, solver_pb_m, core_m, retained_m, macros, problem.board_diag(solver_pb_m), hits_m, hits_m,
+    )
+    assert not any(f.detail.startswith("thru_hole_pads:") for f in res_hits_m)
+    assert not any(f.detail.startswith("thru_hole_pads:") for f in legality.check(res_m, fixed=set(pb_m.fixed)))
+
 
 def test_decap_alignment_determinism_clearance_and_floorplan_refinement():
     def passive(ref, x, y):
