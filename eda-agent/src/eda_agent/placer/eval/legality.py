@@ -238,26 +238,41 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
 
     sides_present = {fp.side for fp in board.footprints}
     if "F" in sides_present and "B" in sides_present:
+        min_pad_clear = max(0.15, float(board.rules.get("min_clearance") or 0.15))
         pad_unions: dict[str, object] = {}
+        raw_pad_unions: dict[str, object] = {}
         th_pairs: dict[tuple[str, str], tuple[float, str, str]] = {}
         for fp1 in board.footprints:
             th_poly = thru_hole_pad_polygon(fp1, margin_mm=0.05)
-            if th_poly is None:
+            th_raw = thru_hole_pad_polygon(fp1, margin_mm=0.0)
+            if th_poly is None or th_raw is None:
                 continue
-            tbx = th_poly.bounds
+            tbx = th_raw.bounds
             for fp2 in board.footprints:
                 if fp1.ref == fp2.ref or fp1.side == fp2.side or (fp1.ref in fixed and fp2.ref in fixed):
                     continue
                 if fp2.ref not in pad_unions:
                     pads2 = [p_poly for pad in fp2.pads if (p_poly := _pad_polygon(fp2, pad, margin_mm=0.10)) is not None]
+                    raw2 = [p_poly for pad in fp2.pads if (p_poly := _pad_polygon(fp2, pad, margin_mm=0.0)) is not None]
                     pad_unions[fp2.ref] = unary_union(pads2) if pads2 else None
+                    raw_pad_unions[fp2.ref] = unary_union(raw2) if raw2 else None
                 u2 = pad_unions[fp2.ref]
-                if u2 is None or u2.is_empty:
+                u2_raw = raw_pad_unions[fp2.ref]
+                if u2 is None or u2.is_empty or u2_raw is None or u2_raw.is_empty:
                     continue
-                ubx = u2.bounds
-                if ubx[0] > tbx[2] or ubx[2] < tbx[0] or ubx[1] > tbx[3] or ubx[3] < tbx[1]:
+                ubx = u2_raw.bounds
+                if (
+                    ubx[0] > tbx[2] + min_pad_clear
+                    or ubx[2] < tbx[0] - min_pad_clear
+                    or ubx[1] > tbx[3] + min_pad_clear
+                    or ubx[3] < tbx[1] - min_pad_clear
+                ):
                     continue
                 area = u2.intersection(th_poly).area
+                if area <= OVERLAP_TOL_MM2:
+                    raw_dist = th_raw.distance(u2_raw)
+                    if raw_dist < min_pad_clear - 1e-4:
+                        area = round(max(0.0101, (min_pad_clear - raw_dist) * 0.5), 4)
                 if area > OVERLAP_TOL_MM2:
                     pair = (fp1.ref, fp2.ref) if fp1.ref < fp2.ref else (fp2.ref, fp1.ref)
                     prev = th_pairs.get(pair)

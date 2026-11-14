@@ -749,3 +749,40 @@ def test_decap_alignment_determinism_clearance_and_floorplan_refinement():
     assert info_fp1["floorplan"]["comparisons"]
     assert all("decap_refinement" in row for row in info_fp1["floorplan"]["comparisons"].values())
 
+
+def test_opposite_side_th_grazing_clearance_check_and_resolve():
+    fps = [
+        _fp("U1", 3.0, 3.0, ["A", "B"], locked=True),
+        Footprint(
+            "U2", "conn", "lib:conn", 12.0, 12.0, 0.0, "B", locked=True,
+            pads=[Pad("1", "A", (0.0, 0.0), (1.0, 1.0), shape="Rect", kind="thru_hole",
+                      layers=("F.Cu", "B.Cu"), drill=0.5)],
+            courtyard=Courtyard("file", [[(-0.6, -0.6), (0.6, -0.6), (0.6, 0.6), (-0.6, 0.6)]]),
+            uuid="u-U2",
+        ),
+        Footprint(
+            "TP5", "tp", "lib:tp", 12.7658, 12.7658, 0.0, "F", locked=False,
+            pads=[Pad("1", "B", (0.0, 0.0), (0.4, 0.4), shape="Rect", layers=("F.Cu",))],
+            courtyard=Courtyard("file", [[(-0.3, -0.3), (0.3, -0.3), (0.3, 0.3), (-0.3, 0.3)]]),
+            uuid="u-TP5",
+        ),
+    ]
+    b = derive(Board(
+        name="grazing", footprints=fps, outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.15, 0.6, 0.3)],
+        nets=[Net("A", "Default", 2), Net("B", "Default", 2)],
+        rules={"min_clearance": 0.15},
+    ))
+    hits = [f for f in legality.check(b) if f.detail.startswith("thru_hole_pads:")]
+    assert len(hits) == 1 and hits[0].refs == ["TP5", "U2"]
+
+    pb = problem.build(b)
+    core = problem.rust_problem(pb)
+    resolved, _core, resolved_findings = pipeline._resolve_movable_th_collisions(
+        b, pb, pb, core, None, None, problem.board_diag(pb), hits, hits,
+    )
+    assert not any(f.detail.startswith("thru_hole_pads:") for f in resolved_findings)
+    assert not any(f.detail.startswith("thru_hole_pads:") for f in legality.check(resolved, fixed=set(pb.fixed)))
+
+

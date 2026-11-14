@@ -155,8 +155,8 @@ def _resolve_movable_th_collisions(placed, pb, solver_pb, core, retained, macros
         opp = "F" if side_to_move == "B" else "B"
         holes = [
             ring for fp in cur_placed.footprints
-            if fp.side == opp and fp.ref not in pb.fixed
-            for ring in legality.thru_hole_hole_rings(fp, margin_mm=0.15)
+            if fp.side == opp
+            for ring in legality.thru_hole_hole_rings(fp, margin_mm=0.25)
         ]
         overhangs = [
             legality.thru_hole_overhang_mm(cur_placed.fp(owner))

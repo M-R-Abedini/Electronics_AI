@@ -395,6 +395,18 @@ def _pad_dict(board, pad, ox, oy, rot):
     p = pad.GetPosition()
     lx, ly = _to_local(pcbnew.ToMM(p.x), pcbnew.ToMM(p.y), ox, oy, rot)
     size, drill = pad.GetSize(), pad.GetDrillSize()
+    sx, sy = size.x, size.y
+    shape_layer = pcbnew.F_Cu
+    for lyr in (pcbnew.F_Cu, pcbnew.B_Cu):
+        if pad.IsOnLayer(lyr):
+            try:
+                lsz = pad.GetSize(lyr)
+            except TypeError:
+                break
+            if lsz.x * lsz.y > sx * sy or lsz.x > sx or lsz.y > sy:
+                shape_layer = lyr
+            sx = max(sx, lsz.x)
+            sy = max(sy, lsz.y)
     if hasattr(pad, "GetFPRelativeOrientation"):
         prot = _norm(pad.GetFPRelativeOrientation().AsDegrees())
     else:
@@ -404,8 +416,8 @@ def _pad_dict(board, pad, ox, oy, rot):
         "net": pad.GetNetname() or None,
         "local": [lx, ly],
         "rotation": prot,
-        "size": [_mm(size.x), _mm(size.y)],
-        "shape": pad.ShowPadShape(pcbnew.F_Cu) if hasattr(pad, "ShowPadShape") else str(pad.GetShape()),
+        "size": [_mm(sx), _mm(sy)],
+        "shape": pad.ShowPadShape(shape_layer) if hasattr(pad, "ShowPadShape") else str(pad.GetShape()),
         "kind": _PAD_KIND.get(pad.GetAttribute(), "smd"),
         "layers": _copper_layer_names(board, pad),
         "drill": [_mm(drill.x), _mm(drill.y)] if drill.x > 0 else None,
