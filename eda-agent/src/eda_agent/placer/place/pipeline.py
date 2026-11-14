@@ -17,6 +17,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shapely.geometry import Polygon
+
 from .. import report as run_report
 from ..eval import legality
 from ..eval.metrics import critical_loops_intent, crossings
@@ -95,6 +97,10 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         placed, core, findings = _resolve_movable_th_collisions(
             placed, pb, solver_pb, core, retained, macros, diag, th_findings, findings
         )
+    if not failed and not illegal:
+        placed, core, findings = _resolve_edge_copper_clearances(
+            placed, pb, solver_pb, core, retained, macros, diag, findings
+        )
     violations = sum(not finding.fixed for finding in findings)
     info = {
         "mode": mode, "side_policy": side_policy, "seed": seed, "movable": movable,
@@ -125,10 +131,14 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
 
 def _resolve_movable_th_collisions(placed, pb, solver_pb, core, retained, macros, diag, th_findings, findings):
     idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
+    member_to_anchor = {p.ref: anchor for anchor, m in (macros or {}).items() for p in m.parts}
+    max_clear = max([0.15, float(pb.board.rules.get("min_clearance") or 0.0),
+                     *(float(nc.clearance or 0.0) for nc in pb.board.netclasses)])
 
     def _relocate_side(cur_placed, cur_core, cur_th_findings, side_to_move: str, side_holes: list):
         targets = sorted({
-            r for f in cur_th_findings if not f.fixed and f.detail.startswith("thru_hole_pads:")
+            member_to_anchor.get(r, r)
+            for f in cur_th_findings if not f.fixed and f.detail.startswith("thru_hole_pads:")
             for r in f.refs if r not in pb.fixed and pb.sides.get(r) == side_to_move
         })
         if not targets or not all(r in idx_by_ref for r in targets):
@@ -151,12 +161,14 @@ def _resolve_movable_th_collisions(placed, pb, solver_pb, core, retained, macros
         next_placed = problem.apply(pb, rigid.expand(pb, fixed_poses, retained, macros) if macros else fixed_poses)
         return next_placed, cur_core, True
 
-    def _side_holes(cur_placed, cur_th_findings, side_to_move: str) -> list:
+    def _side_holes(cur_placed, cur_th_findings, side_to_move: str, pass_idx: int) -> list:
         opp = "F" if side_to_move == "B" else "B"
+        lmap = legality.copper_layer_map(cur_placed)
+        base_margin = max(0.25, max_clear + 0.15) + pass_idx * 0.10
         holes = [
             ring for fp in cur_placed.footprints
             if fp.side == opp
-            for ring in legality.thru_hole_hole_rings(fp, margin_mm=0.25)
+            for ring in legality.thru_hole_hole_rings(fp, margin_mm=base_margin, layer_map=lmap)
         ]
         overhangs = [
             legality.thru_hole_overhang_mm(cur_placed.fp(owner))
@@ -166,23 +178,77 @@ def _resolve_movable_th_collisions(placed, pb, solver_pb, core, retained, macros
             and pb.sides.get(owner) == side_to_move
         ]
         if overhangs:
-            margin = 0.20 + max(overhangs)
+            margin = max(base_margin, 0.20 + max(overhangs))
             for fp in cur_placed.footprints:
                 if fp.side == opp:
-                    holes.extend(legality.thru_hole_hole_rings(fp, margin_mm=margin, thru_hole_only=False))
+                    holes.extend(
+                        legality.thru_hole_hole_rings(fp, margin_mm=margin, thru_hole_only=False, layer_map=lmap)
+                    )
         return holes
 
-    for side_to_move in ("B", "F"):
+    for pass_idx in range(2):
         if not th_findings:
             break
-        side_holes = _side_holes(placed, th_findings, side_to_move)
-        if not side_holes:
-            continue
-        placed, core, moved_side = _relocate_side(placed, core, th_findings, side_to_move, side_holes)
-        if moved_side:
-            findings = legality.check(placed, fixed=set(pb.fixed))
-            th_findings = [f for f in findings if not f.fixed and f.detail.startswith("thru_hole_pads:")]
+        moved_any = False
+        for side_to_move in ("B", "F"):
+            if not th_findings:
+                break
+            side_holes = _side_holes(placed, th_findings, side_to_move, pass_idx)
+            if not side_holes:
+                continue
+            placed, core, moved_side = _relocate_side(placed, core, th_findings, side_to_move, side_holes)
+            if moved_side:
+                moved_any = True
+                findings = legality.check(placed, fixed=set(pb.fixed))
+                th_findings = [f for f in findings if not f.fixed and f.detail.startswith("thru_hole_pads:")]
+        if not moved_any:
+            break
     return placed, core, findings
+
+
+def _resolve_edge_copper_clearances(placed, pb, solver_pb, core, retained, macros, diag, findings):
+    edge_findings = [
+        f for f in findings
+        if not f.fixed and f.kind == "outside_outline" and f.detail.startswith("copper_edge_clearance:")
+    ]
+    if not edge_findings:
+        return placed, core, findings
+    edge_clear = float(pb.board.rules.get("copper_edge_clearance") or 0.0)
+    if edge_clear <= 0:
+        return placed, core, findings
+    idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
+    member_to_anchor = {p.ref: anchor for anchor, m in (macros or {}).items() for p in m.parts}
+    inset_outers: list[list[tuple[float, float]]] = []
+    for ring in solver_pb.outers:
+        shrunk = Polygon(ring).buffer(-(edge_clear + 0.05))
+        if shrunk.is_empty:
+            continue
+        geoms = [shrunk] if shrunk.geom_type == "Polygon" else list(getattr(shrunk, "geoms", ()))
+        for poly in geoms:
+            if not poly.is_empty and poly.area > 0:
+                inset_outers.append([(round(x, 6), round(y, 6)) for x, y in list(poly.exterior.coords)[:-1]])
+    if not inset_outers:
+        return placed, core, findings
+    targets = sorted({member_to_anchor.get(r, r) for f in edge_findings for r in f.refs if r not in pb.fixed})
+    if not targets or not all(r in idx_by_ref for r in targets):
+        return placed, core, findings
+    poses_now = core.positions()
+    target_idxs = [idx_by_ref[r] for r in targets]
+    move_set = set(target_idxs)
+    new_parts = [
+        (*part[:5], idx not in move_set, part[6] if idx in move_set else False, *poses_now[idx])
+        for idx, part in enumerate(solver_pb.parts)
+    ]
+    fix_pb = copy.copy(solver_pb)
+    fix_pb.parts = new_parts
+    fix_pb.outers = inset_outers
+    fix_core = problem.rust_problem(fix_pb, w_cross=W_CROSS)
+    if fix_core.legalize(LEGALIZE_STEP_MM / 2, diag, target_idxs):
+        return placed, core, findings
+    fixed_poses = fix_core.positions()
+    core.set_positions(fixed_poses)
+    next_placed = problem.apply(pb, rigid.expand(pb, fixed_poses, retained, macros) if macros else fixed_poses)
+    return next_placed, core, legality.check(next_placed, fixed=set(pb.fixed))
 
 
 def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None, floorplan: bool,

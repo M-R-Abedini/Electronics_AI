@@ -786,3 +786,90 @@ def test_opposite_side_th_grazing_clearance_check_and_resolve():
     assert not any(f.detail.startswith("thru_hole_pads:") for f in legality.check(resolved, fixed=set(pb.fixed)))
 
 
+def test_layer_pad_clearance_pair_netclass_and_edge_copper_legality():
+    # 1. Fixed F-mounted edge connector with SMD fingers on B.Cu vs movable B-side cap
+    fps_smd = [
+        _fp("U1", 3.0, 3.0, ["A", "B"], locked=True),
+        Footprint(
+            "BUS1", "edge", "lib:edge", 12.0, 12.0, 0.0, "F", locked=True,
+            pads=[
+                Pad("1", "A", (0.0, 0.0), (1.0, 1.0), layers=("top_copper",)),
+                Pad("2", "B", (0.0, 0.0), (1.0, 1.0), layers=("B.Cu",)),
+            ],
+            courtyard=Courtyard("derived", [[(-0.6, -0.6), (0.6, -0.6), (0.6, 0.6), (-0.6, 0.6)]]),
+            uuid="u-BUS1",
+        ),
+        Footprint(
+            "C20", "100n", "lib:c", 12.0, 12.0, 0.0, "B", locked=False,
+            pads=[Pad("1", "A", (0.0, 0.0), (0.6, 0.6), layers=("B.Cu",))],
+            courtyard=Courtyard("file", [[(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)]]),
+            uuid="u-C20",
+        ),
+    ]
+    b_smd = derive(Board(
+        name="smd_opp", footprints=fps_smd, outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0, copper_layers=[CopperLayer("top_copper", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.15, 0.6, 0.3)],
+        nets=[Net("A", "Default", 2), Net("B", "Default", 2)],
+    ))
+    hits_smd = [f for f in legality.check(b_smd) if f.detail == "thru_hole_pads:BUS1"]
+    assert len(hits_smd) == 1 and hits_smd[0].refs == ["BUS1", "C20"]
+    assert problem.build(b_smd).holes
+    placed_smd, info_smd = solve(b_smd, seed=0)
+    assert info_smd["strict_violations"] == 0
+    assert not any(f.detail == "thru_hole_pads:BUS1" for f in legality.check(placed_smd))
+
+    # 2. Pair-specific netclass clearance (0.20 mm on Default while min_clearance=0.10 mm; gap=0.16 mm)
+    fps_nc = [
+        _fp("U1", 3.0, 3.0, ["A", "B"], locked=True),
+        Footprint(
+            "P5", "conn", "lib:p", 12.0, 12.0, 0.0, "F", locked=True,
+            pads=[Pad("1", "A", (0.0, 0.0), (1.0, 1.0), shape="Rect", kind="thru_hole",
+                      layers=("F.Cu", "B.Cu"), drill=0.5)],
+            courtyard=Courtyard("file", [[(-0.6, -0.6), (0.6, -0.6), (0.6, 0.6), (-0.6, 0.6)]]),
+            uuid="u-P5",
+        ),
+        Footprint(
+            "R7", "r", "lib:r", 12.86, 12.0, 0.0, "B", locked=False,
+            pads=[Pad("1", "B", (0.0, 0.0), (0.4, 0.4), shape="Rect", layers=("B.Cu",))],
+            courtyard=Courtyard("file", [[(-0.3, -0.3), (0.3, -0.3), (0.3, 0.3), (-0.3, 0.3)]]),
+            uuid="u-R7",
+        ),
+    ]
+    b_nc = derive(Board(
+        name="nc_clear", footprints=fps_nc, outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)],
+        nets=[Net("A", "Default", 2), Net("B", "Default", 2)],
+        rules={"min_clearance": 0.10},
+    ))
+    assert any(f.detail == "thru_hole_pads:P5" for f in legality.check(b_nc))
+
+    # 3. Pad-to-edge copper_edge_clearance (0.30 mm required, pad at 0.25 mm while courtyard inside outline)
+    fps_edge = [
+        _fp("U1", 5.0, 5.0, ["A", "B"], locked=True),
+        Footprint(
+            "Q2", "q", "lib:q", 19.35, 10.0, 0.0, "B", locked=False,
+            pads=[Pad("1", "A", (0.0, 0.0), (0.8, 0.8), shape="Rect", layers=("B.Cu",))],
+            courtyard=Courtyard("file", [[(-0.6, -0.6), (0.6, -0.6), (0.6, 0.6), (-0.6, 0.6)]]),
+            uuid="u-Q2",
+        ),
+    ]
+    b_edge = derive(Board(
+        name="edge_cu", footprints=fps_edge, outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)],
+        nets=[Net("A", "Default", 2), Net("B", "Default", 2)],
+        rules={"copper_edge_clearance": 0.30},
+    ))
+    hits_edge = legality.check(b_edge)
+    assert len(hits_edge) == 1 and hits_edge[0].detail == "copper_edge_clearance:1"
+    pb_edge = problem.build(b_edge)
+    core_edge = problem.rust_problem(pb_edge)
+    resolved_edge, _core, f_edge = pipeline._resolve_edge_copper_clearances(
+        b_edge, pb_edge, pb_edge, core_edge, None, None, problem.board_diag(pb_edge), hits_edge,
+    )
+    assert not f_edge and not legality.check(resolved_edge)
+
+
+
