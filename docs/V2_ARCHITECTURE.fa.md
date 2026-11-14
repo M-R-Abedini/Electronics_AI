@@ -301,7 +301,7 @@ java -jar freerouting-2.5.0.jar -de in.dsn -do out.ses
 | `placer__score` | برد (+ intent) | گیت‌ها، معیارها، Lint، گالری؛ روی هر برد موجود (از جمله چیدمان متخصص) |
 | `placer__place_board` | برد + intent + سیاست‌ها + seed | فایل جدید + `run_report.json` + گالری |
 | `placer__place_cluster` | برد + مجموعهٔ قطعات | همان، با قفل بقیه |
-| `placer__gallery` | اجرا(ها) | HTML/SVG کنار هم |
+| `placer__gallery` | اجراها، `include_images` اختیاری | HTML/SVG کنار هم. با `include_images=true`، نمای PNG رو و پشت برای حداکثر دو اجرا در پاسخ MCP برمی‌گردد. |
 | `placer__apply` / `placer__revert` | اجرا + adapter | اعمال برگشت‌پذیر؛ revert < ۲ ثانیه |
 
 **Skill «طراح حرفه‌ای»:** روش فدول/هارتلی، استخراج intent با منبع، پرسیدن تصمیم‌های کاربر (استک‌آپ، سطح مونتاژ، قیود)، اجرای ابزارها، تفسیر گیت‌ها. Skill هرگز مختصات پیشنهاد نمی‌دهد (بخش ۳).
