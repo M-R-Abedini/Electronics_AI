@@ -109,6 +109,102 @@ def test_decap_affinity_uses_nearest_allowed_pin_without_counting_crossings():
     assert not problem.build(board, intent=intent).affinities
 
 
+def test_candidate_decap_affinity_uses_valid_candidates_when_role_confident():
+    board = _board()
+    chip, cap = board.fp("U1"), board.fp("R1")
+    u2 = Footprint("U2", "v", "lib:x", 22.0, 10.0, 0.0, "F", False,
+                   [Pad("1", "A", (-0.5, 0), (0.3, 0.3)), Pad("2", "GND", (0.5, 0), (0.3, 0.3))],
+                   chip.courtyard)
+    board.footprints.append(u2)
+    board.reindex()
+    chip.pads = [Pad("1", "A", (-0.6, 0), (0.3, 0.3)), Pad("2", "GND", (0.6, 0), (0.3, 0.3))]
+    cap.pads = [Pad("1", "A", (-0.2, 0), (0.3, 0.3)), Pad("2", "B", (0.2, 0), (0.3, 0.3))]
+    role = {"value": "decap", "confidence": 0.8}
+    target = {"value": {"ref": None, "net": "A", "candidates": ["U1", "U2", "MISSING"]}, "confidence": 0.3}
+    intent = {"parts": {cap.ref: {"role": role, "target": target}}}
+    pb = problem.build(board, intent=intent)
+    assert len(pb.affinities) == 1
+    pins, weight = pb.affinities[0]
+    assert weight == pytest.approx(problem.CANDIDATE_DECAP_AFFINITY_WEIGHT)
+    assert len(pins) == 3  # source pin + U1 pad 1 + U2 pad 1
+    conn_intent = {"parts": {**intent["parts"],
+                             "U1": {"role": {"value": "connector", "confidence": 0.9}},
+                             "U2": {"role": {"value": "connector", "confidence": 0.9}}}}
+    assert not problem.build(board, intent=conn_intent).affinities
+    role["confidence"] = 0.4
+    assert not problem.build(board, intent=intent).affinities
+
+
+def test_decap_refinement_moves_candidate_target_capacitor():
+    board = _board()
+    chip, cap = board.fp("U1"), board.fp("R1")
+    u2 = Footprint("U2", "v", "lib:x", 24.0, 10.0, 0.0, "F", False,
+                   [Pad("1", "A", (-0.5, 0), (0.3, 0.3)), Pad("2", "GND", (0.5, 0), (0.3, 0.3))],
+                   chip.courtyard)
+    board.footprints.append(u2)
+    board.reindex()
+    chip.pads = [Pad("1", "A", (-0.6, 0), (0.3, 0.3)), Pad("2", "GND", (0.6, 0), (0.3, 0.3))]
+    cap.pads = [Pad("1", "A", (-0.2, 0), (0.3, 0.3)), Pad("2", "GND", (0.2, 0), (0.3, 0.3))]
+    cap.x, cap.y = 35.0, 10.0
+    intent = {"parts": {cap.ref: {"role": {"value": "decap", "confidence": 0.9},
+                                  "target": {"value": {"ref": None, "net": "A", "candidates": ["U1", "U2"]},
+                                             "confidence": 0.3}}}}
+    moved, report = decap.refine(board, intent, {"U1", "U2"})
+    assert report["moved"] == ["R1"]
+    assert moved.fp("R1").x < 30.0
+    assert report["after_all"]["median_mm"] < report["before_all"]["median_mm"]
+    rejected, rej_report = decap.refine(board, intent, {"U1", "U2"}, preserve_escapes=lambda _: False)
+    assert rej_report["moved"] == [] and rejected is board
+
+
+def test_passive_alignment_snaps_nearby_peer_and_rejects_illegal_or_crossing_moves():
+    board = _board()
+    board.footprints = [board.fp("U1"), board.fp("R1"), board.fp("R2")]
+    r2 = board.fp("R2")
+    r2.x, r2.y = 6.0, 3.6
+    board.reindex()
+    aligned, report = decap.align_passives(board, None, {"U1"})
+    assert report["moved"] in (["R2"], ["R1"])
+    assert report["after"]["aligned_fraction"] == pytest.approx(1.0)
+    assert min(abs(aligned.fp("R1").x - aligned.fp("R2").x), abs(aligned.fp("R1").y - aligned.fp("R2").y)) <= 0.05
+
+    blocked, b_report = decap.align_passives(board, None, {"U1"}, preserve_escapes=lambda _: False)
+    assert b_report["moved"] == [] and blocked is board
+
+    # Reject move that would cause a courtyard overlap with fixed U2.
+    overlap_board = _board()
+    overlap_board.footprints = [overlap_board.fp("U1"), overlap_board.fp("R1"), overlap_board.fp("R2")]
+    or1, or2 = overlap_board.fp("R1"), overlap_board.fp("R2")
+    or1.x, or1.y = 3.0, 3.0
+    or2.x, or2.y = 6.0, 4.0  # dy=1.0 <= 1.5, dx=3.0 > 1.5
+    u2_block = Footprint("U2", "v", "lib:x", 6.0, 2.4, 0.0, "F", False, [], overlap_board.fp("U1").courtyard)
+    overlap_board.footprints.append(u2_block)
+    overlap_board.reindex()
+    ov_res, ov_rep = decap.align_passives(overlap_board, None, {"U1", "U2", "R1"})
+    assert ov_rep["moved"] == [] and ov_res is overlap_board
+
+    # Reject move that strictly increases signal net crossings (0 -> 1).
+    cross_board = _board()
+    cross_board.footprints = [cross_board.fp("U1"), cross_board.fp("R1"), cross_board.fp("R2")]
+    u1, cr1, cr2 = cross_board.fp("U1"), cross_board.fp("R1"), cross_board.fp("R2")
+    u1.x, u1.y = 9.8, 11.5
+    u1.pads = [Pad("1", "N1", (0.0, 0.0), (0.3, 0.3))]
+    u_n1_b = Footprint("U2", "v", "lib:x", 9.8, 17.5, 0.0, "F", False,
+                       [Pad("1", "N1", (0.0, 0.0), (0.3, 0.3))], u1.courtyard)
+    u_n2 = Footprint("U3", "v", "lib:x", 13.0, 13.5, 0.0, "F", False,
+                     [Pad("1", "N2", (-2.2, 0.0), (0.3, 0.3))], u1.courtyard)
+    cr1.x, cr1.y = 9.2, 15.5  # fixed anchor on isolated net; vertical dy=2.5 > 1.5 so only x-snap possible
+    cr1.pads = [Pad("1", "N3", (-0.2, 0.0), (0.3, 0.3)), Pad("2", None, (0.2, 0.0), (0.3, 0.3))]
+    cr2.x, cr2.y = 10.6, 13.0  # right of N1 (x=9.8); snapping x->9.2 crosses N1 (9.8, 11.5..17.5)
+    cr2.pads = [Pad("1", "N2", (0.0, 0.0), (0.3, 0.3)), Pad("2", None, (0.2, 0.0), (0.3, 0.3))]
+    cross_board.footprints.extend([u_n1_b, u_n2])
+    cross_board.reindex()
+    from eda_agent.placer.eval import metrics as _m
+    assert _m.crossings(cross_board)["count"] == 0
+    cres, crep = decap.align_passives(cross_board, None, {"U1", "U2", "U3", "R1"})
+    assert crep["moved"] == [] and cres is cross_board
+
+
 def test_s1_fixes_locked_parts_only_here():
     assert problem.build(_board()).fixed == {"U1": "locked in the file"}
 

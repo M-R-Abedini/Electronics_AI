@@ -197,22 +197,34 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
                 variant, placed, info, audit, rank = name, other, other_info, other_audit, other_rank
     reservations_used = variant in ("reserve", "combined")
     tail_refinement = None
-    if use_floorplan and not info.get("rigid_macros") and not any(_legality_key(info)):
+    passive_alignment = None
+    rigid_macros = info.get("rigid_macros") or {}
+    if not rigid_macros.get("corridors", {}).get("total") and not any(_legality_key(info)):
         def blocked_exits(escape_audit):
             return {(r["ref"], r["pin"], r["net"]) for r in escape_audit.get("blocked", [])}
 
-        blocked = blocked_exits(audit)
-        placed, tail_refinement = decap.refine(placed, intent, set(info["fixed"]),
-                                               preserve_escapes=lambda b: blocked_exits(measure(b)) <= blocked)
-        if tail_refinement["moved"]:
+        rigid_members = {r for group in rigid_macros.get("members", []) for r in group}
+        refine_fixed = set(info["fixed"]) | rigid_members
+        blocked = blocked_exits(audit) if use_floorplan else set()
+        preserve = (lambda b: blocked_exits(measure(b)) <= blocked) if use_floorplan else None
+        if use_floorplan:
+            placed, tail_refinement = decap.refine(placed, intent, refine_fixed, preserve_escapes=preserve)
+            if tail_refinement["moved"]:
+                audit = measure(placed)
+                blocked = blocked_exits(audit)
+                info["cost_final_stage"] = "before_decap_refinement"
+                tail_refinement["output_metrics"] = _floorplan_metrics(placed, intent)
+        placed, passive_alignment = decap.align_passives(placed, intent, refine_fixed, preserve_escapes=preserve)
+        if passive_alignment["moved"] and use_floorplan:
             audit = measure(placed)
-            info["cost_final_stage"] = "before_decap_refinement"
-            tail_refinement["output_metrics"] = _floorplan_metrics(placed, intent)
+            info.setdefault("cost_final_stage", "before_passive_alignment")
+            passive_alignment["output_metrics"] = _floorplan_metrics(placed, intent)
+    info["passive_alignment"] = passive_alignment
     info["floorplan"] = {"requested": use_floorplan, "reservations_used": reservations_used,
                          "reserved_pad_count": sum(map(len, selected.values())) if reservations_used else 0,
                          "selected_variant": variant, "quality_guard": comparisons.get(variant),
                          "comparisons": comparisons, "escape": audit, "iteration_budget_divisor": divisor,
-                         "decap_refinement": tail_refinement}
+                         "decap_refinement": tail_refinement, "passive_alignment": passive_alignment}
     for row in anchors:
         ref = row["ref"]
         placed.fp(ref).locked = original.fp(ref).locked

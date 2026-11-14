@@ -30,6 +30,7 @@ EDGE_DISTANCE_MM = 1.5  # declared: a connector this close to the outline edge i
 WEIGHT_SIGNAL = 1.0
 WEIGHT_PLANE_NET = 0.2
 DECAP_AFFINITY_WEIGHT = 3.0  # local supply distance in mm, weighted relative to signal HPWL
+CANDIDATE_DECAP_AFFINITY_WEIGHT = 1.0  # softer pull toward nearest valid candidate IC pad when target ref is unresolved
 GAP_MM = 0.0  # declared: extra courtyard gap; courtyards already carry the library's clearance
 LOCAL_BLOCK_WEIGHT = 2.0
 LOCAL_BLOCK_ROLES = frozenset({"crystal", "crystal_load_cap", "crystal_aux", "converter_inductor", "converter_diode",
@@ -162,16 +163,30 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         plane = net in planes
         pb.nets.append((pins, WEIGHT_PLANE_NET if plane else WEIGHT_SIGNAL, not plane))
         pb.net_names.append(net)
-    for ref, part in sorted((intent or {}).get("parts", {}).items()):
+    parts = (intent or {}).get("parts", {})
+    for ref, part in sorted(parts.items()):
         role, claim = part.get("role"), part.get("target")
-        if model.is_uncertain(role) or model.is_uncertain(claim):
+        if model.is_uncertain(role) or not claim:
             continue
         kind = role["value"]
         if kind != "decap" and (not floorplan or kind not in LOCAL_BLOCK_ROLES):
             continue
         target = claim["value"]
         net, target_ref = target.get("net"), target.get("ref")
-        if not target_ref or target_ref == ref or target_ref not in boxes or ref not in boxes:
+        if ref not in boxes:
+            continue
+        if not target_ref:
+            candidates = [c for c in (target.get("candidates") or ()) if c != ref and c in boxes]
+            has_non_connector = any(((parts.get(c, {}).get("role") or {}).get("value")) != "connector"
+                                    for c in candidates)
+            if (kind == "decap" and net and not is_ground_net(net) and CANDIDATE_DECAP_AFFINITY_WEIGHT > 0
+                    and candidates and has_non_connector and float(claim.get("confidence", 0.0)) > 0):
+                source = part_pins.get((ref, net), [])
+                pins = [index for cand in candidates for _, index in part_pins.get((cand, net), [])]
+                if len(source) == 1 and pins:
+                    pb.affinities.append(([source[0][1], *pins], CANDIDATE_DECAP_AFFINITY_WEIGHT))
+            continue
+        if model.is_uncertain(claim) or target_ref == ref or target_ref not in boxes:
             continue
         numbers = set(target.get("pins") or [])
         shared = {net} if net else board.fp(ref).nets & board.fp(target_ref).nets
