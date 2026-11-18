@@ -40,7 +40,7 @@ jobs:
           $innoCompiler = @('C:\Program Files (x86)\Inno Setup 6\ISCC.exe', 'C:\Program Files\Inno Setup 7\ISCC.exe') | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
           if (-not $innoCompiler) { throw 'Runner image lacks Inno Setup; install a reviewed compiler before retrying.' }
           python installer/build_installer.py --python-embed runtime.zip --python-embed-sha256 $env:EMBED_SHA256 --iscc $innoCompiler --output dist/windows-installer
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ElectronicsAI-Setup-x64
           path: |
