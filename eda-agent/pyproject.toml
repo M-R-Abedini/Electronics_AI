@@ -57,7 +57,7 @@ dependencies = [
 # design tools' optional render_png path degrades to a preview_error note
 # when it is absent. Install this extra to get the PNG previews.
 render = [
-    "matplotlib>=3.5,<4",
+    "matplotlib>=3.11.2,<4",
 ]
 # KiCad backend (EDA_AGENT_BACKEND=kicad / --backend kicad). kipy is the
 # official KiCad IPC client; it is imported lazily inside the bridge so the
@@ -72,7 +72,7 @@ dev = [
     "pytest-asyncio>=0.21",
     # The illustrate render tests exercise the matplotlib path, so dev
     # pulls the render extra (CI installs .[dev] only).
-    "matplotlib>=3.5,<4",
+    "matplotlib>=3.11.2,<4",
     # The dashboard tests import the Flask app, so dev pulls the web extra
     # for the same reason.
     "flask>=3.0",
