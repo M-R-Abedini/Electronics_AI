@@ -398,3 +398,93 @@ def test_the_whole_generated_corpus_is_already_current(generated_corpus):
     assert "not updated" in fp_out, (
         f"KiCad rewrote {generated_corpus['footprints']} generated "
         f"footprints, so they were not in current form:\n{fp_out}")
+
+
+def test_generated_schematic_wires_pin_numbers_and_names(kicad_cli, tmp_path):
+    from eda_agent.core.kicad_netlist import parse_kicadxml_netlist
+    from eda_agent.core.kicad_schematic import build_schematic
+    from eda_agent.core.kicad_symbol import build_symbol, extract_symbol, standard_symbol_dirs
+    from eda_agent.libimport.kicad.sexpr import find_all, loads, value
+
+    lid = "Test:Regulator"
+    pins = [
+        {"number": "1", "name": "IN", "x_mm": -20.32, "y_mm": 2.54,
+         "angle": 0, "length_mm": 5.08},
+        {"number": "3", "name": "EN", "x_mm": -20.32, "y_mm": 0,
+         "angle": 0, "length_mm": 5.08},
+        {"number": "2", "name": "GND", "x_mm": -20.32, "y_mm": -1.27,
+         "angle": 0, "length_mm": 5.08},
+        {"number": "5", "name": "OUT", "x_mm": 20.32, "y_mm": 2.54,
+         "angle": 180, "length_mm": 5.08},
+    ]
+    real = build_symbol(lid, pins, body_w_mm=30.48, body_h_mm=12.7)
+    pin_block = find_all(find_all(loads(real), "symbol")[1], "pin")
+    assert all(float(value(p, "length")) == 5.08 for p in pin_block)
+    resistor = extract_symbol("Device:R", standard_symbol_dirs(str(kicad_cli)))
+    parts = [{"refdes": ref} for ref in ("U1", "R1", "J1")]
+    source = build_schematic(
+        parts,
+        [{"name": n, "nodes": [{"refdes": r, "pin": p} for r, p in nodes]}
+         for n, nodes in (
+             ("VRAW_IN", [("U1", "IN"), ("U1", "EN"), ("R1", "1")]),
+             ("V5_IN", [("U1", "5"), ("R1", "2"), ("J1", "B4")]),
+             ("GND_IN", [("U1", "2"), ("J1", "C6")]),
+         )],
+        symbols={lid: real, "Device:R": resistor},
+        part_symbol={"U1": lid, "R1": "Device:R"}, project="generated",
+    )
+    placed = loads(source)
+    labels = find_all(placed, "global_label")
+    assert sum(label[1] == "VRAW_IN" for label in labels) == 2
+    assert {value(label, "at", 3) for label in labels} == {"0", "90", "180", "270"}
+    regulator_left = {label[1]: float(value(label, "at"))
+                      for label in labels
+                      if value(label, "at", 3) == "180" and label[1] in {"VRAW_IN", "GND_IN"}}
+    assert regulator_left["GND_IN"] < regulator_left["VRAW_IN"]
+    expected_justification = {"0": "left", "90": "left", "180": "right", "270": "right"}
+    for label in labels:
+        effects = find_all(label, "effects")[0]
+        assert value(effects, "justify") == expected_justification[value(label, "at", 3)]
+
+    sch = tmp_path / "generated.kicad_sch"
+    sch.write_text(source, encoding="utf-8")
+    netlist = tmp_path / "generated.xml"
+    output = _run(kicad_cli, ["sch", "export", "netlist", "--format", "kicadxml",
+                              "--output", str(netlist), str(sch)])
+    assert netlist.is_file(), output
+    nets = {n["name"]: {(p["reference"], p["pin"]) for p in n["nodes"]}
+            for n in parse_kicadxml_netlist(str(netlist))["nets"]}
+    assert nets["VRAW_IN"] == {("U1", "1"), ("U1", "3"), ("R1", "1")}
+    assert nets["GND_IN"] == {("U1", "2"), ("J1", "C6")}
+    assert nets["V5_IN"] == {("U1", "5"), ("R1", "2"), ("J1", "B4")}
+
+
+def test_generated_schematic_multi_pin_spine_no_lane_collision():
+    from eda_agent.core.kicad_schematic import build_schematic
+    from eda_agent.core.kicad_symbol import build_symbol
+    from eda_agent.libimport.kicad.sexpr import find_all, loads, value
+
+    lid = "Test:MultiSpine"
+    # 3 consecutive pins on VIN (y = 5.08, 2.54, 0 -> midpoint 2.54)
+    # followed immediately by GND at y = -1.27 (only 1.27mm from the last VIN pin).
+    pins = [
+        {"number": "1", "name": "VIN1", "x_mm": -20.32, "y_mm": 5.08, "angle": 0, "length_mm": 5.08},
+        {"number": "2", "name": "VIN2", "x_mm": -20.32, "y_mm": 2.54, "angle": 0, "length_mm": 5.08},
+        {"number": "3", "name": "VIN3", "x_mm": -20.32, "y_mm": 0.0, "angle": 0, "length_mm": 5.08},
+        {"number": "4", "name": "GND", "x_mm": -20.32, "y_mm": -1.27, "angle": 0, "length_mm": 5.08},
+    ]
+    real = build_symbol(lid, pins, body_w_mm=30.48, body_h_mm=15.24)
+    source = build_schematic(
+        [{"refdes": "U1"}, {"refdes": "U2"}],
+        [
+            {"name": "VIN_RAIL", "nodes": [{"refdes": "U1", "pin": "1"}, {"refdes": "U1", "pin": "2"}, {"refdes": "U1", "pin": "3"}, {"refdes": "U2", "pin": "1"}]},
+            {"name": "GND_RAIL", "nodes": [{"refdes": "U1", "pin": "4"}, {"refdes": "U2", "pin": "2"}]},
+        ],
+        symbols={lid: real},
+        part_symbol={"U1": lid},
+    )
+    placed = loads(source)
+    labels = [l for l in find_all(placed, "global_label") if value(l, "at", 3) == "180"]
+    u1_labels = {l[1]: float(value(l, "at")) for l in labels[:2]}
+    # GND_RAIL must be staggered to a further-left lane rather than colliding with VIN_RAIL's spine
+    assert u1_labels["GND_RAIL"] < u1_labels["VIN_RAIL"]

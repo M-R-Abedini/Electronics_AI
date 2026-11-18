@@ -54,7 +54,7 @@ def _basename(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
-def _resolve_plan_libs(plan):
+def _resolve_plan_libs(plan, *, include_footprints: bool = True):
     """Resolve a plan's real symbols and footprints from KiCad's libraries.
 
     Returns ``(symbols, part_symbol, mod_texts)``: symbol blocks keyed by
@@ -70,7 +70,7 @@ def _resolve_plan_libs(plan):
                                             standard_footprint_dirs)
         cli = get_kicad_bridge().kicad_cli_path()
         sdirs = standard_symbol_dirs(cli)
-        fdirs = standard_footprint_dirs(cli)
+        fdirs = standard_footprint_dirs(cli) if include_footprints else []
         for p in plan.parts:
             if p.lib_ref and ":" in p.lib_ref:
                 part_symbol[p.refdes] = p.lib_ref
@@ -78,7 +78,7 @@ def _resolve_plan_libs(plan):
                     block = extract_symbol(p.lib_ref, sdirs)
                     if block:
                         symbols[p.lib_ref] = block
-            if p.footprint:
+            if include_footprints and p.footprint:
                 path = find_footprint_file(p.footprint, fdirs)
                 if path:
                     with open(path, "r", encoding="utf-8") as fh:
@@ -1249,7 +1249,8 @@ def register_kicad_tools(mcp) -> None:
                 f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
                 for e in exc.errors()]}
 
-        parts = [{"refdes": p.refdes, "value": p.value or ""}
+        parts = [{"refdes": p.refdes, "value": p.value or "", "lib_ref": p.lib_ref,
+                  "footprint": p.footprint, "datasheet": p.datasheet_url}
                  for p in plan.parts]
         nets = [{"name": n.name,
                  "nodes": [{"refdes": pr.refdes, "pin": pr.pin}
@@ -1258,7 +1259,6 @@ def register_kicad_tools(mcp) -> None:
         title = (plan.spec or "")[:80]
         uid = lambda: str(_uuid.uuid4())
 
-        os.makedirs(output_dir, exist_ok=True)
         sch_path = os.path.join(output_dir, f"{name}.kicad_sch")
         pcb_path = os.path.join(output_dir, f"{name}.kicad_pcb")
         pro_path = os.path.join(output_dir, f"{name}.kicad_pro")
@@ -1269,16 +1269,17 @@ def register_kicad_tools(mcp) -> None:
                "net_settings": {}, "pcbnew": {}, "schematic": {},
                "sheets": [], "text_variables": {}}
         try:
+            schematic = build_schematic(parts, nets, uid=uid, title=title,
+                                        symbols=symbols, part_symbol=part_symbol, project=name)
+            board = build_pcb(parts, nets, uid=uid, title=title, mod_texts=mod_texts)
+            os.makedirs(output_dir, exist_ok=True)
             with open(sch_path, "w", encoding="utf-8") as fh:
-                fh.write(build_schematic(parts, nets, uid=uid, title=title,
-                                         symbols=symbols,
-                                         part_symbol=part_symbol))
+                fh.write(schematic)
             with open(pcb_path, "w", encoding="utf-8") as fh:
-                fh.write(build_pcb(parts, nets, uid=uid, title=title,
-                                   mod_texts=mod_texts))
+                fh.write(board)
             with open(pro_path, "w", encoding="utf-8") as fh:
                 _json.dump(pro, fh, indent=2)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             return {"ok": False, "reason": str(e)}
         return {"ok": True, "project": pro_path, "schematic": sch_path,
                 "board": pcb_path, "part_count": len(parts),
@@ -1287,11 +1288,11 @@ def register_kicad_tools(mcp) -> None:
     @mcp.tool()
     async def kicad_generate_schematic(plan_json, output_path: str,
                                        render: bool = False) -> dict[str, Any]:
-        """Generate a KiCad schematic (.kicad_sch) from a DesignPlan: embeds a
-        box symbol per part, places every part on a grid, and carries net
-        connectivity via global labels. The KiCad counterpart of Altium's
-        design-execution (schematic side); the output opens in Eeschema.
-        Writes a new file. render=true validates it via kicad-cli."""
+        """Generate a wired KiCad schematic from a DesignPlan. Real symbols
+        are used where available, with placeholders for unresolved symbols.
+        The sheet layout, wire stubs and label alignment are generated from
+        pin geometry. Adjacent pins sharing a net use one label.
+        Writes a new file. render=true also exports a KiCad SVG preview."""
         import json as _json
         import uuid as _uuid
         from pydantic import ValidationError
@@ -1311,36 +1312,21 @@ def register_kicad_tools(mcp) -> None:
                 f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
                 for e in exc.errors()]}
         parts = [{"refdes": p.refdes, "value": p.value or "",
-                  "lib_ref": p.lib_ref} for p in plan.parts]
+                  "lib_ref": p.lib_ref, "footprint": p.footprint,
+                  "datasheet": p.datasheet_url} for p in plan.parts]
         nets = [{"name": n.name,
                  "nodes": [{"refdes": pr.refdes, "pin": pr.pin}
                            for pr in n.pins]} for n in plan.nets]
-        # Resolve each part's real symbol from its lib_ref where possible, so
-        # the schematic uses real library symbols instead of generated boxes.
-        symbols: dict[str, str] = {}
-        part_symbol: dict[str, str] = {}
         try:
-            from ..core.kicad_symbol import (extract_symbol,
-                                             standard_symbol_dirs)
-            sdirs = standard_symbol_dirs(get_kicad_bridge().kicad_cli_path())
-            for p in plan.parts:
-                lid = p.lib_ref
-                if lid and ":" in lid:
-                    part_symbol[p.refdes] = lid
-                    if lid not in symbols:
-                        block = extract_symbol(lid, sdirs)
-                        if block:
-                            symbols[lid] = block
-        except Exception:
-            symbols, part_symbol = {}, {}
-        sch = build_schematic(parts, nets, uid=lambda: str(_uuid.uuid4()),
-                              title=(plan.spec or "")[:80],
-                              symbols=symbols, part_symbol=part_symbol)
-        try:
+            symbols, part_symbol, _ = _resolve_plan_libs(plan, include_footprints=False)
+            sch = build_schematic(parts, nets, uid=lambda: str(_uuid.uuid4()),
+                                  title=(plan.spec or "")[:80],
+                                  symbols=symbols, part_symbol=part_symbol,
+                                  project=_basename(output_path))
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
             with open(output_path, "w", encoding="utf-8") as fh:
                 fh.write(sch)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             return {"ok": False, "reason": f"could not write {output_path}: {e}"}
         result: dict[str, Any] = {"ok": True, "path": output_path,
                                   "part_count": len(parts),
@@ -1482,7 +1468,10 @@ def register_kicad_tools(mcp) -> None:
             body_h_mm: float = 7.62, render: bool = False) -> dict[str, Any]:
         """Create a schematic symbol in a .kicad_sym library. Each pin:
         {number, name, x_mm, y_mm, angle (0/90/180/270), type (input/output/
-        bidirectional/passive/power_in/...), length}. If the library file
+        bidirectional/passive/power_in/...), length in mm}. Coordinates
+        define the electrical anchors. The body is fitted to the pin rows;
+        length (or length_mm) specifies the minimum drawn pin length.
+        If the library file
         exists the symbol is inserted into it, otherwise a new library is
         created. Writes a file (does not touch the open design). render=true
         validates it via kicad-cli."""
@@ -1500,7 +1489,7 @@ def register_kicad_tools(mcp) -> None:
                                            body_w_mm, body_h_mm)
             with open(library_path, "w", encoding="utf-8") as fh:
                 fh.write(content)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             return {"ok": False, "reason": f"could not write "
                     f"{library_path}: {e}"}
         result: dict[str, Any] = {"ok": True, "path": library_path,
