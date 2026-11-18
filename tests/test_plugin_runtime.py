@@ -138,6 +138,8 @@ def test_doctor_is_readonly_without_native_or_subprocess_when_probe_disabled(tmp
     assert before == {p.relative_to(data): p.read_bytes() for p in data.rglob('*') if p.is_file()}
 
 
+@pytest.mark.skipif(sys.version_info[:2] != (3, 12),
+                    reason='Plugin runtime requires Python 3.12')
 def test_actual_python_dependency_probe_does_not_load_native_suite():
     info = runtime.probe_python(Path(sys.executable))
     assert info['python'][:2] == [3, 12]
@@ -163,6 +165,8 @@ def test_normal_serve_only_starts_current_gateway_without_installing(tmp_path, m
     assert not (tmp_path / 'native-runtime').exists()
 
 
+@pytest.mark.skipif(sys.version_info[:2] != (3, 12),
+                    reason='Bootstrap guard requires Python 3.12 (platform is mocked)')
 def test_bootstrap_preflights_workspace_before_installing_dependencies(tmp_path, monkeypatch):
     altium = tmp_path / 'X2.EXE'; altium.touch()
     native = tmp_path / 'runtime'; native.mkdir()
@@ -190,6 +194,8 @@ def fake_install(monkeypatch):
     return calls
 
 
+@pytest.mark.skipif(sys.version_info[:2] != (3, 12),
+                    reason='Bootstrap guard requires Python 3.12 (platform is mocked)')
 def test_bootstrap_rerun_preserves_policy_and_uses_new_independent_environment(tmp_path, monkeypatch):
     altium = tmp_path / 'X2.EXE'; altium.touch()
     old = tmp_path / 'oldlibs'; old.mkdir()
@@ -220,6 +226,8 @@ def test_bootstrap_rerun_preserves_policy_and_uses_new_independent_environment(t
     assert updated['backends']['libraries']['args'] == [str(ROOT / 'suite_libraries_native.py'), str(data / 'libraries.json')]
 
 
+@pytest.mark.skipif(sys.version_info[:2] != (3, 12),
+                    reason='Bootstrap guard requires Python 3.12 (platform is mocked)')
 def test_failed_bootstrap_probe_preserves_committed_configuration(tmp_path, monkeypatch):
     data, _ = configured(tmp_path)
     altium = tmp_path / 'X2.EXE'

@@ -138,6 +138,8 @@ def test_optional_registration_never_stores_plaintext(tmp_path, monkeypatch):
     assert 'secret-token' not in (tmp_path / 'auth.json').read_text()
 
 
+@pytest.mark.skipif(sys.version_info[:2] != (3, 12),
+                    reason='Installer build guard requires Python 3.12 (platform is mocked)')
 def test_installer_contains_python_services_without_a_library_executable(tmp_path, monkeypatch):
     package = tmp_path / 'package'
     (package / 'scripts').mkdir(parents=True)

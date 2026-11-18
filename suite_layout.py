@@ -584,11 +584,30 @@ class LayoutService(SiPiService):
         report = await asyncio.to_thread(evaluate_placement, context_record['context'], plan['intent'],
             plan['constraints'], selected['moves'], candidate_id=selected['candidate_id'])
         blockers = list(report['blockers'])
-        if selected['moves']:
-            comparison=await asyncio.to_thread(compare_placement_candidates,context_record['context'],
-                plan['intent'],plan['constraints'],[dict(id='gate-exact-moves',moves=selected['moves'])],
-                plan['options'].get('selection_policy'))
-            if comparison['selection_status']!='selected':blockers.append('current_tier_1_selection')
+        # The native transport budget is a cheap, deterministic gate: check
+        # it before the comparatively expensive selection comparison, and
+        # never run that comparison for a batch Altium cannot receive.
+        transport_supported = True
+        if selected['moves'] and context_record['trusted_live']:
+            from suite_placement_adapter import prepare_layout_native_batch
+            try:
+                prepare_layout_native_batch(context_record['context']['board_path'],
+                    (snapshot or {}).get('board_identity'), (snapshot or {}).get('native_snapshot_token'),
+                    selected['moves'], 'gate_transport_validation')
+            except ValueError:
+                transport_supported = False
+                blockers.append('native_transport_unsupported')
+        if selected['moves'] and transport_supported:
+            try:
+                comparison=await asyncio.to_thread(compare_placement_candidates,context_record['context'],
+                    plan['intent'],plan['constraints'],[dict(id='gate-exact-moves',moves=selected['moves'])],
+                    plan['options'].get('selection_policy'))
+                if comparison['selection_status']!='selected':blockers.append('current_tier_1_selection')
+            except (KeyError, TypeError, ValueError):
+                # An evaluator report that cannot support selection is
+                # missing evidence, not a passing gate: fail closed with a
+                # blocker instead of crashing the validation call.
+                blockers.append('current_tier_1_selection')
         if not selected.get('apply_eligible'):
             blockers.append('candidate_selection_blocked')
         if not context_record['trusted_live']:
@@ -597,14 +616,6 @@ class LayoutService(SiPiService):
             if (context_record['context'].get('document_modified') is not False or
                     not context_record['context'].get('unsaved_detection_complete')):
                 blockers.append('unsaved_recovery_coverage')
-        if selected['moves'] and context_record['trusted_live']:
-            from suite_placement_adapter import prepare_layout_native_batch
-            try:
-                prepare_layout_native_batch(context_record['context']['board_path'],
-                    (snapshot or {}).get('board_identity'), (snapshot or {}).get('native_snapshot_token'),
-                    selected['moves'], 'gate_transport_validation')
-            except ValueError:
-                blockers.append('native_transport_unsupported')
         if any(m.get('side') != next(c['side'] for c in context_record['context']['components']
                    if c['id'] == m['component_id']) for m in selected['moves']):
             blockers.append('native_side_change_unsupported')

@@ -117,8 +117,20 @@ def test_native_batch_budget_is_a_gate_before_checkpoint_or_operation_claim(tmp_
             options={'recovery_mode': 'disk_and_pose_evidence'},
             comparison={'plan': {'moves': moves, 'candidate_id': 'feasible-batch', 'apply_eligible': True}},
             policy_version=POLICY_VERSION))
-        monkeypatch.setattr(core, 'evaluate_placement', lambda *a, **k: dict(
-            feasible=True, blockers=[], required_checks=['independent-feasible-geometry'], evidence_id='b'*64))
+        def evaluate_stub(context, intent=None, constraints=(), moves=(), **kwargs):
+            # Contract-complete evaluator double: selection comparison reads
+            # metrics/digests/candidate identity, so a bare feasible dict is
+            # not a valid report. A moved candidate improves signal HPWL.
+            moves = list(moves or [])
+            return dict(feasible=True, blockers=[], required_checks=['independent-feasible-geometry'],
+                evidence_id='b'*64, candidate_id=kwargs.get('candidate_id', 'baseline'),
+                moves=moves, checks=[], reservations=[], input_digest='c'*64, constraint_digest='d'*64,
+                metrics={'signal_hpwl': {'value': 0. if moves else 10., 'critical': False},
+                         'ratsnest_crossings': {'value': 0., 'critical': False},
+                         'via_proxy': {'value': 0., 'critical': False},
+                         'alignment_penalty': {'value': None, 'critical': False},
+                         'movement': {'value': float(len(moves)), 'critical': False}})
+        monkeypatch.setattr(core, 'evaluate_placement', evaluate_stub)
         gate = await service.validate_plan(plan_id)
         assert gate['passed'] is (move_count <= 500)
         assert calls == backups == []

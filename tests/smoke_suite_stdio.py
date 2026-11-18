@@ -16,7 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 COUNTS = {'eda': 457, 'libraries': 34, 'cloud': 4,
-          'suite': 3, 'supply': 4, 'route': 4, 'telemetry': 1, 'si_pi': 4, 'layout': 8}
+          'suite': 3, 'supply': 4, 'route': 4, 'telemetry': 1, 'si_pi': 5, 'layout': 9, 'placer': 9}
 
 
 async def run(root: Path, *, toolset='minimal'):

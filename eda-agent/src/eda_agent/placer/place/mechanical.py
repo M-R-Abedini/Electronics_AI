@@ -67,7 +67,7 @@ def evidence(board: Board, intent: dict, refs: set[str] | None = None) -> dict:
 
 
 def anchor(board: Board, intent: dict) -> tuple[Board, list[dict]]:
-    """Find legal mechanical poses deterministically, then hold them fixed through S3–S5."""
+    """Find legal mechanical poses deterministically, then hold them fixed through S3-S5."""
     constraints = intent.get("mechanical", {})
     if not constraints:
         return board, []

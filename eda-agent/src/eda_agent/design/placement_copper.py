@@ -11,9 +11,22 @@ from . import copper_geometry as g, placement_p1 as p1
 
 
 def section_complete(snapshot,name):
-    if name not in snapshot.get('coverage',{}):return snapshot.get('complete') is True
-    v=snapshot.get('coverage',{}).get(name)
-    return v in (True,'complete') if not isinstance(v,dict) else v.get('complete') is True or v.get('status')=='complete'
+    coverage=snapshot.get('coverage',{})
+    if name in coverage:
+        v=coverage.get(name)
+        return v in (True,'complete') if not isinstance(v,dict) else v.get('complete') is True or v.get('status')=='complete'
+    if snapshot.get('complete') is True:return True
+    # No explicit verdict for this section. The aggregate flag cannot
+    # attribute incompleteness: readers report omissions per section
+    # (explicit coverage, or named entries in ``missing``). An unrelated
+    # partial section (e.g. dielectric stackup) therefore must not block
+    # geometry this section's own evidence supports, while a named gap
+    # for this section still does. With no gap evidence at all, stay
+    # unknown (incomplete).
+    missing=[str(m).lower() for m in snapshot.get('missing',[])]
+    aliases={name.lower(),name.lower().rstrip('s')}
+    if any(alias in entry for entry in missing for alias in aliases):return False
+    return bool(coverage or missing)
 
 
 def via_layers(snapshot,via):

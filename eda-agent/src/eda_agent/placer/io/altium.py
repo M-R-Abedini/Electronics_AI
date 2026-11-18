@@ -28,6 +28,7 @@ from ..ir import (
     StackupLayer,
     derive,
 )
+from ...units import MM_PER_MIL
 from ..toolchain import sha256_file
 
 PIN_TYPES = ("input", "bidirectional", "output", "open_collector", "passive",
@@ -56,7 +57,7 @@ def _schematic_metadata(project: Path) -> tuple[dict, list[dict], list[str]]:
 
 def _dimension(value: str) -> float:
     if value.endswith("mil"):
-        return float(value[:-3]) * 0.0254
+        return float(value[:-3]) * MM_PER_MIL
     if value.endswith("mm"):
         return float(value[:-2])
     raise ValueError(f"Altium position has no explicit unit: {value!r}")

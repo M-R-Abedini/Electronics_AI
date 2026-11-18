@@ -210,7 +210,14 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
 
 
 def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0, gap: float = GAP_MM):
-    from placer_core import PlacementProblem
+    try:
+        from placer_core import PlacementProblem
+    except ImportError as error:
+        raise ImportError(
+            "placer_core Rust extension is not built; the placement solver "
+            "requires it. Build it with `maturin develop --release` in "
+            "crates/placer-core (or `pip install ./crates/placer-core`)."
+        ) from error
 
     args = (pb.parts, pb.pins, pb.nets, pb.outers, pb.holes, gap, w_hpwl, w_cross)
     return PlacementProblem(*args, affinities=pb.affinities) if pb.affinities else PlacementProblem(*args)

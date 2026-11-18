@@ -220,12 +220,26 @@ def test_class_ownership_persists_native_partial_result_but_is_not_caller_suppli
     asyncio.run(run())
 
 
-def test_four_public_si_pi_contracts_validate():
+def test_public_si_pi_contracts_validate():
     import jsonschema
     tools = list_tools()
-    assert len(tools) == 4 and len({t['name'] for t in tools}) == 4
+    # Five public tools: classify, two copper audits, rule synthesis and the
+    # read-only cross-probe of a stored violation. Keep this count in sync
+    # with COUNTS['si_pi'] in tests/smoke_suite_stdio.py, which asserts the
+    # same total through the unified gateway.
+    assert len(tools) == 5 and len({t['name'] for t in tools}) == 5
+    assert {t['name'] for t in tools} == {'classify_and_partition', 'audit_copper',
+        'audit_copper_loops', 'synthesize_and_apply_rules', 'focus_violation'}
     for tool in tools:
         jsonschema.Draft202012Validator.check_schema(tool['inputSchema'])
+
+
+def test_smoke_counts_match_si_pi_catalog():
+    # The offline smoke gate asserts gateway totals from a hand-kept table;
+    # derive the SI/PI expectation from the real catalog so adding a tool
+    # without updating the smoke contract fails here, in unit tests, first.
+    from smoke_suite_stdio import COUNTS
+    assert COUNTS['si_pi'] == len(list_tools())
 
 
 def test_classification_partitions_real_pad_bindings_with_existing_domain_modules(tmp_path):

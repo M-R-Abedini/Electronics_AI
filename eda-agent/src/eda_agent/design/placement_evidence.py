@@ -1053,6 +1053,10 @@ def compare_placement_candidates(context, intent=None, constraints=(), candidate
         seen.add(cid)
         evaluations.append(evaluate_placement(context, intent, constraints, candidate.get("moves", []), candidate_id=cid))
     baseline = evaluations[0]
+    for report in evaluations:
+        if not isinstance(report.get("metrics"), dict):
+            raise ValueError("Evaluator report lacks selection metrics: "
+                             + str(report.get("candidate_id", "unknown")))
     critical = [key for key, metric in baseline["metrics"].items() if metric.get("critical")]
     tolerance = policy.get("critical_nonregression_mm", {})
     epsilon = 0.0

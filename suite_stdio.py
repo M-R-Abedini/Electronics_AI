@@ -712,7 +712,7 @@ META_TOOLS = [
     types.Tool(name="suite_catalog", description="Discover all Electronics AI capabilities by query/backend. Request with_schema=true before unfamiliar calls. Does not execute design operations.",
                inputSchema={"type": "object", "properties": {
                    "query": {"type": "string", "default": ""},
-                   "backend": {"type": ["string", "null"], "enum": ["eda", "libraries", "cloud", "suite", "supply", "route", "telemetry", "si_pi", "layout", None]},
+                   "backend": {"type": ["string", "null"], "enum": ["eda", "libraries", "cloud", "suite", "supply", "route", "telemetry", "si_pi", "layout", "placer", None]},
                    "with_schema": {"type": "boolean", "default": False},
                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
                    "offset": {"type": "integer", "minimum": 0, "default": 0}}, "additionalProperties": False},
