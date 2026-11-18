@@ -36,7 +36,7 @@ dependencies = [
     # reads UIAutomationCore. Both guard the import, so an absent
     # comtypes turned every dialog read into "unavailable" rather than a
     # failure, which is the quietest way for a capability to go missing.
-    "comtypes>=1.2,<2; sys_platform == 'win32'",
+    "comtypes>=1.5.0,<2; sys_platform == 'win32'",
     "networkx>=3.0,<4",
     "numpy>=1.24,<3",
     # Placer geometry/scoring kernels (placer/eval, placer/place,
