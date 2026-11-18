@@ -18,12 +18,12 @@ from collections.abc import Callable
 from shapely.geometry import Polygon
 from shapely.prepared import prep
 
+from ..units import MM_PER_MIL as MIL
 from .eval.legality import board_polygon, courtyard_polygon
 from .geometry import transform
 from .ir import Board, Footprint
 from .place.problem import fixed_parts
 
-MIL = 0.0254
 RANDOM_TRIES = 400
 
 

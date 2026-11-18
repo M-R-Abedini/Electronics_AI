@@ -1386,7 +1386,7 @@ def register_pcb_tools(mcp):
         Three solver cores are available via ``engine``:
 
         - ``"systematic"``: a four-stage subcircuit preview over an explicit
-          captured ``board_context`` and sourced ``design_intent``. Binds full
+          captured ``board_context`` and a sourced design intent. Binds full
           passive roles, pin-facing rotation, scoped weighted HPWL/MST crossings,
           signal escape reservations and conditional uniform-pitch banks. Uses
           captured clearance/scope/fixed objects and ``placement_options``;
@@ -1564,8 +1564,9 @@ def register_pcb_tools(mcp):
             from eda_agent.design.cluster_placement import UnifiedBoardModel
             from eda_agent.design.systematic_placement import SystematicClusterPlacer
             from eda_agent.design.placement_evidence import compare_placement_candidates
+            from eda_agent.units import MM_PER_MIL
             options=dict(placement_options or {})
-            options.setdefault('search_grid_mm',grid_mils*0.0254)
+            options.setdefault('search_grid_mm',grid_mils*MM_PER_MIL)
             options['optimize_rotation']=optimize_rotation
             proposal=await asyncio.to_thread(SystematicClusterPlacer().propose,UnifiedBoardModel.from_capture({'context':board_context}),design_intent or {},options)
             comparison=await asyncio.to_thread(compare_placement_candidates,board_context,proposal['intent'],candidates=proposal['candidates'])

@@ -83,10 +83,10 @@ def existing_file(value, name):
 def probe_python(python):
     # Import only dependencies; never import native suite configuration here.
     script = ('import sys,json,importlib.metadata as m; '
-              'import mcp,jsonschema,pydantic,psutil,PIL,networkx,numpy,olefile; '
+              'import mcp,jsonschema,pydantic,psutil,PIL,networkx,numpy,olefile,shapely,scipy; '
               'exec("import win32api,comtypes" if sys.platform == "win32" else ""); '
               'print(json.dumps({"python":list(sys.version_info[:3]),'
-              '"packages":{n:m.version(n) for n in ["mcp","jsonschema","pydantic","psutil","Pillow","networkx","numpy","olefile"]}}))')
+              '"packages":{n:m.version(n) for n in ["mcp","jsonschema","pydantic","psutil","Pillow","networkx","numpy","olefile","shapely","scipy"]}}))')
     completed = subprocess.run([str(python), '-I', '-B', '-c', script], capture_output=True,
                                text=True, timeout=45, check=False)
     if completed.returncode:

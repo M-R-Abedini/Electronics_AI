@@ -14543,7 +14543,11 @@ Begin
         Claimed := True;
         PreflightTick := GetTickCount;
         Stop := False; Attempted := 0; Failure := '';
-        If Targeted Then PCBServer.PreProcess;
+        { One PreProcess/PostProcess pair brackets the whole batch, as in
+          every other batch handler: each component still gets its own
+          BeginModify/EndModify pair, and PostProcess is guaranteed by the
+          Finally below even when a move fails mid-batch. }
+        PCBServer.PreProcess;
         Try
         For I := 0 To Moves.Count - 1 Do Begin
             If Stop Then Copper_Push(PendingIds, '"' + EscapeJsonString(Ids[I]) + '"')
@@ -14556,16 +14560,13 @@ Begin
                         Copper_Fail('Lock/side changed after preflight');
                     X := StrToIntDef(XValues[I], 0); Y := StrToIntDef(YValues[I], 0); Rotation := StrToFloatDef(RotValues[I], -1);
                     Inc(Attempted);
-                    If Not Targeted Then PCBServer.PreProcess;
+                    PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
                     Try
-                        PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
-                        Try
-                            If (Not Targeted) Or (Abs(Comp.Rotation - Rotation) > 0.000001) Then Comp.Rotation := Rotation;
-                            Comp.X := X; Comp.Y := Y;
-                        Finally
-                            PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
-                        End;
-                    Finally If Not Targeted Then PCBServer.PostProcess; End;
+                        If (Not Targeted) Or (Abs(Comp.Rotation - Rotation) > 0.000001) Then Comp.Rotation := Rotation;
+                        Comp.X := X; Comp.Y := Y;
+                    Finally
+                        PCBServer.SendMessageToRobots(Comp.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                    End;
                     If Not Targeted Then Begin
                     Entry := Layout_ReadbackValues(Comp, Ids[I], Designators[I], Sides[I], X, Y, Rotation);
                     Copper_Push(Readbacks, Entry);
@@ -14583,7 +14584,7 @@ Begin
                 End;
             End;
         End;
-        Finally If Targeted Then PCBServer.PostProcess; End;
+        Finally PCBServer.PostProcess; End;
         If Attempted > 0 Then MarkDocDirtyByPath(Board.FileName);
         AppliedTick := GetTickCount;
         { A final batch-wide readback is authoritative. Earlier per-move

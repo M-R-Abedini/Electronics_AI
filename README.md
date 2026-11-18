@@ -99,8 +99,8 @@ The default `--toolset minimal` exposes `suite_catalog`, `suite_invoke` and
 `suite_status`. Discover exact schemas through
 `suite_catalog(query="...", backend="eda", with_schema=true)`, then invoke the
 returned `eda__...` name through `suite_invoke`. Current namespaces are `eda__`,
-`libraries__`, `cloud__`, `suite__`, `supply__`, `route__`, `telemetry__`, `si_pi__`
-and `layout__`. `--toolset full` advertises the namespaced tools directly.
+`libraries__`, `cloud__`, `suite__`, `supply__`, `route__`, `telemetry__`, `si_pi__`,
+`layout__` and `placer__`. `--toolset full` advertises the namespaced tools directly.
 
 All 34 library operations execute through original Python OLE2 codecs. Repeat
 `--library-dir` for existing intended library roots; cloud staging gets its own

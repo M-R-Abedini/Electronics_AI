@@ -169,6 +169,9 @@ on EDA startup; their files remain on disk for diagnosis and rollback. See
 
 This suite includes snapshots of two upstream projects. Their source
 repositories and snapshot commits are recorded in [UPSTREAM.json](UPSTREAM.json).
+Upstream fixes are merged on a monthly cadence following
+[the upstream sync policy](docs/UPSTREAM_SYNC.md); security reports follow
+[the security policy](SECURITY.md).
 Preserve their license notices; original suite code uses [MIT](LICENSE).
 Bundled EDA code is Apache-2.0 and legacy code is MIT with file-specific
 exceptions. Native library codecs are original MIT code. Follow

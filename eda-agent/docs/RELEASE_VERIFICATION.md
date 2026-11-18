@@ -1,4 +1,10 @@
-# Release verification: 2026.11.04.electronics-ai-p1
+# Release verification: 2026.11.18.electronics-ai-p4
+
+Current build under verification: Python package `1.0.0` with Altium script
+`2026.11.18.electronics-ai-p4`. Step 0 below pins both numbers; the dated
+release sections that follow are historical records, not current expectations.
+
+## Historical 0.8.0 verification (2026.11.04.electronics-ai-p1)
 
 Version `0.8.0` adds P1 tiered collision envelopes, analytic per-layer pad and
 slot geometry, explicit board-rule provenance and hierarchical proposals.
@@ -167,8 +173,8 @@ objects you can delete afterwards.
 app_ping
 ```
 
-Expect `altium_script_version` = `2026.10.29.single-transport1`, `version_match` =
-`true`, and `mcp_server_version` = `0.5.0`.
+Expect `altium_script_version` = `2026.11.18.electronics-ai-p4`, `version_match` =
+`true`, and `mcp_server_version` = `1.0.0`.
 
 Those are two different versions and they fail differently.
 `altium_script_version` is the Pascal that Altium compiled;
