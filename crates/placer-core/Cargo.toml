@@ -11,7 +11,7 @@ name = "placer_core"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.27", features = ["extension-module", "abi3-py312"] }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py312"] }
 rand = { version = "0.9", default-features = false, features = ["std"] }
 rand_chacha = "0.9"
 
