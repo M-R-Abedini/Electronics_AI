@@ -57,6 +57,7 @@ SHARE_MAX_MM = 1.5  # declared: a pad joins an existing plane via only this clos
 C3_MARGIN = 0.005  # plan 4.2 gate 2: 0.5 percentage points, until a per-board noise figure is measured
 PAIR_ROUNDS = 6  # declared: orderings tried for the pairs (failed pairs move to the front)
 ACTIVE_ROLES = ("ic", "converter_ic", "linear_regulator", "power_switch")
+CRITICAL_PASSIVE_TAP_ROLES = ("regulator_input_cap", "regulator_output_cap", "bulk_cap", "crystal_load_cap", "esd")
 
 
 def _segments(tracks: list[dict]) -> list[dict]:
@@ -228,10 +229,13 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
         by_canon = {cl.name: cl.canonical for cl in board.copper_layers}
         users: dict[int, int] = {}  # id(via) -> pads on it
         tap_vias: list[dict] = []
-        # ICs first, so a decap on the other side can share its pin's via
-        order = [(ref, kind) for kind, roles in (("ic", ACTIVE_ROLES), ("decap", ("decap",)))
-                 for ref in sorted(intent["parts"], key=model.natural_key)
-                 if intent["parts"][ref]["role"]["value"] in roles]
+        # ICs first, then decaps (so a decap can share its pin's via), then critical power/timing/ESD passives.
+        order = [
+            (ref, kind)
+            for kind, roles in (("ic", ACTIVE_ROLES), ("decap", ("decap",)), ("passive", CRITICAL_PASSIVE_TAP_ROLES))
+            for ref in sorted(intent["parts"], key=model.natural_key)
+            if intent["parts"][ref]["role"]["value"] in roles
+        ]
         for ref, kind in order:
             if ref not in board_refs:
                 continue

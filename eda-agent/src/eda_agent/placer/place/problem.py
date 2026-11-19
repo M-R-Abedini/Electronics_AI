@@ -39,13 +39,19 @@ LOCAL_BLOCK_ROLES = frozenset({"crystal", "crystal_load_cap", "crystal_aux", "co
 _NON_OVERHANGING_PREFIXES = frozenset({"TP", "C", "CP", "R", "RN", "L", "FB"})
 
 
+def _is_real_net(net: str | None) -> bool:
+    return bool(net) and not net.startswith("unconnected-(")
+
+
 def local_box(fp: Footprint) -> tuple[float, float, float, float]:
     pts = [p for poly in fp.courtyard.polygons for p in poly]
-    if not pts:
-        pts = []
-        for pad in fp.pads:
-            w, h = pad.size
-            pts += [(pad.local[0] - w / 2, pad.local[1] - h / 2), (pad.local[0] + w / 2, pad.local[1] + h / 2)]
+    # Always enclose pads (even when a connector's shield/tab pad protrudes beyond its file courtyard).
+    for pad in fp.pads:
+        w, h = pad.size[0] + 0.08, pad.size[1] + 0.08
+        rad = math.radians(pad.rotation)
+        c, s = math.cos(rad), math.sin(rad)
+        for dx, dy in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)):
+            pts.append((pad.local[0] + dx * c - dy * s, pad.local[1] + dx * s + dy * c))
     if not pts:
         return (-0.1, -0.1, 0.1, 0.1)
     return (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
@@ -63,7 +69,7 @@ def fixed_parts(board: Board) -> dict[str, str]:
         if fp.locked:
             out[fp.ref] = "locked in the file"
             continue
-        if not any(p.net for p in fp.pads):
+        if not any(_is_real_net(p.net) for p in fp.pads):
             out[fp.ref] = "mechanical (no nets)"
             continue
         shape = courtyard_polygon(fp)

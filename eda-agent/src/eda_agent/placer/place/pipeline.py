@@ -764,7 +764,8 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
         s6a_stage = s6a_mod.apply_to_board(out_board, intent, run_dir / "s6a")
         if s6a_stage["applied"] and s6a_stage["s6a_board"]:
             route_input = Path(s6a_stage["s6a_board"])
-    routed = (route_check(route_input, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
+    routed = (route_check(route_input, out_dir=run_dir / "route", reference_board=src,
+                          router_timeout_s=router_timeout_s, intent=intent)
               if route else None)
     s6a_summary: dict | None = None
     if s6a_stage is not None:

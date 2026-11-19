@@ -15,9 +15,13 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shapely.geometry import LineString
+from shapely.ops import unary_union
+
 from .. import report as run_report
+from ..eval import legality
 from ..io.kicad import KiCadAdapterError, read_board, run_helper
-from ..ir import plane_zone_layers, power_layers
+from ..ir import Board, is_ground_net, plane_zone_layers, power_layers
 from ..toolchain import RUNTIME_DIR, sha256_file
 from . import drc, dsn
 from .freerouting import RouterConfig, route
@@ -26,6 +30,7 @@ from .freerouting import settled as freerouting_settled
 PROJECT_SIDECARS = (".kicad_pro", ".kicad_dru")  # .kicad_prl is per-user view state
 MACRO_ZONE_PREFIX = "eai-macro"
 TIME_BUDGET_S = 300  # plan F0a acceptance: whole path <= 5 minutes on StickHub
+MAX_SANITIZE_PASSES = 3
 
 
 class RouteCheckError(KiCadAdapterError):
@@ -121,10 +126,141 @@ def classify_unrouted(items: list[dict], finished: dict, stop_reason: str) -> li
     return rows
 
 
+def _iter_polys(geom) -> list:
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        return [geom]
+    if hasattr(geom, "geoms"):
+        out = []
+        for g in geom.geoms:
+            out.extend(_iter_polys(g))
+        return out
+    return []
+
+
+def intent_wire_keepouts(board: Board, intent: dict | None) -> list[dsn.Keepout]:
+    """Pad-safe inner-body DSN wire keepouts under crystals and converter inductors on unshielded layers.
+
+    Subtracts every pad on the target layer (buffered by clearance + track width) so a component's own
+    pins (including through-hole crystal leads or SMD inductor pads) are never trapped.
+    """
+    if not intent or not board.copper_layers:
+        return []
+    ordered_cls = sorted(board.copper_layers, key=lambda cl: cl.index)
+    ordered_canons = [cl.canonical for cl in ordered_cls]
+    canon_to_name = {cl.canonical: cl.name for cl in ordered_cls}
+    name_to_canon = {cl.name: cl.canonical for cl in ordered_cls}
+    gnd_planes = {
+        name_to_canon.get(r.layer, r.layer)
+        for r in board.stackup.roles
+        if r.role == "plane" and r.net and is_ground_net(r.net)
+    }
+    base_clr = max(
+        float(board.rules.get("min_clearance") or 0.0),
+        max((float(nc.clearance or 0.0) for nc in board.netclasses), default=0.0),
+        0.2,
+    )
+    min_w = max(float(board.rules.get("min_track_width") or 0.0), 0.15)
+    lmap = legality.copper_layer_map(board)
+
+    # Pre-build pad geometries per canonical layer for fast exact pad subtraction
+    pads_by_canon: dict[str, list] = {c: [] for c in ordered_canons}
+    for fp in board.footprints:
+        for pad in fp.pads:
+            poly = legality._pad_polygon(fp, pad, margin_mm=0.0)
+            if poly is None or poly.is_empty:
+                continue
+            if legality.has_thru_hole_pad(pad):
+                for c in ordered_canons:
+                    pads_by_canon[c].append(poly)
+            else:
+                for lyr in pad.layers:
+                    c = lmap.get(lyr, lyr)
+                    if c in pads_by_canon:
+                        pads_by_canon[c].append(poly)
+
+    parts_intent = intent.get("parts") or {}
+    keepouts: list[dsn.Keepout] = []
+    for fp in board.footprints:
+        role_claim = (parts_intent.get(fp.ref) or {}).get("role") or {}
+        role = role_claim.get("value")
+        if role not in ("crystal", "converter_inductor"):
+            continue
+        if float(role_claim.get("confidence", 0.0)) < 0.6 and not role_claim.get("confirmed_by_user"):
+            continue
+        cy = legality.courtyard_polygon(fp)
+        if cy is None or cy.is_empty:
+            continue
+        inner = cy.buffer(-0.2)
+        body = inner if (not inner.is_empty and inner.area >= 0.5) else cy
+        start_idx = 0 if fp.side == "F" else len(ordered_canons) - 1
+        step = 1 if start_idx == 0 else -1
+        unshielded: list[str] = []
+        idx = start_idx
+        while 0 <= idx < len(ordered_canons):
+            canon = ordered_canons[idx]
+            if idx != start_idx and canon in gnd_planes:
+                break
+            unshielded.append(canon)
+            idx += step
+        own_canon = ordered_canons[start_idx]
+        for canon in unshielded:
+            # For converter inductors on their own side, leave generous room for SW/VOUT entry;
+            # on the opposite unshielded layer (e.g. B.Cu under an F.Cu inductor), block the full inner body.
+            extra = 0.35 if (role == "converter_inductor" and canon == own_canon) else 0.15
+            margin = base_clr + min_w + extra
+            bx0, by0, bx1, by1 = body.bounds
+            pad_cuts = []
+            for p in pads_by_canon.get(canon, ()):
+                if not p.intersects(body.buffer(margin)):
+                    continue
+                pb = p.buffer(margin)
+                pad_cuts.append(pb)
+                # Cut an open escape channel from every interior pad to the nearest body edge:
+                # prevents Specctra DSN polygon holes AND guarantees every pin can escape cleanly.
+                c = p.centroid
+                px, py = float(c.x), float(c.y)
+                exits = [
+                    (px - bx0, (bx0 - margin, py)),
+                    (bx1 - px, (bx1 + margin, py)),
+                    (py - by0, (px, by0 - margin)),
+                    (by1 - py, (px, by1 + margin)),
+                ]
+                _, edge_pt = min(exits, key=lambda item: item[0])
+                corridor_half = max(margin, 0.5 * max(p.bounds[2] - p.bounds[0], p.bounds[3] - p.bounds[1]) + margin)
+                pad_cuts.append(LineString([(px, py), edge_pt]).buffer(corridor_half, cap_style="flat"))
+            safe_geom = body.difference(unary_union(pad_cuts)) if pad_cuts else body
+            layer_name = canon_to_name[canon]
+            for j, poly in enumerate(_iter_polys(safe_geom)):
+                if poly.area < 0.35 or poly.interiors:
+                    continue
+                ring = [(round(float(x), 4), round(float(y), 4)) for x, y in list(poly.exterior.coords)[:-1]]
+                if len(ring) >= 3:
+                    keepouts.append(dsn.Keepout(
+                        name=f"intent_{role}_{fp.ref}_{canon.replace('.', '_')}_{j}",
+                        layer=layer_name,
+                        outline=tuple(ring),
+                    ))
+    return keepouts
+
+
+def _router_item_uuids(router_violations: list[dict]) -> list[str]:
+    """Extract deterministic sorted UUIDs of routing items implicated in router-caused DRC findings."""
+    uuids: set[str] = set()
+    for v in router_violations:
+        for item in v.get("items", []):
+            uid = item.get("uuid")
+            if uid and drc.is_routing_item(item.get("description", "")):
+                uuids.add(str(uid))
+    return sorted(uuids)
+
+
 def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 config: RouterConfig | None = None, neck_width_um: float | None = None,
                 obstacle_keepouts: bool = True, reference_board: str | Path | None = None,
-                router_timeout_s: int | None = None) -> dict:
+                router_timeout_s: int | None = None, intent: dict | None = None,
+                sanitize_drc: bool = True) -> dict:
     """Route-check ``board``.  ``reference_board`` is the original input whose DRC
     findings count as pre-existing (architecture 8.1.3); it defaults to ``board``
     itself, which is right only when ``board`` *is* the designer's file.  A
@@ -169,7 +305,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                                        outline=tuple(tuple(q) for q in z["outline"][0]))
                            for z in ir.zones if (z.get("name") or "").startswith(MACRO_ZONE_PREFIX)
                            for i, layer in enumerate(z["layers"])]
-    text = dsn.add_wire_keepouts(text, macro_zone_keepouts)
+    intent_kps = intent_wire_keepouts(ir, intent) if obstacle_keepouts and intent else []
+    text = dsn.add_wire_keepouts(text, macro_zone_keepouts + intent_kps)
     text = dsn.restore_wiring_precision(text, ir)
     route_dsn = work / "route.dsn"
     route_dsn.write_text(dsn.add_keepouts(text, keepouts), encoding="utf-8", newline="\n")
@@ -196,8 +333,42 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     t = tick("import_refill", t)
 
     result = drc.run(out_board, work / "drc_routed.json")
-    tick("drc_routed", t)
+    t = tick("drc_routed", t)
     attribution = drc.attribute(result, reference)
+    initial_router_drc = attribution.counts()["router_caused"]
+    sanitize_info = {
+        "passes": 0,
+        "removed_tracks": 0,
+        "removed_vias": 0,
+        "initial_router_drc": initial_router_drc,
+        "final_router_drc": initial_router_drc,
+    }
+    if sanitize_drc and initial_router_drc > 0:
+        for pass_idx in range(1, MAX_SANITIZE_PASSES + 1):
+            uuids = _router_item_uuids(attribution.router)
+            if not uuids:
+                break
+            rem_file = work / f"sanitize_remove_{pass_idx}.json"
+            san_out = work / f"sanitize_{pass_idx}.json"
+            rem_file.write_text(json.dumps(uuids, indent=1), encoding="utf-8")
+            run_helper("sanitize", out_board, rem_file, out_board, san_out)
+            san = _load(san_out)
+            if san.get("removed_total", 0) == 0:
+                break
+            sanitize_info["passes"] = pass_idx
+            sanitize_info["removed_tracks"] += int(san["removed_tracks"])
+            sanitize_info["removed_vias"] += int(san["removed_vias"])
+            finished["unrouted_tracks_only"] = san["unrouted_tracks_only"]
+            finished["unrouted_final"] = san["unrouted_final"]
+            finished["routing"] = san["routing"]
+            finished["pads"] = san["pads"]
+            result = drc.run(out_board, work / f"drc_sanitized_{pass_idx}.json")
+            attribution = drc.attribute(result, reference)
+            sanitize_info["final_router_drc"] = attribution.counts()["router_caused"]
+            if sanitize_info["final_router_drc"] == 0:
+                break
+        tick("sanitize_drc", t)
+
     unrouted_items = [u for u in result.get("unconnected_items", [])]
     failures = classify_unrouted(unrouted_items, finished, routed.stop_reason)
     plane_nets = {z["net"] for z in ir.zones if z.get("uuid") in keep and z.get("net")}
@@ -248,10 +419,12 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "layer_roles": [asdict(r) for r in ir.stackup.roles],
             "dsn_power_layers": power_layers(ir),
             "macro_zone_wire_keepouts": len(macro_zone_keepouts),
+            "intent_wire_keepouts": len(intent_kps),
             "obstacle_keepouts": {"exported": len(keepouts), "by_kind": _by_kind(prepared["obstacles"]),
                                   "skipped": skipped},
             "freerouting": routed.summary(),
             "finish": {k: v for k, v in finished.items() if k != "pads"},
+            "sanitize": sanitize_info,
             "drc": attribution.counts(),
         },
         metrics=metrics,

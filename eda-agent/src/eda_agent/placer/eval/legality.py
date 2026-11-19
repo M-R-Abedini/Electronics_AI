@@ -252,11 +252,11 @@ def board_copper_obstacles(board: Board, fixed: set[str] | None = None) -> list[
 
 
 def board_mask_obstacles(board: Board, fixed: set[str] | None = None) -> list[tuple[str, str, Polygon]]:
-    """Free-standing solder-mask apertures (board-level or on fixed footprints, with no input pads)."""
+    """Free-standing solder-mask apertures and unconnected/NPTH pad keepouts (board or fixed footprints)."""
     fixed_set = board.fixed_refs() if fixed is None else set(fixed)
     obs_sig = tuple(
         (o.get("uuid"), o.get("kind"), o.get("source"), o.get("layer"), len(o.get("outlines", ())))
-        for o in board.obstacles if o.get("kind") == "mask_aperture"
+        for o in board.obstacles if o.get("kind") in ("mask_aperture", "pad_keepout")
     )
     if not obs_sig:
         return []
@@ -266,7 +266,7 @@ def board_mask_obstacles(board: Board, fixed: set[str] | None = None) -> list[tu
     names = copper_layer_map(board)
     out: list[tuple[str, str, Polygon]] = []
     for obs in board.obstacles:
-        if obs.get("kind") != "mask_aperture" or obs.get("overlapping_pads"):
+        if obs.get("kind") not in ("mask_aperture", "pad_keepout") or obs.get("overlapping_pads"):
             continue
         src = str(obs.get("source") or "")
         if src != "board" and (not src.startswith("footprint:") or src.split(":", 1)[1] not in fixed_set):
@@ -540,8 +540,8 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                 if fp.ref in fixed:
                     continue
                 sbx = shape_bounds.get(fp.ref)
-                if sbx is not None and (sbx[0] > obx[2] + 0.5 or sbx[2] < obx[0] - 0.5
-                                        or sbx[1] > obx[3] + 0.5 or sbx[3] < obx[1] - 0.5):
+                if sbx is not None and (sbx[0] > obx[2] + 2.0 or sbx[2] < obx[0] - 2.0
+                                        or sbx[1] > obx[3] + 2.0 or sbx[3] < obx[1] - 2.0):
                     continue
                 for pad in fp.pads:
                     if mask_side not in pad_copper_sides(fp, pad, names):
@@ -559,6 +559,47 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                             detail=f"mask_aperture:{uid}", fixed=False,
                         ))
                         break
+
+    # Same-side pad-to-pad overlap guard (catches pads protruding outside a footprint's file courtyard).
+    existing_cy: dict[tuple[str, str, str | None], Finding] = {
+        (f.refs[0], f.refs[1], f.side): f
+        for f in findings if f.kind == "courtyard_overlap" and len(f.refs) == 2
+    }
+    for side in ("F", "B"):
+        pad_entries: list[tuple[str, Polygon]] = []
+        for fp in board.footprints:
+            polys = [
+                poly for pad in fp.pads
+                if side in pad_copper_sides(fp, pad, names)
+                and (poly := _pad_polygon(fp, pad, margin_mm=0.02)) is not None
+                and not poly.is_empty
+            ]
+            if polys:
+                pad_entries.append((fp.ref, unary_union(polys)))
+        if len(pad_entries) < 2:
+            continue
+        geoms = [g for _r, g in pad_entries]
+        tree = STRtree(geoms)
+        seen_pairs: set[tuple[str, str]] = set()
+        for i, j in zip(*tree.query(geoms, predicate="intersects")):
+            if i >= j:
+                continue
+            r1, r2 = pad_entries[i][0], pad_entries[j][0]
+            if r1 in fixed and r2 in fixed:
+                continue
+            pair = (r1, r2) if r1 < r2 else (r2, r1)
+            if pair in seen_pairs:
+                continue
+            area = geoms[i].intersection(geoms[j]).area
+            if area > 1e-4:
+                seen_pairs.add(pair)
+                prev = existing_cy.get((pair[0], pair[1], side))
+                if prev is not None:
+                    continue
+                findings.append(Finding(
+                    "courtyard_overlap", [pair[0], pair[1]], round(max(area, 0.0101), 4), side,
+                    detail="pad_overlap", fixed=False, waived_by=None,
+                ))
 
     findings.sort(key=lambda f: (f.kind, f.refs))
     return findings

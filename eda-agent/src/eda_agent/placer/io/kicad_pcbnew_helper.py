@@ -172,6 +172,62 @@ def _obstacles(board):
                     "layer": board.GetLayerName(layer), "copper": board.GetLayerName(copper),
                     "grown_mm": _mm(grow), "outlines": _poly_points(keep), "net": net,
                     "overlapping_pads": sorted(blocked)})
+
+    # Unconnected/NPTH pads with local clearance, large solder-mask expansion, or NPTH hole clearance
+    # (e.g. fiducials FID* and NPTH mounting holes MH*): KiCad's DSN exporter omits per-pad local
+    # clearance and NPTH hole-to-copper rules, causing Freerouting to violate them.
+    ds = board.GetDesignSettings()
+    def_clr = int(ds.m_NetSettings.GetDefaultNetclass().GetClearance())
+    hole_clr = int(getattr(ds, "m_HoleClearance", 0))
+    board_mask = int(getattr(ds, "m_SolderMaskExpansion", 0))
+    for fp in board.GetFootprints():
+        ref = fp.GetReference()
+        for pad in fp.Pads():
+            net_name = pad.GetNetname() or ""
+            is_npth = pad.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH
+            is_unconnected = (not net_name) or net_name.startswith("unconnected-(")
+            if not is_npth and not is_unconnected:
+                continue
+            raw_clr = pad.GetLocalClearance("") if hasattr(pad, "GetLocalClearance") else None
+            loc_clr = int(raw_clr) if raw_clr is not None else 0
+            raw_mask = pad.GetLocalSolderMaskMargin() if hasattr(pad, "GetLocalSolderMaskMargin") else None
+            loc_mask = int(raw_mask) if raw_mask is not None else 0
+            if is_npth:
+                grow = max(loc_clr, hole_clr, def_clr)
+                target_layers = list(copper_layers)
+            else:
+                if loc_clr <= def_clr + pcbnew.FromMM(0.02) and loc_mask <= board_mask + pcbnew.FromMM(0.05):
+                    continue
+                grow = max(loc_clr, loc_mask)
+                target_layers = [lyr for lyr in copper_layers if pad.IsOnLayer(lyr)]
+            for cu_lyr in target_layers:
+                keep = _item_poly(pad, cu_lyr, max_error, grow)
+                if keep.OutlineCount() == 0 and is_npth:
+                    keep = _item_poly(pad, pcbnew.F_Cu, max_error, grow)
+                if keep.OutlineCount() == 0:
+                    continue
+                blocked = [
+                    other.GetParentFootprint().GetReference() + "-" + other.GetNumber()
+                    for other in pads
+                    if other is not pad
+                    and other.GetParentFootprint() is not fp
+                    and other.GetNetCode() > 0
+                    and not (other.GetNetname() or "").startswith("unconnected-(")
+                    and other.IsOnLayer(cu_lyr)
+                    and _overlaps(keep, _item_poly(other, cu_lyr, max_error))
+                ]
+                out.append({
+                    "uuid": pad.m_Uuid.AsString(),
+                    "kind": "pad_keepout",
+                    "source": "footprint:" + ref,
+                    "class": "PAD",
+                    "layer": board.GetLayerName(cu_lyr),
+                    "copper": board.GetLayerName(cu_lyr),
+                    "grown_mm": _mm(grow),
+                    "outlines": _poly_points(keep),
+                    "net": None,
+                    "overlapping_pads": sorted(blocked),
+                })
     return out
 
 
@@ -342,6 +398,55 @@ def finish(board_path, ses_path, out_board, out_json):
     with open(out_json, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=1)
     del tracks, zones, copper, stale
+
+
+def sanitize(board_path, remove_json, out_board, out_json):
+    """Deterministically remove unlocked routing items implicated in router DRC violations (plan F0a).
+
+    Locked copper (macro / S6a), pads, footprints, and zones are never deleted.
+    Recomputes exact tracks-only and zone-filled connectivity so accounting stays exact.
+    """
+    board = pcbnew.LoadBoard(board_path)
+    with open(remove_json, encoding="utf-8") as fh:
+        remove_uuids = set(json.load(fh))
+    removed_tracks = removed_vias = 0
+    to_remove = []
+    for t in list(board.GetTracks()):
+        if t.IsLocked():
+            continue
+        if t.m_Uuid.AsString() in remove_uuids:
+            to_remove.append(t)
+            if t.GetClass() == "PCB_VIA":
+                removed_vias += 1
+            else:
+                removed_tracks += 1
+    for t in to_remove:
+        board.Remove(t)
+
+    zones = list(board.Zones())
+    copper = [z for z in zones if not z.GetIsRuleArea()]
+    for z in copper:
+        board.Remove(z)
+    unrouted_tracks_only = _unconnected(board)
+    stats = _routing_stats(board)
+    pads = _pad_rows(board)
+    for z in copper:
+        board.Add(z)
+    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    unrouted_final = _unconnected(board)
+    pcbnew.SaveBoard(out_board, board)
+    report = {
+        "removed_tracks": removed_tracks,
+        "removed_vias": removed_vias,
+        "removed_total": removed_tracks + removed_vias,
+        "unrouted_tracks_only": unrouted_tracks_only,
+        "unrouted_final": unrouted_final,
+        "routing": stats,
+        "pads": pads,
+    }
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=1)
+    del to_remove, zones, copper
 
 
 # --------------------------------------------------------------------------
@@ -988,5 +1093,5 @@ def filled_hits(board_path, points_json, out_json):
 
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
-    {"prepare": prepare, "finish": finish, "dump": dump, "place": place, "macro_apply": macro_apply,
-     "filled_hits": filled_hits}[_cmd](*_args)
+    {"prepare": prepare, "finish": finish, "sanitize": sanitize, "dump": dump, "place": place,
+     "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)

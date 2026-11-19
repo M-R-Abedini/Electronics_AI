@@ -326,7 +326,7 @@ class PlacerService:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         run_dir = (self.runs / f"{board.name}-{stamp}").resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
-        routed = route_check(board_path, out_dir=run_dir / "route") if route else None
+        routed = route_check(board_path, out_dir=run_dir / "route", intent=intent) if route else None
         routed_board = read_board(routed["artifacts"]["routed_board"]) if routed else None
         evaluation = evaluate(board, routed["metrics"] if routed else None, intent=intent, copper_board=routed_board)
         page = gallery([Panel(f"{board.name} (current placement)", routed_board if routed_board is not None else board,
