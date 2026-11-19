@@ -754,7 +754,8 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
             raise RuntimeError("cold placement did not expose any reset footprints to the solver")
         info["cold_input"] = cold
     out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb", strip_routing=True,
-                            strip_zones=cold is not None, unfill_zones=cluster_refs is not None)
+                            strip_zones=cold is not None, unfill_zones=cluster_refs is not None,
+                            clean_silkscreen=True)
     routed = (route_check(out_board, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
               if route else None)
     routed_board = read_board(routed["artifacts"]["routed_board"]) if routed else None

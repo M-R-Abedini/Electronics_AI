@@ -616,7 +616,206 @@ def dump(board_path, out_json):
         json.dump(data, fh)
 
 
-def place(board_path, placement_json, out_board, strip_routing, out_json):
+def _boxes_overlap(a, b):
+    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+
+def _box_from_bbox(bb, pad=0):
+    x0 = bb.GetX()
+    y0 = bb.GetY()
+    return (x0 - pad, y0 - pad, x0 + bb.GetWidth() + pad, y0 + bb.GetHeight() + pad)
+
+
+def _text_box(item):
+    if hasattr(item, "ClearBoundingBoxCache"):
+        item.ClearBoundingBoxCache()
+    bb = item.GetBoundingBox()
+    return (bb.GetX(), bb.GetY(), bb.GetX() + bb.GetWidth(), bb.GetY() + bb.GetHeight())
+
+
+def _box_inside_outline(box, outline_poly):
+    x0, y0, x1, y1 = box
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    for px, py in ((x0, y0), (x1, y0), (x1, y1), (x0, y1), (cx, cy)):
+        if not outline_poly.Contains(pcbnew.VECTOR2I(int(px), int(py))):
+            return False
+    return True
+
+
+def _clean_silkscreen(board):
+    """F6 DFA: relocate colliding footprint silkscreen texts away from pads, graphics, and edges."""
+    ds = board.GetDesignSettings()
+    silk_clear = max(int(getattr(ds, "m_SilkClearance", 0)), pcbnew.FromMM(0.15))
+    mask_exp = max(int(getattr(ds, "m_SolderMaskExpansion", 0)), 0)
+    mask_to_cu = max(int(getattr(ds, "m_SolderMaskToCopperClearance", 0)), 0)
+    pad_margin = max(silk_clear, mask_exp, mask_to_cu) + pcbnew.FromMM(0.12)
+    silk_margin = silk_clear + pcbnew.FromMM(0.06)
+    min_h = max(int(getattr(ds, "m_MinSilkTextHeight", 0)), pcbnew.FromMM(0.8))
+    min_w = max(int(getattr(ds, "m_MinSilkTextThickness", 0)), pcbnew.FromMM(0.12))
+
+    outline_poly = pcbnew.SHAPE_POLY_SET()
+    has_outline = bool(board.GetBoardPolygonOutlines(outline_poly, False))
+    silk_layers = (pcbnew.F_SilkS, pcbnew.B_SilkS)
+    static_boxes = {lyr: [] for lyr in silk_layers}
+    placed_boxes = {lyr: [] for lyr in silk_layers}
+
+    def add_shape_boxes(g, lyr):
+        bb = g.GetBoundingBox()
+        w, h = bb.GetWidth(), bb.GetHeight()
+        if w <= 0 and h <= 0:
+            return
+        shape_str = g.GetShapeStr() if hasattr(g, "GetShapeStr") else ""
+        is_filled = bool(g.IsFilled()) if hasattr(g, "IsFilled") else False
+        stroke = int(g.GetWidth()) if hasattr(g, "GetWidth") else pcbnew.FromMM(0.12)
+        m = stroke // 2 + silk_margin
+        if shape_str == "Rectangle" and not is_filled and min(w, h) > pcbnew.FromMM(1.5):
+            x0, y0, x1, y1 = bb.GetX(), bb.GetY(), bb.GetX() + w, bb.GetY() + h
+            static_boxes[lyr].extend([
+                (x0 - m, y0 - m, x1 + m, y0 + m),
+                (x0 - m, y1 - m, x1 + m, y1 + m),
+                (x0 - m, y0 - m, x0 + m, y1 + m),
+                (x1 - m, y0 - m, x1 + m, y1 + m),
+            ])
+        elif shape_str == "Circle" and not is_filled and min(w, h) > pcbnew.FromMM(2.0):
+            cx, cy = bb.GetX() + w // 2, bb.GetY() + h // 2
+            rad = max(w, h) / 2.0
+            for k in range(12):
+                a = 2.0 * math.pi * k / 12.0
+                px = round(cx + rad * math.cos(a))
+                py = round(cy + rad * math.sin(a))
+                seg = round(rad * 0.28) + m
+                static_boxes[lyr].append((px - seg, py - seg, px + seg, py + seg))
+        else:
+            static_boxes[lyr].append(_box_from_bbox(bb, silk_margin))
+
+    # Board-level drawings on silkscreen
+    for d in board.GetDrawings():
+        lyr = d.GetLayer()
+        if lyr not in silk_layers:
+            continue
+        if d.GetClass() in ("PCB_TEXT", "PCB_TEXTBOX"):
+            static_boxes[lyr].append(_box_from_bbox(d.GetBoundingBox(), silk_margin))
+        else:
+            add_shape_boxes(d, lyr)
+
+    # Footprint pads (copper/mask) and static silkscreen graphics
+    movable_texts = []
+    footprints = sorted(board.GetFootprints(), key=lambda f: (f.GetReference(), f.m_Uuid.AsString()))
+    for fp in footprints:
+        for pad in fp.Pads():
+            pbb = pad.GetBoundingBox()
+            if pad.IsOnLayer(pcbnew.F_Cu) or pad.IsOnLayer(pcbnew.F_Mask):
+                static_boxes[pcbnew.F_SilkS].append(_box_from_bbox(pbb, pad_margin))
+            if pad.IsOnLayer(pcbnew.B_Cu) or pad.IsOnLayer(pcbnew.B_Mask):
+                static_boxes[pcbnew.B_SilkS].append(_box_from_bbox(pbb, pad_margin))
+        for g in fp.GraphicalItems():
+            lyr = g.GetLayer()
+            if lyr not in silk_layers:
+                continue
+            cls = g.GetClass()
+            if cls in ("PCB_TEXT", "FP_TEXT"):
+                if g.IsVisible():
+                    movable_texts.append((fp, g, False))
+            else:
+                add_shape_boxes(g, lyr)
+        for fld in fp.GetFields():
+            if fld.IsVisible() and fld.GetLayer() in silk_layers:
+                movable_texts.append((fp, fld, True))
+
+    def collides(box, lyr):
+        if has_outline and not _box_inside_outline(box, outline_poly):
+            return True
+        for obs in static_boxes[lyr]:
+            if _boxes_overlap(box, obs):
+                return True
+        for obs in placed_boxes[lyr]:
+            if _boxes_overlap(box, obs):
+                return True
+        return False
+
+    # Phase A: keep already collision-free texts untouched; defer colliding texts to Phase B.
+    pending = []
+    for fp, item, is_ref in movable_texts:
+        lyr = item.GetLayer()
+        box = _text_box(item)
+        if not collides(box, lyr):
+            placed_boxes[lyr].append((box[0] - silk_margin, box[1] - silk_margin,
+                                      box[2] + silk_margin, box[3] + silk_margin))
+        else:
+            pending.append((fp, item, is_ref))
+
+    # Phase B: place tight polarity/body markers first, then Reference/field labels.
+    pending.sort(key=lambda row: (row[2], row[0].GetReference(), row[0].m_Uuid.AsString()))
+    moved_count = 0
+    for fp, item, is_ref in pending:
+        lyr = item.GetLayer()
+        orig_pos = item.GetPosition()
+        orig_ang = float(item.GetTextAngleDegrees())
+        orig_size = item.GetTextSize()
+        orig_thick = int(item.GetTextThickness())
+
+        fp_bb = fp.GetBoundingBox(False, False)
+        fcx = fp_bb.GetX() + fp_bb.GetWidth() // 2
+        fcy = fp_bb.GetY() + fp_bb.GetHeight() // 2
+        anchor_x = fcx if is_ref else orig_pos.x
+        anchor_y = fcy if is_ref else orig_pos.y
+        angles = (0.0, 90.0) if is_ref else (orig_ang % 180.0, (orig_ang + 90.0) % 180.0)
+
+        step_nm = pcbnew.FromMM(0.40 if is_ref else 0.25)
+        max_ring = 20 if is_ref else 16
+        offsets = [(0, 0)]
+        for k in range(1, max_ring + 1):
+            ring = []
+            for d in range(-k, k + 1):
+                ring.append((d, -k))
+                ring.append((d, k))
+                if d != -k and d != k:
+                    ring.append((-k, d))
+                    ring.append((k, d))
+            ring.sort(key=lambda t: (t[0] * t[0] + t[1] * t[1], abs(t[0]), abs(t[1]), t[0], t[1]))
+            offsets.extend(ring)
+
+        size_trials = [(orig_size, orig_thick)]
+        if orig_size.y > min_h + pcbnew.FromMM(0.02) or orig_size.x > min_h + pcbnew.FromMM(0.02):
+            sh = max(min_h, round(orig_size.y * 0.8))
+            sw = max(min_h, round(orig_size.x * 0.8))
+            size_trials.append((pcbnew.VECTOR2I(sw, sh), max(min_w, min(orig_thick, pcbnew.FromMM(0.15)))))
+
+        found_box = None
+        for sz, th in size_trials:
+            item.SetTextSize(sz)
+            item.SetTextThickness(th)
+            for dx, dy in offsets:
+                px = anchor_x + dx * step_nm
+                py = anchor_y + dy * step_nm
+                item.SetPosition(pcbnew.VECTOR2I(int(px), int(py)))
+                for ang in angles:
+                    item.SetTextAngleDegrees(ang)
+                    box = _text_box(item)
+                    if not collides(box, lyr):
+                        found_box = box
+                        break
+                if found_box is not None:
+                    break
+            if found_box is not None:
+                break
+
+        if found_box is not None:
+            moved_count += 1
+            placed_boxes[lyr].append((found_box[0] - silk_margin, found_box[1] - silk_margin,
+                                      found_box[2] + silk_margin, found_box[3] + silk_margin))
+        else:
+            item.SetTextSize(orig_size)
+            item.SetTextThickness(orig_thick)
+            item.SetPosition(orig_pos)
+            item.SetTextAngleDegrees(orig_ang)
+            box = _text_box(item)
+            placed_boxes[lyr].append((box[0] - silk_margin, box[1] - silk_margin,
+                                      box[2] + silk_margin, box[3] + silk_margin))
+    return {"checked": len(movable_texts), "colliding": len(pending), "moved": moved_count}
+
+
+def place(board_path, placement_json, out_board, strip_routing, out_json, clean_silk="0"):
     """Write a placement ``{uuid: {x, y, rotation, side}}`` into a new board file."""
     board = pcbnew.LoadBoard(board_path)
     with open(placement_json, encoding="utf-8") as fh:
@@ -650,10 +849,11 @@ def place(board_path, placement_json, out_board, strip_routing, out_json):
                 unfilled += 1
     for item in removed:
         board.Remove(item)
+    silk_report = _clean_silkscreen(board) if clean_silk == "1" else None
     pcbnew.SaveBoard(out_board, board)
     with open(out_json, "w", encoding="utf-8") as fh:  # not stdout: SWIG writes leak notices there
         json.dump({"placed": moved, "flipped": flipped, "missing": sorted(set(placement) - set(by_uuid)),
-                   "removed_routing": len(removed), "unfilled_zones": unfilled}, fh)
+                   "removed_routing": len(removed), "unfilled_zones": unfilled, "silkscreen": silk_report}, fh)
     del removed
 
 

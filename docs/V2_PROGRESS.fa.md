@@ -463,10 +463,13 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
 | برد | پوشش ما / متخصص | DRC روتر / غیرروتر ما | لینت ما (بحرانی) / متخصص | Pro Score کل ما / متخصص |
 |---|---:|---:|---:|---:|
 | `ecc83` | ۱۰۰٫۰٪ / ۱۰۰٫۰٪ | ۰ / ۰ | ۱۰۰٫۰ (۰) / ۱۰۰٫۰ (۰) | **۹۰٫۸۹** / ۸۴٫۲۲ |
-| `pic_programmer` | ۱۰۰٫۰٪ / ۱۰۰٫۰٪ | ۰ / ۳۱ (`silk_overlap`) | ۹۴٫۲ (۰) / ۹۹٫۸ (۰) | **۸۱٫۵۲** / ۶۱٫۳۶ |
+| `pic_programmer` | ۱۰۰٫۰٪ / ۱۰۰٫۰٪ | **۰ / ۰** (پس از پاک‌سازی سیلک‌اسکرین؛ پیش‌تر ۰ / ۳۱) | ۹۴٫۲ (۰) / ۹۹٫۸ (۰) | **۸۱٫۵۲** / ۶۱٫۳۶ |
 | `stickhub` | ۸۵٫۸٪ / ۹۷٫۴٪ | **۰ / ۰** | **۶۳٫۲۹ (۰)** / ۳۹٫۳ (۱) | **۷۹٫۱۶** / ۷۲٫۴۲ |
 
+- **پاک‌سازی عمومی سیلک‌اسکرین (`_clean_silkscreen` در `io/kicad_pcbnew_helper.py`، اختیاری با `clean_silkscreen=True` در `place_board`):**
+  - با استفاده از قواعد واقعی KiCad (`m_SilkClearance`، `m_MinSilkTextHeight`، `m_MinSilkTextThickness`، `m_SolderMaskExpansion`) و هندسهٔ دقیق پدها و گرافیک‌های `F.Silkscreen`/`B.Silkscreen` (با حفظ داخل خالی مستطیل‌ها/دایره‌ها برای رفرنس آی‌سی‌ها)، اولویت جاگذاری نشانگرهای قطبیت کوتاه (`K`، `+`) پیش از فیلدهای `Reference` و استفاده از `SetTextThickness` (نه `SetTextWidth`)، همهٔ ۳۱ خطای `silk_overlap` و `silk_over_copper` روی `pic_programmer` به **۰** رسید (`pass=True` و `rt_pass=True`).
+  - آزمون تعمیم‌پذیری روی ۵ برد دیگر (`ecc83`، `stickhub`، `royalblue54L_feather`، `openair_max`، `coldfire`): **صفر خطای جدید سیلک‌اسکرین** روی هر ۵ برد، و `roundtrip` با پیش‌فرض `clean_silkscreen=False` کاملاً دست‌نخورده ماند.
 - **آزمون‌ها و کیفیت کد:** `cargo test` (`۱۶/۱۶` پاس)، `cargo clippy -- -D warnings` (۰ هشدار)، `ruff check` (۰ خطا)، `pytest` (`۱۳۱` پاس، `۱۲` skip)، و `stickhub` بدون روت پس از اعمال keepout ماسک: `viol=0`، `39.09s`، `Pro Score = 81.73`.
-- **موارد باز باقی‌مانده:** جابه‌جایی خودکار برچسب‌های سیلک‌اسکرین (`silk_overlap` روی بردهایی مثل `pic_programmer`)، تطبیق اختیاری با HyperLynx DRC (یا بازبینی دستی کاربر)، بنچمارک روت بلندمدت `C1` روی `video`/`royalblue`، و سپس فازهای `F7` (`placer__apply`/`revert` و ادغام Altium/KiCad)، `F8` (`Skill`) و آزمون مهرشده (`beta.1`).
+- **موارد باز باقی‌مانده:** تطبیق اختیاری لینت با HyperLynx DRC (یا بازبینی دستی کاربر)، بنچمارک روت بلندمدت `C1` روی `video`/`royalblue`، و سپس فازهای `F7` (`placer__apply`/`revert` و ادغام Altium/KiCad)، `F8` (`Skill`)، `F9` (بسته‌بندی) و آزمون مهرشده (`beta.1`).
 
 
