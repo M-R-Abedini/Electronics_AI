@@ -117,6 +117,7 @@ class PlacerService:
               "Takes 1 to 10 minutes. Never modifies the input board."),
              {"board_path": _STRING, "side_policy": {"type": "string", "enum": ["expert", "top_only"]},
               "seed": {"type": "integer", "minimum": 0, "default": 0}, "route": {"type": "boolean", "default": True},
+              "s6a": {"type": "boolean", "default": True},
               "intent_path": _STRING, "schematic_path": _STRING, "floorplan": {"type": "boolean", "default": False}},
              ["board_path"], False),
             ("place_cluster",
@@ -219,15 +220,17 @@ class PlacerService:
         return validate.validate(model.load(intent_path), read_board(board_path))
 
     def place_board(self, board_path: str, side_policy: str | None = None, seed: int = 0, route: bool = True,
-                    intent_path: str | None = None, floorplan: bool = False, schematic_path: str | None = None) -> dict:
+                    intent_path: str | None = None, floorplan: bool = False, schematic_path: str | None = None,
+                    s6a: bool = True) -> dict:
         from .place.pipeline import place_board
 
         board_name = Path(board_path).stem
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         rep = place_board(board_path, out_dir=self.runs / f"{board_name}-place-{stamp}", side_policy=side_policy,
                           seed=seed, route=route, intent_path=intent_path, floorplan=floorplan,
-                          schematic_path=schematic_path)
+                          schematic_path=schematic_path, s6a=s6a)
         info = rep["stages"]["place"]
+        s6a_info = rep["stages"].get("s6a")
         pf = rep["metrics"].get("pathfinder")
         lint = rep["metrics"].get("lint")
         return {
@@ -239,6 +242,8 @@ class PlacerService:
             "mechanical_anchors": info["mechanical_anchors"],
             "cold_input": info.get("cold_input"),
             "floorplan": {k: v for k, v in info["floorplan"].items() if k != "escape"},
+            "s6a": ({k: s6a_info.get(k) for k in ("applied", "reason", "counts", "copper", "pruned_nets", "tap_fill_after_ses")}
+                    if s6a_info else None),
             "metrics": {"hpwl_signal_mm": rep["metrics"]["hpwl"]["signal_mm"],
                         "crossings": rep["metrics"]["crossings"]["count"],
                         "fanout_escape": {k: info["floorplan"]["escape"][k] for k in ("total", "clear")},

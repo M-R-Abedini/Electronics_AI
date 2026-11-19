@@ -20,12 +20,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mode", default="best", choices=["best", "analytical", "sa_only"])
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-route", action="store_true")
+    ap.add_argument("--no-s6a", action="store_true", help="skip deterministic S6a critical copper before Freerouting")
     ap.add_argument("--floorplan", action="store_true", help="compare baseline, local blocks, and applicable fanout reservations")
     ap.add_argument("--route-timeout", type=int)
     args = ap.parse_args(argv)
     rep = place_board(args.board, out_dir=args.out, side_policy=args.side_policy, mode=args.mode, seed=args.seed,
                       route=not args.no_route, router_timeout_s=args.route_timeout, intent_path=args.intent,
-                      floorplan=args.floorplan, schematic_path=args.schematic)
+                      floorplan=args.floorplan, schematic_path=args.schematic, s6a=not args.no_s6a)
     info = rep["stages"]["place"]
     route = rep["metrics"]["route"]
     print(json.dumps({"passed": rep["passed"], "gates": {g["name"]: [g["value"], g["passed"]] for g in rep["gates"]},

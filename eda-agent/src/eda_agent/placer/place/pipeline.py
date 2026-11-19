@@ -685,7 +685,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
                 mode: str = "best", seed: int = 0, route: bool = True,
                 router_timeout_s: int | None = None, intent_path: str | Path | None = None,
                 floorplan: bool = False, schematic_path: str | Path | None = None,
-                cluster_refs: list[str] | None = None) -> dict:
+                cluster_refs: list[str] | None = None, s6a: bool = True) -> dict:
     """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""
     from ..intent.resolve import resolve
     from ..intent.resolve import side_policy as policy_of
@@ -756,8 +756,25 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb", strip_routing=True,
                             strip_zones=cold is not None, unfill_zones=cluster_refs is not None,
                             clean_silkscreen=True)
-    routed = (route_check(out_board, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
+    s6a_stage: dict | None = None
+    route_input = out_board
+    if route and s6a:
+        from ..route import s6a as s6a_mod
+
+        s6a_stage = s6a_mod.apply_to_board(out_board, intent, run_dir / "s6a")
+        if s6a_stage["applied"] and s6a_stage["s6a_board"]:
+            route_input = Path(s6a_stage["s6a_board"])
+    routed = (route_check(route_input, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
               if route else None)
+    s6a_summary: dict | None = None
+    if s6a_stage is not None:
+        s6a_summary = {k: v for k, v in s6a_stage.items() if k not in ("live_taps", "report")}
+        if routed and s6a_stage["applied"] and s6a_stage["live_taps"]:
+            from ..route import s6a as s6a_mod
+
+            s6a_summary["tap_fill_after_ses"] = s6a_mod.verify_taps_after_route(
+                routed["artifacts"]["routed_board"], s6a_stage["live_taps"]
+            )
     routed_board = read_board(routed["artifacts"]["routed_board"]) if routed else None
     fixed = set(info["fixed"])
     evaluation = evaluate(placed, routed["metrics"] if routed else None, fixed, intent, copper_board=routed_board)
@@ -779,19 +796,24 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
              run_report.gate("s0_s5_seconds", info["seconds_s0_s5"], 300, "<=")]
     if routed:
         gates += [g for g in routed["gates"] if g["name"] != "time_budget_s"]
+    artifacts = {"run_dir": str(run_dir), "placed_board": str(out_board), "gallery": str(page)}
+    if s6a_summary and s6a_summary.get("s6a_board"):
+        artifacts["s6a_board"] = s6a_summary["s6a_board"]
     rep = run_report.build(
         kind="place_cluster" if cluster_refs is not None else "place_board",
         inputs={"board": board.source, "intent": intent_info},
         config={"side_policy": side_policy, "mode": mode, "seed": seed, "w_cross": problem.WEIGHT_SIGNAL * W_CROSS,
-                "sa_moves_per_part": SA_MOVES_PER_PART, "floorplan": floorplan, "cluster_refs": cluster_refs},
-        stages={"place": info, "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
+                "sa_moves_per_part": SA_MOVES_PER_PART, "floorplan": floorplan, "cluster_refs": cluster_refs,
+                "s6a": s6a},
+        stages={"place": info, "s6a": s6a_summary,
+                "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
         metrics={**evaluation["metrics"], "pro_score": evaluation["pro_score"], "fanout_escape": info["floorplan"]["escape"],
                  "route": routed["metrics"] if routed else None},
         gates=gates,
         failures=(routed["failures"] if routed else []) + [
             {"stage": "legality", "cause": f["kind"], "refs": f["refs"]}
             for f in evaluation["legality"]["findings"] if not f["fixed"]],
-        artifacts={"run_dir": str(run_dir), "placed_board": str(out_board), "gallery": str(page)},
+        artifacts=artifacts,
         reference_evaluation=reference_evaluation if cold is not None or cluster_refs is not None else None,
     )
     run_report.write(rep, run_dir / "run_report.json")

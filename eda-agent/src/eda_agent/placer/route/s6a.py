@@ -129,6 +129,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
     fixed: list[dict] = []
     report: dict = {"pairs": [], "links": [], "taps": []}
     layers = [cl.canonical for cl in board.copper_layers]
+    board_refs = {fp.ref for fp in board.footprints}
     # A tap is locked copper with a through via. It is made only for a net that owns an inner plane,
     # which the router does not route on. On a board without one both outer layers carry signals
     # and a locked via blocks them on both (StickHub: one such via cost 56 connections).
@@ -176,6 +177,8 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
             part = intent["parts"][ref]
             target = (part.get("target") or {}).get("value") or {}
             if part["role"]["value"] != "decap" or not target.get("ref") or model.is_uncertain(part["target"]):
+                continue
+            if ref not in board_refs or target["ref"] not in board_refs:
                 continue
             cap, chip = board.fp(ref), board.fp(target["ref"])
             net = target.get("net")
@@ -230,6 +233,8 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                  for ref in sorted(intent["parts"], key=model.natural_key)
                  if intent["parts"][ref]["role"]["value"] in roles]
         for ref, kind in order:
+            if ref not in board_refs:
+                continue
             fp = board.fp(ref)
             for pad in fp.pads:
                 if pad.kind != "smd" or pad.net not in pours or (ref, pad.net) in linked:
@@ -325,6 +330,183 @@ def _reuse_baseline(path: str | Path, bare: Path, config: RouterConfig) -> dict:
     return report
 
 
+def _drc_touching(rep: dict, copper: list[dict]) -> list[dict]:
+    nets = {c["net"] for c in copper}
+    return [
+        v for v in rep.get("violations", [])
+        if nets & {drc.item_net(i.get("description", "")) for i in v.get("items", [])}
+        and any(drc.is_routing_item(i.get("description", "")) for i in v.get("items", []))
+    ]
+
+
+def _drop_nets_from_s6a(copper: list[dict], report: dict, live_taps: list, bad_nets: set[str]) -> tuple[list[dict], list]:
+    """Remove S6a copper and mark report rows for any net implicated in a pre-route DRC violation."""
+    kept_copper = [c for c in copper if c.get("net") not in bad_nets]
+    kept_taps = []
+    for item in live_taps:
+        row, _track, _via = item
+        if row.get("net") in bad_nets:
+            row.update(routed=False, failed="pruned: s6a DRC violation")
+        else:
+            kept_taps.append(item)
+    for row in report.get("pairs", []):
+        if row.get("routed") and set(row.get("pair") or ()) & bad_nets:
+            row.update(routed=False, failed="pruned: s6a DRC violation")
+    for row in report.get("links", []):
+        if row.get("routed") and row.get("net") in bad_nets:
+            row.update(routed=False, failed="pruned: s6a DRC violation")
+    return kept_copper, kept_taps
+
+
+def _write_and_verify_taps(src: Path, out: Path, copper: list[dict], live_taps: list,
+                           report: dict, plane_links: list) -> tuple[list[dict], list]:
+    apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
+    while live_taps:
+        hits = _filled(out, live_taps)
+        dead = [(row, track, via) for (row, track, via), ok in zip(live_taps, hits, strict=True) if not ok]
+        if not dead:
+            break
+        for row, track, via in dead:
+            row.update(routed=False, failed="via is not on filled copper after the refill")
+            if track in copper:
+                copper.remove(track)
+            if via in copper:  # a shared via goes once, with every tap on it
+                copper.remove(via)
+        live_taps = [item for item in live_taps if item[0]["routed"]]
+        apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
+    settle_plane_links(report, plane_links)
+    return copper, live_taps
+
+
+def verify_taps_after_route(routed_board: str | Path, live_taps: list) -> dict | None:
+    """Confirm every live S6a plane tap still sits on filled copper after SES import and refill."""
+    if not live_taps:
+        return None
+    hits = _filled(Path(routed_board), live_taps)
+    for (row, _track, _via), ok in zip(live_taps, hits, strict=True):
+        row["filled_after_ses"] = ok
+    return {"passed": all(hits), "filled": sum(hits), "total": len(hits)}
+
+
+def apply_to_board(
+    board_path: str | Path,
+    intent: dict,
+    out_dir: str | Path,
+    *,
+    pairs: bool = True,
+    links: bool = True,
+    taps: bool = True,
+    power_first: bool = False,
+    retry_coarse: bool = False,
+    prune_drc: bool = True,
+) -> dict:
+    """Plan, write, refill-verify, and DRC-guard S6a critical copper on a placed board.
+
+    Returns ``applied=True`` with ``s6a_board`` only when at least one S6a track or via
+    survives refill verification with zero DRC violations touching S6a copper.  Otherwise
+    returns ``applied=False`` and ``s6a_board=None`` so callers fall back cleanly to the
+    bare placed board.
+    """
+    src = Path(board_path).resolve()
+    out_root = Path(out_dir).resolve()
+    board = read_board(src)
+    planned = plan(board, intent, pairs=pairs, links=links, taps=taps,
+                   power_first=power_first, retry_coarse=retry_coarse)
+    copper, report = list(planned["copper"]), planned["report"]
+    live_taps = list(planned["taps"])
+    pruned_nets: list[str] = []
+
+    def _counts() -> dict:
+        return {k: {"planned": len(report[k]), "routed": sum(bool(r.get("routed")) for r in report[k])}
+                for k in ("pairs", "links", "taps")}
+
+    if not copper:
+        return {
+            "applied": False,
+            "reason": "no_critical_copper",
+            "s6a_board": None,
+            "counts": _counts(),
+            "copper": {"tracks": 0, "vias": 0},
+            "drc_touching_s6a": [],
+            "pruned_nets": pruned_nets,
+            "report": report,
+            "live_taps": [],
+        }
+
+    out = out_root / src.name
+    copper, live_taps = _write_and_verify_taps(src, out, copper, live_taps, report, planned["plane_links"])
+    if not copper:
+        return {
+            "applied": False,
+            "reason": "all_taps_unfilled",
+            "s6a_board": None,
+            "counts": _counts(),
+            "copper": {"tracks": 0, "vias": 0},
+            "drc_touching_s6a": [],
+            "pruned_nets": pruned_nets,
+            "report": report,
+            "live_taps": [],
+        }
+
+    rep = drc.run(out, out_root / "drc.json")
+    touching = _drc_touching(rep, copper)
+    if touching and prune_drc:
+        bad_nets = {
+            drc.item_net(i.get("description", ""))
+            for v in touching
+            for i in v.get("items", [])
+        } & {c["net"] for c in copper}
+        if bad_nets:
+            pruned_nets = sorted(bad_nets)
+            copper, live_taps = _drop_nets_from_s6a(copper, report, live_taps, bad_nets)
+            if copper:
+                copper, live_taps = _write_and_verify_taps(src, out, copper, live_taps, report, planned["plane_links"])
+                if copper:
+                    rep = drc.run(out, out_root / "drc_after_prune.json")
+                    touching = _drc_touching(rep, copper)
+                else:
+                    touching = []
+            else:
+                touching = []
+
+    drc_rows = [{"type": v["type"], "items": [i.get("description", "") for i in v.get("items", [])]} for v in touching]
+    if not copper:
+        return {
+            "applied": False,
+            "reason": "pruned_all_s6a_copper",
+            "s6a_board": None,
+            "counts": _counts(),
+            "copper": {"tracks": 0, "vias": 0},
+            "drc_touching_s6a": drc_rows,
+            "pruned_nets": pruned_nets,
+            "report": report,
+            "live_taps": [],
+        }
+    if touching:
+        return {
+            "applied": False,
+            "reason": "drc_touching_s6a",
+            "s6a_board": None,
+            "counts": _counts(),
+            "copper": {"tracks": sum("points" in c for c in copper), "vias": sum("points" not in c for c in copper)},
+            "drc_touching_s6a": drc_rows,
+            "pruned_nets": pruned_nets,
+            "report": report,
+            "live_taps": [],
+        }
+    return {
+        "applied": True,
+        "reason": "applied",
+        "s6a_board": str(out),
+        "counts": _counts(),
+        "copper": {"tracks": sum("points" in c for c in copper), "vias": sum("points" not in c for c in copper)},
+        "drc_touching_s6a": [],
+        "pruned_nets": pruned_nets,
+        "report": report,
+        "live_taps": live_taps,
+    }
+
+
 def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_path: str | None = None,
         pairs: bool = True, links: bool = True, taps: bool = True, c3: bool = False,
         router_timeout_s: int | None = None, baseline: str | Path | None = None,
@@ -347,26 +529,9 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
                    power_first=power_first, retry_coarse=retry_coarse)
     copper, report = planned["copper"], planned["report"]
     out = run_dir / "s6a" / src.name
-    apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
-    live_taps = planned["taps"]
-    while live_taps:
-        hits = _filled(out, live_taps)
-        dead = [(row, track, via) for (row, track, via), ok in zip(live_taps, hits, strict=True) if not ok]
-        if not dead:
-            break
-        for row, track, via in dead:
-            row.update(routed=False, failed="via is not on filled copper after the refill")
-            copper.remove(track)
-            if via in copper:  # a shared via goes once, with every tap on it
-                copper.remove(via)
-        live_taps = [item for item in live_taps if item[0]["routed"]]
-        apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
-    settle_plane_links(report, planned["plane_links"])
+    copper, live_taps = _write_and_verify_taps(src, out, copper, planned["taps"], report, planned["plane_links"])
     rep = drc.run(out, run_dir / "s6a" / "drc.json")
-    nets = {c["net"] for c in copper}
-    touching = [v for v in rep.get("violations", [])
-                if nets & {drc.item_net(i.get("description", "")) for i in v.get("items", [])}
-                and any(drc.is_routing_item(i.get("description", "")) for i in v.get("items", []))]
+    touching = _drc_touching(rep, copper)
     counts = {k: {"planned": len(report[k]), "routed": sum(bool(r.get("routed")) for r in report[k])}
               for k in ("pairs", "links", "taps")}
     result = {"board": str(src), "intent": intent_info, "s6a_board": str(out), "counts": counts,
@@ -385,12 +550,9 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
 
         a, b = c3_side(without), c3_side(with_)
         result["c3"] = {"without": a, "with": b, **c3_verdict(a, b)}
-        if live_taps:
-            routed_file = Path(with_["artifacts"]["routed_board"])
-            hits = _filled(routed_file, live_taps)
-            for (row, _track, _via), ok in zip(live_taps, hits, strict=True):
-                row["filled_after_ses"] = ok
-            result["c3"]["tap_fill_after_ses"] = {"passed": all(hits), "filled": sum(hits), "total": len(hits)}
+        tap_fill = verify_taps_after_route(with_["artifacts"]["routed_board"], live_taps)
+        if tap_fill is not None:
+            result["c3"]["tap_fill_after_ses"] = tap_fill
     (run_dir / "s6a_report.json").write_text(json.dumps(result, indent=1, ensure_ascii=False), encoding="utf-8")
     result["report_file"] = str(run_dir / "s6a_report.json")
     return result

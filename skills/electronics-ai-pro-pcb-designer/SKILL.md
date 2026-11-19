@@ -54,8 +54,9 @@ Execute these stages in order. Never skip `inspect` or `intent_validate`.
 - For an existing placed/routed board, call `placer__score(board_path=..., intent_path=..., route=...)` to establish the exact baseline legality, critical loops, PathFinder congestion, F6 electrical lint, and Pro Score under equal conditions (`P2`).
 
 ### Stage 4 — Solve Placement & Route (`placer__place_board` or `placer__place_cluster`)
-- **Full-board placement:** Call `placer__place_board(board_path=..., intent_path=..., side_policy=..., floorplan=true, route=..., seed=0)` (add `schematic_path=...` for cold-start placement from schematic).
+- **Full-board placement:** Call `placer__place_board(board_path=..., intent_path=..., side_policy=..., floorplan=true, route=..., s6a=true, seed=0)` (add `schematic_path=...` for cold-start placement from schematic).
   - Use `floorplan=true` by default on any multi-block or decoupling-rich board so local-block seeding, escape reservations, PathFinder congestion + guarded 3-round Cell Inflation, passive alignment, mask-aperture avoidance, and F6 silkscreen DFA cleanup all run automatically.
+  - When `route=true`, `s6a=true` (default) automatically runs DRC-guarded deterministic S6a critical copper (confirmed diff pairs, settled decap links, and inner-plane SMD power taps) before Freerouting, falling back cleanly to the bare placed board if S6a encounters any unresolved pre-route DRC conflict.
 - **Scoped ECO / local cluster:** Call `placer__place_cluster(board_path=..., refs=[...], intent_path=..., seed=0)` to re-optimize only the requested footprints while locking all outside parts and preserving zone definitions.
 
 ### Stage 5 — Visual, Congestion, DRC & Electrical Lint Review (`placer__gallery` + `placer__diagnose`)
