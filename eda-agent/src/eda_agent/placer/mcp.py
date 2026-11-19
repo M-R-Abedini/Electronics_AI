@@ -151,6 +151,27 @@ class PlacerService:
                  "anyOf": [{"required": ["rotation_deg"]}, {"required": ["toward_ref"]}, {"required": ["away_from_ref"]}]},
               "preview": {"type": "boolean", "default": False},
               "route_timeout_s": {"type": "integer", "minimum": 15, "maximum": 600, "default": 180}}, ["run", "change"], False),
+            ("apply",
+             ("Safely apply a verified placement/routing run (F7). Default adapter='kicad_file' with in_place=false "
+              "writes to a new sibling file so the original board stays untouched (principle P8). Explicit "
+              "in_place=true checks gates and live SHA-256 against stale edits, takes a verified backup, and swaps "
+              "atomically with <2s revert via placer__revert. adapter='altium_plan' emits a Level-1 (no-flip) "
+              "apply+revert delta bundle."),
+             {"run": _STRING,
+              "adapter": {"type": "string", "enum": ["kicad_file", "altium_plan", "kicad_ipc"], "default": "kicad_file"},
+              "target_path": _STRING,
+              "in_place": {"type": "boolean", "default": False},
+              "use_routed": {"type": "boolean", "default": True},
+              "allow_failed_gates": {"type": "boolean", "default": False},
+              "force_stale": {"type": "boolean", "default": False},
+              "allow_flip": {"type": "boolean", "default": False},
+              "dry_run": {"type": "boolean", "default": False}}, ["run"], False),
+            ("revert",
+             ("Revert a previous placer__apply transaction in under 2 seconds with SHA-256 verification. "
+              "Refuses to overwrite post-apply manual edits unless force=true. Pass apply_id='latest' to revert "
+              "the most recent active apply."),
+             {"apply_id": {"type": "string", "default": "latest"},
+              "force": {"type": "boolean", "default": False}}, [], False),
         ]
         return [{"name": name, "description": description,
                  "inputSchema": {"type": "object", "properties": props, "required": required,
@@ -363,11 +384,44 @@ class PlacerService:
 
         return refine(run, change, self.runs, route_timeout_s=route_timeout_s, preview=preview)
 
+    def apply(
+        self,
+        run: str,
+        adapter: str = "kicad_file",
+        target_path: str | None = None,
+        in_place: bool = False,
+        use_routed: bool = True,
+        allow_failed_gates: bool = False,
+        force_stale: bool = False,
+        allow_flip: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        from .apply import apply_run
+
+        return apply_run(
+            run,
+            history_dir=self.runs / "apply_history",
+            adapter=adapter,
+            target_path=target_path,
+            in_place=in_place,
+            use_routed=use_routed,
+            allow_failed_gates=allow_failed_gates,
+            force_stale=force_stale,
+            allow_flip=allow_flip,
+            dry_run=dry_run,
+        )
+
+    def revert(self, apply_id: str = "latest", force: bool = False) -> dict[str, Any]:
+        from .apply import revert_apply
+
+        return revert_apply(apply_id, history_dir=self.runs / "apply_history", force=force)
+
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any] | types.CallToolResult:
         functions = {"inspect": self.inspect, "score": self.score, "place_board": self.place_board,
                      "place_cluster": self.place_cluster,
                      "gallery": self.gallery, "intent_draft": self.intent_draft,
-                     "intent_validate": self.intent_validate, "diagnose": self.diagnose, "refine": self.refine}
+                     "intent_validate": self.intent_validate, "diagnose": self.diagnose, "refine": self.refine,
+                     "apply": self.apply, "revert": self.revert}
         if name not in functions:
             raise ValueError(f"Unknown placer tool: {name}")
         return await asyncio.to_thread(functions[name], **(arguments or {}))
