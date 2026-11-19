@@ -38,6 +38,7 @@ _CY_POLY_CACHE: dict[tuple, Polygon | None] = {}
 _BOARD_POLY_CACHE: dict[tuple, Polygon | None] = {}
 _INNER_OUTLINE_CACHE: dict[tuple, tuple] = {}
 _COPPER_OBS_CACHE: dict[tuple, list[tuple[str, str, Polygon]]] = {}
+_MASK_OBS_CACHE: dict[tuple, list[tuple[str, str, Polygon]]] = {}
 _TH_INFO_CACHE: dict[tuple, tuple] = {}
 _SIDE_PAD_CACHE: dict[tuple, tuple] = {}
 
@@ -247,6 +248,51 @@ def board_copper_obstacles(board: Board, fixed: set[str] | None = None) -> list[
     if len(_COPPER_OBS_CACHE) > 256:
         _COPPER_OBS_CACHE.clear()
     _COPPER_OBS_CACHE[cache_key] = out
+    return out
+
+
+def board_mask_obstacles(board: Board, fixed: set[str] | None = None) -> list[tuple[str, str, Polygon]]:
+    """Free-standing solder-mask apertures (board-level or on fixed footprints, with no input pads)."""
+    fixed_set = board.fixed_refs() if fixed is None else set(fixed)
+    obs_sig = tuple(
+        (o.get("uuid"), o.get("kind"), o.get("source"), o.get("layer"), len(o.get("outlines", ())))
+        for o in board.obstacles if o.get("kind") == "mask_aperture"
+    )
+    if not obs_sig:
+        return []
+    cache_key = (board.name, obs_sig, tuple(sorted(fixed_set)))
+    if cache_key in _MASK_OBS_CACHE:
+        return _MASK_OBS_CACHE[cache_key]
+    names = copper_layer_map(board)
+    out: list[tuple[str, str, Polygon]] = []
+    for obs in board.obstacles:
+        if obs.get("kind") != "mask_aperture" or obs.get("overlapping_pads"):
+            continue
+        src = str(obs.get("source") or "")
+        if src != "board" and (not src.startswith("footprint:") or src.split(":", 1)[1] not in fixed_set):
+            continue
+        layer = str(obs.get("layer") or "")
+        canon = names.get(obs.get("copper") or "")
+        mask_side = (
+            "F" if layer == "F.Mask" or canon == "F.Cu"
+            else "B" if layer == "B.Mask" or canon == "B.Cu"
+            else None
+        )
+        if mask_side is None:
+            continue
+        polys = [Polygon(ring) for ring in obs.get("outlines", []) if len(ring) >= 3]
+        polys = [p if p.is_valid else p.buffer(0) for p in polys]
+        polys = [p for p in polys if not p.is_empty]
+        if not polys:
+            continue
+        poly = unary_union(polys)
+        uid = str(obs.get("uuid") or "")
+        for comp in _iter_polygons(poly):
+            if comp.area > 1e-4:
+                out.append((uid, mask_side, comp))
+    if len(_MASK_OBS_CACHE) > 256:
+        _MASK_OBS_CACHE.clear()
+    _MASK_OBS_CACHE[cache_key] = out
     return out
 
 
@@ -485,6 +531,34 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                     "keepout", [fp.ref], round(area, 4), fp.side,
                     detail=f"copper_graphic:{uid}", fixed=False,
                 ))
+
+    mask_obs = board_mask_obstacles(board, fixed)
+    if mask_obs:
+        for uid, mask_side, obs_poly in mask_obs:
+            obx = obs_poly.bounds
+            for fp in board.footprints:
+                if fp.ref in fixed:
+                    continue
+                sbx = shape_bounds.get(fp.ref)
+                if sbx is not None and (sbx[0] > obx[2] + 0.5 or sbx[2] < obx[0] - 0.5
+                                        or sbx[1] > obx[3] + 0.5 or sbx[3] < obx[1] - 0.5):
+                    continue
+                for pad in fp.pads:
+                    if mask_side not in pad_copper_sides(fp, pad, names):
+                        continue
+                    p_poly = _pad_polygon(fp, pad, margin_mm=0.0)
+                    if p_poly is None:
+                        continue
+                    pbx = p_poly.bounds
+                    if pbx[0] > obx[2] or pbx[2] < obx[0] or pbx[1] > obx[3] or pbx[3] < obx[1]:
+                        continue
+                    hit = p_poly.intersection(obs_poly).area
+                    if hit > 1e-4:
+                        findings.append(Finding(
+                            "keepout", [fp.ref], round(max(hit, 0.0101), 4), mask_side,
+                            detail=f"mask_aperture:{uid}", fixed=False,
+                        ))
+                        break
 
     findings.sort(key=lambda f: (f.kind, f.refs))
     return findings

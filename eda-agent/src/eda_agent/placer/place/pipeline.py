@@ -103,6 +103,9 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         placed, core, findings = _resolve_edge_copper_clearances(
             placed, pb, solver_pb, core, retained, macros, diag, findings
         )
+        placed, core, findings = _resolve_mask_aperture_collisions(
+            placed, pb, solver_pb, core, retained, macros, diag, findings
+        )
     violations = sum(not finding.fixed for finding in findings)
     info = {
         "mode": mode, "side_policy": side_policy, "seed": seed, "movable": movable,
@@ -251,6 +254,86 @@ def _resolve_edge_copper_clearances(placed, pb, solver_pb, core, retained, macro
     core.set_positions(fixed_poses)
     next_placed = problem.apply(pb, rigid.expand(pb, fixed_poses, retained, macros) if macros else fixed_poses)
     return next_placed, core, legality.check(next_placed, fixed=set(pb.fixed))
+
+
+def _resolve_mask_aperture_collisions(placed, pb, solver_pb, core, retained, macros, diag, findings):
+    """Relocate movable footprints whose pads land on free-standing same-side solder-mask apertures."""
+    mask_findings = [
+        f for f in findings
+        if not f.fixed and f.kind == "keepout" and f.detail.startswith("mask_aperture:")
+    ]
+    if not mask_findings:
+        return placed, core, findings
+    mask_obs = legality.board_mask_obstacles(placed, set(pb.fixed))
+    if not mask_obs:
+        return placed, core, findings
+    idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
+    member_to_anchor = {p.ref: pb.refs[anchor] for anchor, m in (macros or {}).items() for p in m.parts}
+    for side in ("F", "B"):
+        side_findings = [f for f in mask_findings if f.side == side]
+        if not side_findings:
+            continue
+        targets = sorted({
+            member_to_anchor.get(r, r) for f in side_findings for r in f.refs
+            if r not in pb.fixed and pb.sides.get(r) == side
+        })
+        if not targets or not all(r in idx_by_ref for r in targets):
+            continue
+        side_holes = []
+        for _uid, ms, poly in mask_obs:
+            if ms != side:
+                continue
+            x0, y0, x1, y1 = poly.bounds
+            m = 0.02
+            side_holes.append([
+                (round(x0 - m, 6), round(y0 - m, 6)),
+                (round(x1 + m, 6), round(y0 - m, 6)),
+                (round(x1 + m, 6), round(y1 + m, 6)),
+                (round(x0 - m, 6), round(y1 + m, 6)),
+            ])
+        if not side_holes:
+            continue
+        poses_now = core.positions()
+        target_idxs = [idx_by_ref[r] for r in targets]
+        # Pass 1: relocate only offending parts; Pass 2 fallback: let same-side movable neighbors yield.
+        resolved_poses = None
+        for allow_neighbors in (False, True):
+            if allow_neighbors:
+                move_set = {
+                    idx for idx, part in enumerate(solver_pb.parts)
+                    if not part[5] and pb.sides.get(solver_pb.refs[idx]) == side
+                }
+            else:
+                move_set = set(target_idxs)
+            new_parts = [
+                (*part[:5], idx not in move_set, part[6] if idx in move_set else False, *poses_now[idx])
+                for idx, part in enumerate(solver_pb.parts)
+            ]
+            fix_pb = copy.copy(solver_pb)
+            fix_pb.parts = new_parts
+            fix_pb.holes = list(solver_pb.holes) + side_holes
+            fix_core = problem.rust_problem(fix_pb, w_cross=W_CROSS)
+            step = LEGALIZE_STEP_MM if allow_neighbors else LEGALIZE_STEP_MM / 2
+            failed_m = fix_core.legalize(step, diag, target_idxs)
+            if failed_m and allow_neighbors:
+                fix_core.set_positions(poses_now)
+                failed_m = fix_core.legalize(LEGALIZE_STEP_MM / 2, diag, sorted(set(target_idxs) | set(failed_m)))
+            if not failed_m:
+                if allow_neighbors:
+                    fix_core.anneal(min(25_000, max(8_000, 400 * len(move_set))), 7, max(diag * 0.05, 0.5), 0.05)
+                if not fix_core.illegal_parts():
+                    resolved_poses = fix_core.positions()
+                    break
+        if resolved_poses is None:
+            continue
+        core.set_positions(resolved_poses)
+        placed = problem.apply(pb, rigid.expand(pb, resolved_poses, retained, macros) if macros else resolved_poses)
+        findings = legality.check(placed, fixed=set(pb.fixed))
+        mask_findings = [
+            f for f in findings
+            if not f.fixed and f.kind == "keepout" and f.detail.startswith("mask_aperture:")
+        ]
+    return placed, core, findings
 
 
 def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None, floorplan: bool,
@@ -490,6 +573,9 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
         cand, inf_core, findings = _resolve_edge_copper_clearances(
             cand, inf_pb, inf_pb, inf_core, list(range(len(inf_pb.parts))), {}, diag, findings
         )
+        cand, inf_core, findings = _resolve_mask_aperture_collisions(
+            cand, inf_pb, inf_pb, inf_core, list(range(len(inf_pb.parts))), {}, diag, findings
+        )
         if any(not f.fixed for f in findings):
             report["rounds"].append({"round": round_idx + 1, "inflated_parts": len(infl),
                                      "accepted": False, "reason": "legality"})
@@ -671,8 +757,9 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
                             strip_zones=cold is not None, unfill_zones=cluster_refs is not None)
     routed = (route_check(out_board, out_dir=run_dir / "route", reference_board=src, router_timeout_s=router_timeout_s)
               if route else None)
+    routed_board = read_board(routed["artifacts"]["routed_board"]) if routed else None
     fixed = set(info["fixed"])
-    evaluation = evaluate(placed, routed["metrics"] if routed else None, fixed, intent)
+    evaluation = evaluate(placed, routed["metrics"] if routed else None, fixed, intent, copper_board=routed_board)
     reference_for_score = reference
     if cold is not None or cluster_refs is not None:
         reference_for_score = board.copy()
@@ -684,7 +771,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     reference_evaluation = evaluate(reference_for_score, fixed=fixed, intent=intent)
     page = gallery([Panel(f"{board.name} (reference)", reference_for_score, reference_evaluation),
                     Panel(f"{board.name} (placer v2, {mode})",
-                          read_board(routed["artifacts"]["routed_board"]) if routed else placed, evaluation,
+                          routed_board if routed_board is not None else placed, evaluation,
                           routed["metrics"] if routed else None)],
                    run_dir / "gallery.html", title=f"{board.name}: placer v2 vs expert")
     gates = [run_report.gate("legality_violations", evaluation["legality"]["strict_violations"], 0, "=="),

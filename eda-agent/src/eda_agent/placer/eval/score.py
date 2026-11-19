@@ -17,7 +17,7 @@ and the best grid weights gained only one pair (75.0 %), below the declared
 from __future__ import annotations
 
 from ..ir import Board
-from . import congestion, legality, metrics
+from . import congestion, legality, lint, metrics
 
 WEIGHTS = {"routability": 35, "critical_loops": 25, "ratsnest": 15, "regularity": 15, "lint": 10}
 PRO_SCORE_VERSION = 1
@@ -44,8 +44,9 @@ def components(m: dict, route: dict | None) -> dict[str, float | None]:
     reg = m["regularity"]
     regularity = (100.0 * (0.5 * reg["aligned_fraction"] + 0.3 * reg["rotation_on_90_grid"]
                            + 0.2 * reg["dominant_axis_fraction"]) if reg.get("n") else None)
+    lint_score = (m.get("lint") or {}).get("score")
     return {"routability": routability, "critical_loops": loops, "ratsnest": round(ratsnest, 2),
-            "regularity": regularity, "lint": None}
+            "regularity": regularity, "lint": lint_score}
 
 
 def pro_score(parts: dict[str, float | None]) -> dict:
@@ -59,7 +60,7 @@ def pro_score(parts: dict[str, float | None]) -> dict:
 
 
 def evaluate(board: Board, route: dict | None = None, fixed: set[str] | None = None,
-             intent: dict | None = None) -> dict:
+             intent: dict | None = None, *, copper_board: Board | None = None) -> dict:
     """``route``: metrics of a route check on the same placement; ``fixed``: the S1 parts; ``intent``: the
     design intent (drafted from the netlist when not given, which is placement-independent)."""
     from ..intent import infer, model
@@ -70,8 +71,9 @@ def evaluate(board: Board, route: dict | None = None, fixed: set[str] | None = N
     legal = legality.summary(findings)
     loops = metrics.critical_loops(board, intent)
     loops["intent_sha256"] = model.intent_hash(intent)
+    lint_report = lint.audit(copper_board if copper_board is not None else board, intent)
     m = {"hpwl": metrics.hpwl(board), "crossings": metrics.crossings(board), "rudy": metrics.rudy(board),
-         "pathfinder": congestion.summary(board),
+         "pathfinder": congestion.summary(board), "lint": lint_report,
          "critical_loops": loops, "regularity": metrics.regularity(board)}
     return {
         "legality": legal,

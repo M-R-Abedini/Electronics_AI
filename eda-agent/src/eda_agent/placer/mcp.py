@@ -294,9 +294,10 @@ class PlacerService:
         run_dir = (self.runs / f"{board.name}-{stamp}").resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
         routed = route_check(board_path, out_dir=run_dir / "route") if route else None
-        evaluation = evaluate(board, routed["metrics"] if routed else None, intent=intent)
-        page = gallery([Panel(f"{board.name} (current placement)", board, evaluation,
-                              routed["metrics"] if routed else None)], run_dir / "gallery.html",
+        routed_board = read_board(routed["artifacts"]["routed_board"]) if routed else None
+        evaluation = evaluate(board, routed["metrics"] if routed else None, intent=intent, copper_board=routed_board)
+        page = gallery([Panel(f"{board.name} (current placement)", routed_board if routed_board is not None else board,
+                              evaluation, routed["metrics"] if routed else None)], run_dir / "gallery.html",
                        title=f"{board.name}: score")
         gates = [run_report.gate("legality_violations", evaluation["legality"]["violations"], 0, "==")]
         if routed:

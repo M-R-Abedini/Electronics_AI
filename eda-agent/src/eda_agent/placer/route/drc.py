@@ -23,6 +23,7 @@ from pathlib import Path
 from ..toolchain import RUNTIME_DIR, kicad, sha256_file
 
 _ROUTING = re.compile(r"^(Track|Via|Arc|Blind/buried via|Micro via|Through via)\b")
+_NON_COPPER_LAYER = re.compile(r"\.(Silkscreen|Mask|Fab|Courtyard|Paste|CrtYd|User)\b")
 _NET = re.compile(r"\[([^\]]*)\]")
 _PAD_REF = re.compile(r"\b[Pp]ad .* of (\S+)")
 _GATED = ("error",)
@@ -101,7 +102,9 @@ def new_mask_bridges(before: dict, after: dict, moved_refs: set[str]) -> list[di
 
 
 def is_routing_item(description: str) -> bool:
-    return bool(_ROUTING.match(description))
+    if not _ROUTING.match(description):
+        return False
+    return not (description.startswith("Arc of ") or _NON_COPPER_LAYER.search(description))
 
 
 @dataclass
