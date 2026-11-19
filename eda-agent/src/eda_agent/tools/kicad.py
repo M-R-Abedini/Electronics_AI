@@ -774,8 +774,14 @@ def register_kicad_tools(mcp) -> None:
         except Exception as e:
             return {"ok": False, "reason": str(e)}
         from ..core.review_engine import review_snapshot
+        from ..core.kicad_schematic_audit import audit_schematic_file
         snap = snapshot_from_netlist(netlist, board_name=os.path.basename(sch))
-        return review_snapshot(snap)
+        report = review_snapshot(snap)
+        try:
+            report["geometry_audit"] = audit_schematic_file(sch)
+        except Exception as e:
+            report["geometry_audit"] = {"ok": False, "error": str(e)}
+        return report
 
     @mcp.tool()
     async def kicad_get_bom() -> dict[str, Any]:
@@ -1328,9 +1334,23 @@ def register_kicad_tools(mcp) -> None:
                 fh.write(sch)
         except (OSError, ValueError) as e:
             return {"ok": False, "reason": f"could not write {output_path}: {e}"}
+        # Normalize to the installed KiCad's native schema so Eeschema opens it
+        # without any auto-repair or older-version dialog.
+        try:
+            cli = get_kicad_bridge().kicad_cli_path()
+            await run_cli(cli, ["sch", "upgrade", "--force", output_path])
+        except Exception:
+            pass
+        from ..core.kicad_schematic_audit import audit_schematic_geometry
+        geo = audit_schematic_geometry(sch)
         result: dict[str, Any] = {"ok": True, "path": output_path,
                                   "part_count": len(parts),
-                                  "net_count": len(nets)}
+                                  "net_count": len(nets),
+                                  "geometry_audit": {
+                                      "ok": geo["ok"],
+                                      "violation_count": geo["violation_count"],
+                                      "by_kind": geo["by_kind"],
+                                  }}
         if render:
             try:
                 cli = get_kicad_bridge().kicad_cli_path()

@@ -51,7 +51,7 @@ OUT_FN = re.compile(r"^(VO|VOUT|OUT|S|VOUT\d|SW_OUT)$")
 IN_FN = re.compile(r"^(VI|VIN|IN|D|PVDD|VBUS)$")
 ESD_VALUE = re.compile(r"(TVS|ESD|TPD\d|PESD|USBLC|SP0\d|RCLAMP|IP42|PRTR|SMAJ|SMBJ|ZENER)", re.IGNORECASE)
 LDO_VALUE = re.compile(r"(^78\d\d|^79\d\d|LM317|LM1117|AMS1117|LDO|AP21\d\d|MCP17\d\d|LP59\d\d|TLV7\d|XC62|RT9\d\d\d|"
-                       r"NCP1117|LD1117)", re.IGNORECASE)
+                       r"NCP1117|LD1117|LD\d{4,5}|TPS7\w+|MIC5\d+|ADP1\d+)", re.IGNORECASE)
 SOCKET_VALUE = re.compile(r"(SIMM|DIMM|SIM\d|SIM72|SODIMM)", re.IGNORECASE)
 POLARIZED_LIB = re.compile(r"(^CP_|CP_Elec|CP_EIA|Tantal|Elec_|CP_Axial|CP_Radial)", re.IGNORECASE)
 
@@ -128,8 +128,12 @@ def _family(fp: Footprint) -> str:
         return "battery"
     if "Crystal" in lib or p in ("Y", "XTAL") or (p == "X" and "Crystal" in lib):
         return "crystal"
-    if "Oscillator" in lib or p == "OSC":
+    if "Oscillator" in lib or p in ("OSC", "G") or re.search(r"(TCXO|VCXO|OCXO|\bNT\d{4}\b)", f"{v} {lib}", re.IGNORECASE):
         return "oscillator"
+    if p in ("FL", "BAL") or re.search(r"(^SAW|SAFF|SAWF|^FIL_|BALUN|DIPLEX)", f"{v} {lib}", re.IGNORECASE):
+        return "rf_filter"
+    if p in ("M", "LS", "BZ", "SPK") or re.search(r"(MOTOR|HAPTIC|VYBRONICS|BUZZER|SPEAKER)", f"{v} {lib}", re.IGNORECASE):
+        return "actuator"
     if p in ("C", "CP", "CV"):
         return "cap"
     if p in ("RV", "POT", "VR"):
@@ -284,10 +288,17 @@ class Inference:
 
     def _schematic_decap_target(self, ref: str, rail: str, candidates: list[str]) -> dict | None:
         cap = self.f.fp[ref]
-        if not cap.sheet or cap.schematic_position is None:
+        if not cap.sheet:
             return None
         local = [self.f.fp[r] for r in set(candidates) if self.f.fp[r].sheet == cap.sheet]
-        if len(local) < 2 or any(fp.schematic_position is None for fp in local):
+        if len(local) == 1 and self.f.kind[local[0].ref] == "ic":
+            winner = local[0].ref
+            return claim(
+                {"ref": winner, "net": rail, "pins": self.power_pins(winner, rail)},
+                "schematic", SCHEMATIC_TARGET_CONFIDENCE, ref=cap.sheet,
+                detail=f"{ref} is the only candidate IC load on sheet {cap.sheet} for {rail}",
+            )
+        if cap.schematic_position is None or len(local) < 2 or any(fp.schematic_position is None for fp in local):
             return None
         ranked = sorted((math.dist(cap.schematic_position, fp.schematic_position), fp.ref) for fp in local)
         (nearest, winner), (second, runner_up) = ranked[:2]
@@ -375,7 +386,13 @@ class Inference:
         self.set(ref, "transistor", 0.9, "discrete active device (prefix Q/T or valve)")
 
     def _oscillator(self, ref: str, _c) -> None:
-        self.set(ref, "oscillator", 0.85, "oscillator footprint")
+        self.set(ref, "oscillator", 0.85, "oscillator/TCXO footprint or prefix")
+
+    def _rf_filter(self, ref: str, _c) -> None:
+        self.set(ref, "signal_passive", 0.85, "RF/SAW filter or balun")
+
+    def _actuator(self, ref: str, _c) -> None:
+        self.set(ref, "signal_passive", 0.85, "electromechanical actuator (motor/haptic/buzzer)")
 
     def _connector(self, ref: str, _c) -> None:
         fp = self.f.fp[ref]

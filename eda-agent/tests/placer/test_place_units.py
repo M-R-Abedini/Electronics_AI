@@ -951,4 +951,43 @@ def test_layer_pad_clearance_pair_netclass_and_edge_copper_legality():
     assert not f_edge and not legality.check(resolved_edge)
 
 
+def test_overhanging_test_point_not_frozen_as_fixed():
+    """An overhanging TP or passive on an unplaced board must stay movable, while overhanging connectors stay fixed."""
+    fps = [
+        _fp("TP14", 0.1, 10.0, ["SIG"], locked=False),
+        _fp("J1", 0.1, 5.0, ["SIG"], locked=False),
+    ]
+    b = derive(Board(
+        name="overhang", footprints=fps, outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)],
+        nets=[Net("SIG", "Default", 2)],
+    ))
+    fixed = problem.fixed_parts(b)
+    assert "J1" in fixed
+    assert "TP14" not in fixed
+
+
+def test_multisheet_floorplan_adds_sheet_cohesion_affinities():
+    """On a multi-sheet design with floorplan=True, same-sheet parts get soft cohesion links to their sheet anchor."""
+    u1 = _fp("U1", 5.0, 5.0, ["A", "B", "C", "D"], locked=False)
+    r1 = _fp("R1", 7.0, 5.0, ["A", "B"], locked=False)
+    u2 = _fp("U2", 15.0, 15.0, ["C", "D", "E", "F"], locked=False)
+    r2 = _fp("R2", 17.0, 15.0, ["E", "F"], locked=False)
+    u1.sheet = r1.sheet = "02_MCU"
+    u2.sheet = r2.sheet = "05_PMIC"
+    b = derive(Board(
+        name="multisheet", footprints=[u1, r1, u2, r2],
+        outline=[Outline([(0, 0), (30, 0), (30, 30), (0, 30)])],
+        board_area_mm2=900.0, copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)],
+        nets=[Net(n, "Default", 2) for n in ("A", "B", "C", "D", "E", "F")],
+    ))
+    pb_no_fp = problem.build(b, floorplan=False)
+    pb_fp = problem.build(b, floorplan=True)
+    assert pb_no_fp.sheet_cohesion_links == 0
+    assert pb_fp.sheet_cohesion_links == 2
+
+
+
 

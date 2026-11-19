@@ -91,16 +91,17 @@ def _graphic_points(item: list) -> list[Point]:
     return points
 
 
-def _read_symbol(source: str) -> Symbol:
+def _read_symbol(source: str, unit_num: int = 1) -> Symbol:
     tree = loads(source)
     if value(tree, "extends") is not None:
         raise ValueError(f'{tree[1]}: derived symbol must be resolved before placement')
     properties = {p[1]: p[2] for p in find_all(tree, "property")}
     points: list[Point] = [(0, 0)]
     pins = []
+    target_unit = str(unit_num)
     for unit in find_all(tree, "symbol"):
         _, number, style = unit[1].rsplit("_", 2)
-        if number not in {"0", "1"} or style not in {"0", "1"}:
+        if number not in {"0", target_unit} or style not in {"0", "1"}:
             continue
         for item in unit[2:]:
             if not isinstance(item, list) or not item:
@@ -138,9 +139,10 @@ def _placeholder(numbers: tuple[str, ...]) -> Symbol:
 
 
 def _assign_nets(parts: list[dict], nets: list[dict]) -> dict[str, dict[str, str]]:
-    mapped: dict[str, dict[str, str]] = {p["refdes"]: {} for p in parts}
-    if len(mapped) != len(parts):
+    seen_units = {(p["refdes"], int(p.get("unit", 1) or 1)) for p in parts}
+    if len(seen_units) != len(parts):
         raise ValueError("duplicate component references in schematic")
+    mapped: dict[str, dict[str, str]] = {p["refdes"]: {} for p in parts}
     for net in nets:
         name = net["name"]
         if not name:
@@ -232,10 +234,14 @@ class Placement:
     no_connects: list[Point]
     field_top: float
     bounds: Bounds
+    unit: int = 1
+    pin_numbers: tuple[str, ...] = ()
 
 
-def _place_part(part: dict, lid: str, symbol: Symbol, assigned: dict[str, str]) -> Placement:
+def _place_part(part: dict, lid: str, symbol: Symbol, assigned: dict[str, str],
+                *, mark_unassigned_nc: bool = False) -> Placement:
     ref = part["refdes"]
+    unit = int(part.get("unit", 1) or 1)
     label = part.get("value") or part.get("lib_ref") or lid.split(":")[-1]
     groups = list(_label_groups(ref, symbol.pins, assigned))
     points = [symbol.bounds[:2], symbol.bounds[2:]]
@@ -247,8 +253,10 @@ def _place_part(part: dict, lid: str, symbol: Symbol, assigned: dict[str, str]) 
                        (max(x, tips[0]) + 1.25, max(y, tips[1]) + 1.25)))
         points.extend(ends)
     wired = {p.at for p in symbol.pins if p.number in assigned}
-    nc = list(dict.fromkeys(p.at for p in symbol.pins
-                           if p.electrical_type == "no_connect" and p.at not in wired))
+    nc = list(dict.fromkeys(
+        p.at for p in symbol.pins
+        if (mark_unassigned_nc or p.electrical_type == "no_connect") and p.at not in wired
+    ))
     for nx, ny in nc:
         points.extend(((nx - GRID, ny - GRID), (nx + GRID, ny + GRID)))
     _, top, _, _ = _bounds(points)
@@ -256,9 +264,10 @@ def _place_part(part: dict, lid: str, symbol: Symbol, assigned: dict[str, str]) 
     field_top = top - 4 * GRID
     points.extend(((-half_text_width, field_top - GRID),
                    (half_text_width, field_top + 3 * GRID)))
+    pin_nums = tuple(dict.fromkeys(p.number for p in symbol.pins))
     return Placement(ref, label, lid, part.get("footprint") or symbol.footprint,
                      part.get("datasheet") or symbol.datasheet, groups, nc, field_top,
-                     _bounds(points))
+                     _bounds(points), unit=unit, pin_numbers=pin_nums)
 
 
 def _verify_non_overlapping(parts: list[Placement], positions: list[Point],
@@ -301,21 +310,23 @@ def _pack(parts: list[Placement]) -> tuple[str, list[Point]]:
     raise ValueError("schematic exceeds A0; split the design into smaller schematics")
 
 
-def _emit(part: Placement, at: Point, uid: Callable[[], str], root: str,
+def _emit(part: Placement, at: Point, uid: Callable[[], str], instance_path: str,
           project: str) -> list[str]:
-    lines = [f'(symbol (lib_id "{_esc(part.lid)}") (at {_at(at)} 0) (unit 1)',
+    lines = [f'(symbol (lib_id "{_esc(part.lid)}") (at {_at(at)} 0) (unit {part.unit})',
              f'  (in_bom yes) (on_board yes) (dnp no) (uuid "{uid()}")']
     for key, val, y in (("Reference", part.ref, part.field_top),
                         ("Value", part.value, part.field_top + 2 * GRID),
                         ("Footprint", part.footprint, 0),
                         ("Datasheet", part.datasheet, 0)):
-        hide = " (hide yes)" if key in {"Footprint", "Datasheet"} else ""
+        hide = " (hide yes)" if (key in {"Footprint", "Datasheet"} or (key == "Reference" and part.ref.startswith("#"))) else ""
         field = _at(_add(at, (0, y)))
         lines.append(f'  (property "{key}" "{_esc(val)}" (at {field} 0) '
                      f'(effects (font (size 1.27 1.27)){hide}))')
+    for pnum in part.pin_numbers:
+        lines.append(f'  (pin "{_esc(pnum)}" (uuid "{uid()}"))')
     if project:
         lines.append(f'  (instances (project "{_esc(project)}" '
-                     f'(path "/{root}" (reference "{_esc(part.ref)}") (unit 1))))')
+                     f'(path "{_esc(instance_path)}" (reference "{_esc(part.ref)}") (unit {part.unit}))))')
     lines.append(")")
     for net, outward, starts, ends in part.groups:
         mid = len(ends) // 2
@@ -337,26 +348,58 @@ def build_schematic(
         uid: Callable[[], str] | None = None, title: str = "",
         symbols: dict[str, str] | None = None,
         part_symbol: dict[str, str] | None = None, project: str = "",
+        *, root_uuid: str | None = None, mark_unassigned_nc: bool = False,
+        group_parallel_banks: bool = True,
+        instance_path: str | None = None, is_subsheet: bool = False,
+        pwr_start: int = 0,
 ) -> str:
-    """Place parts, then connect the requested pins through wires and labels."""
+    """Place parts, grouping parallel shunt banks with shared bus rails and Power/GND symbols."""
+    from .kicad_schematic_blocks import (
+        ParallelBankBlock,
+        build_parallel_banks,
+        emit_parallel_bank,
+    )
+
     if uid is None:
         serial = iter(range(1, 1 << 64))
 
         def uid() -> str:
             return str(UUID(int=next(serial)))
 
-    root = uid()
+    root = root_uuid or uid()
+    # A sub-sheet's own file UUID must never equal its parent sheet-box UUID in instance_path,
+    # otherwise KiCad flags a duplicate UUID and shows an auto-repair dialog on load.
+    if is_subsheet and instance_path and root in instance_path.strip("/").split("/"):
+        root = uid()
     assigned = _assign_nets(parts, nets)
-    library = {}
-    placements = []
-    for part in order_by_connectivity(parts, nets):
+    library: dict[str, str] = {}
+    unit_cache: dict[tuple[str, int], Symbol] = {}
+    resolved_symbols: dict[str, tuple[str, Symbol]] = {}
+    resolved_assigned: dict[str, dict[str, str]] = {}
+
+    parts_by_ref: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    unique_parts: list[dict[str, Any]] = []
+    for p in parts:
+        r = p["refdes"]
+        if r not in parts_by_ref:
+            unique_parts.append(p)
+        parts_by_ref[r].append(p)
+    ordered_parts = [p for up in order_by_connectivity(unique_parts, nets) for p in parts_by_ref[up["refdes"]]]
+
+    part_records: list[tuple[dict[str, Any], str, Symbol, dict[str, str]]] = []
+    for part in ordered_parts:
         ref = part["refdes"]
+        unit_num = int(part.get("unit", 1) or 1)
         lid = (part_symbol or {}).get(ref)
         source = (symbols or {}).get(lid)
         if source:
-            if lid not in library:
-                library[lid] = _read_symbol(source)
-            symbol = library[lid]
+            if (lid, unit_num) not in unit_cache:
+                unit_cache[(lid, unit_num)] = _read_symbol(source, unit_num=unit_num)
+            symbol = unit_cache[(lid, unit_num)]
+            library.setdefault(lid, symbol.source)
+            unit_pin_nums = {p.number for p in symbol.pins}
+            part_assigned = {k: v for k, v in assigned[ref].items()
+                             if k in unit_pin_nums or any(p.name.casefold() == k.casefold() for p in symbol.pins)}
         else:
             numbers = list(assigned[ref])
             count = max(2, int(part.get("pin_count", 0) or 0))
@@ -368,8 +411,31 @@ def build_schematic(
             numbers.sort(key=lambda n: (not n.isdecimal(), int(n) if n.isdecimal() else n, n))
             symbol = _placeholder(tuple(numbers))
             lid = loads(symbol.source)[1]
-            library.setdefault(lid, symbol)
-        placements.append(_place_part(part, lid, symbol, _resolve_pins(ref, symbol, assigned[ref])))
+            library.setdefault(lid, symbol.source)
+            part_assigned = assigned[ref]
+        pin_net_map = _resolve_pins(ref, symbol, part_assigned)
+        if len(parts_by_ref[ref]) == 1:
+            resolved_symbols[ref] = (lid, symbol)
+            resolved_assigned[ref] = pin_net_map
+        part_records.append((part, lid, symbol, pin_net_map))
+
+    banks: list[ParallelBankBlock] = []
+    consumed: set[str] = set()
+    if group_parallel_banks:
+        banks, consumed, extra_libs = build_parallel_banks(
+            ordered_parts, resolved_assigned, resolved_symbols,
+            power_lib_prefix=project or "power",
+        )
+        for elid, esrc in extra_libs.items():
+            library.setdefault(elid, esrc)
+
+    placements: list[Placement | ParallelBankBlock] = []
+    for part, lid, symbol, pin_net_map in part_records:
+        if part["refdes"] in consumed:
+            continue
+        placements.append(_place_part(part, lid, symbol, pin_net_map,
+                                      mark_unassigned_nc=mark_unassigned_nc))
+    placements.extend(banks)
 
     paper, positions = _pack(placements)
     lines = ["(kicad_sch", "  (version 20240101)", '  (generator "eda-agent")',
@@ -377,10 +443,26 @@ def build_schematic(
     if title:
         lines.append(f'  (title_block (title "{_esc(title)}"))')
     lines.append("  (lib_symbols")
-    lines.extend(library[lid].source for lid in sorted(library))
+    lines.extend(library[lid] for lid in sorted(library))
     lines.append("  )")
-    for part, at in zip(placements, positions):
-        lines.extend("  " + line for line in _emit(part, at, uid, root, project))
-    lines.extend(('  (sheet_instances (path "/" (page "1")))',
-                  "  (embedded_fonts no)", ")"))
-    return "\n".join(lines) + "\n"
+    inst_path = instance_path or f"/{root}"
+    pwr_counter = [pwr_start]
+    for item, at in zip(placements, positions):
+        if isinstance(item, ParallelBankBlock):
+            emitted = emit_parallel_bank(item, at, uid, inst_path, project, pwr_counter)
+        else:
+            emitted = _emit(item, at, uid, inst_path, project)
+        lines.extend("  " + line for line in emitted)
+    if not is_subsheet:
+        lines.append('  (sheet_instances (path "/" (page "1")))')
+    lines.extend(("  (embedded_fonts no)", ")"))
+    source = "\n".join(lines) + "\n"
+    from .kicad_schematic_audit import audit_schematic_geometry
+    audit = audit_schematic_geometry(source)
+    if not audit["ok"]:
+        first = audit["violations"][0]
+        raise ValueError(
+            f"generated schematic failed geometric non-overlap audit "
+            f"({audit['violation_count']} violations, first: {first['kind']} {first['detail']})"
+        )
+    return source

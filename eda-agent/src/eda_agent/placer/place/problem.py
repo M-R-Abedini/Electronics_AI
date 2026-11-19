@@ -33,8 +33,10 @@ DECAP_AFFINITY_WEIGHT = 3.0  # local supply distance in mm, weighted relative to
 CANDIDATE_DECAP_AFFINITY_WEIGHT = 1.0  # softer pull toward nearest valid candidate IC pad when target ref is unresolved
 GAP_MM = 0.02  # declared: minimum courtyard gap (>= 20 um prevents touching-courtyard DRC)
 LOCAL_BLOCK_WEIGHT = 2.0
+SHEET_COHESION_WEIGHT = 0.35  # gentle sub-sheet macro cohesion on multi-sheet hierarchical designs (floorplan=True)
 LOCAL_BLOCK_ROLES = frozenset({"crystal", "crystal_load_cap", "crystal_aux", "converter_inductor", "converter_diode",
                                "converter_control", "regulator_input_cap", "regulator_output_cap", "esd", "led_resistor"})
+_NON_OVERHANGING_PREFIXES = frozenset({"TP", "C", "CP", "R", "RN", "L", "FB"})
 
 
 def local_box(fp: Footprint) -> tuple[float, float, float, float]:
@@ -67,7 +69,7 @@ def fixed_parts(board: Board) -> dict[str, str]:
         shape = courtyard_polygon(fp)
         if shape is None or outline is None:
             continue
-        if shape.difference(outline).area > 0.01:
+        if shape.difference(outline).area > 0.01 and fp.prefix not in _NON_OVERHANGING_PREFIXES:
             out[fp.ref] = "overhangs the board outline"
         elif fp.prefix.startswith(CONNECTOR_PREFIXES) and edge is not None and shape.distance(edge) <= EDGE_DISTANCE_MM:
             out[fp.ref] = "connector on the board edge"
@@ -100,6 +102,7 @@ class PlaceProblem:
     holes: list[list[tuple[float, float]]] = field(default_factory=list)
     exits: dict[str, list[escape.Escape]] = field(default_factory=dict)
     local_block_links: int = 0
+    sheet_cohesion_links: int = 0
 
     def poses(self) -> list[tuple[float, float, int]]:
         return [(p[7], p[8], p[9]) for p in self.parts]
@@ -201,6 +204,36 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
             if len(source) == 1 and pins:
                 pb.affinities.append(([source[0][1], *pins], DECAP_AFFINITY_WEIGHT if kind == "decap" else LOCAL_BLOCK_WEIGHT))
                 pb.local_block_links += kind != "decap"
+    if floorplan:
+        sheets_map: dict[str, list[Footprint]] = {}
+        for fp in board.footprints:
+            if fp.sheet:
+                sheets_map.setdefault(fp.sheet, []).append(fp)
+        if len(sheets_map) >= 2:
+            # Build a quick first-pin index per footprint so sheet cohesion uses valid pin indices
+            first_pin: dict[str, int] = {}
+            for pin_idx, (part_idx, _lx, _ly) in enumerate(pb.pins):
+                ref_i = pb.refs[part_idx]
+                if ref_i not in first_pin:
+                    first_pin[ref_i] = pin_idx
+            for sheet_name, members in sorted(sheets_map.items()):
+                # Pick the highest-pad-count IC (or largest multi-pad part) on this sheet as anchor
+                anchors = sorted(
+                    (fp for fp in members if fp.ref in first_pin and len(fp.pads) >= 4),
+                    key=lambda f: (-len(f.pads), f.ref),
+                )
+                if not anchors:
+                    continue
+                anchor = anchors[0]
+                anchor_pin = first_pin[anchor.ref]
+                for fp in members:
+                    if fp.ref == anchor.ref or fp.ref in fixed or fp.ref not in first_pin:
+                        continue
+                    role_v = ((parts.get(fp.ref, {}).get("role") or {}).get("value")) or ""
+                    if role_v in ("decap", "test_point", "mechanical"):
+                        continue
+                    pb.affinities.append(([first_pin[fp.ref], anchor_pin], SHEET_COHESION_WEIGHT))
+                    pb.sheet_cohesion_links += 1
     for o in board.outline:
         pb.outers.append([tuple(p) for p in o.outer])
         pb.holes += [[tuple(p) for p in h] for h in o.holes]

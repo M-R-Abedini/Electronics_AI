@@ -246,3 +246,53 @@ def test_same_intent_on_two_clients_gives_the_same_board(tmp_path):
             for c, p in (("claude-code", a), ("codex", b))]
     assert runs[0]["intent"]["sha256"] == runs[1]["intent"]["sha256"]
     assert sha256_file(runs[0]["placed_board"]) == sha256_file(runs[1]["placed_board"])
+
+
+def test_wearable_rf_tcxo_actuator_ldo_roles():
+    """Real wearable hardware (RF SAW filters, TCXO, haptic motor, BGA LDO) must not fall back to unknown."""
+    fps = [
+        _fp("FL1", "SAFFB1G56KB0F0A", "FIL_B39162B9417K610", [("RF_IN", "IN", "passive"), ("RF_OUT", "OUT", "passive"), ("GND", "GND", "passive")]),
+        _fp("G1", "MP10363", "NT2016_SMALL", [("1V8", "VCC", "power_in"), ("CLK26M", "OUT", "output"), ("GND", "GND", "passive")]),
+        _fp("M1", "VZ30C1T8219732L", "VYBRONICS_VZ30C1T8219732L", [("HAP_P", "1", "passive"), ("HAP_N", "2", "passive")]),
+        _fp("U9", "LD57100JR", "BGA6C40P2X3", [("VSYS", "VIN", "power_in"), ("1V8", "VOUT", "power_out"), ("GND", "GND", "power_in")]),
+    ]
+    board = derive(Board("wearable-rf", fps, nets=[Net(n, "", 2) for n in ("RF_IN", "RF_OUT", "1V8", "VSYS", "CLK26M", "HAP_P", "HAP_N", "GND")]))
+    intent = infer.draft(board)
+    assert intent["parts"]["FL1"]["role"]["value"] == "signal_passive"
+    assert intent["parts"]["FL1"]["role"]["confidence"] >= 0.8
+    assert intent["parts"]["G1"]["role"]["value"] == "oscillator"
+    assert intent["parts"]["M1"]["role"]["value"] == "signal_passive"
+    assert intent["parts"]["U9"]["role"]["value"] == "linear_regulator"
+    jsonschema.validate(intent, _schema())
+
+
+def test_kicad_sch_enrich_populates_sheet_and_position(tmp_path):
+    """Multi-sheet schematics beside a .kicad_pcb must populate fp.sheet and fp.schematic_position."""
+    from eda_agent.placer.io import kicad_sch
+
+    (tmp_path / "02_MCU.kicad_sch").write_text(
+        '(kicad_sch (version 20260306) (lib_symbols) '
+        '(symbol (lib_id "Test:U") (at 50.8 63.5 0) (property "Reference" "U1" (at 0 0 0))) '
+        '(symbol (lib_id "Test:C") (at 55.88 63.5 0) (property "Reference" "C1" (at 0 0 0))))\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "05_PMIC.kicad_sch").write_text(
+        '(kicad_sch (version 20260306) (lib_symbols) '
+        '(symbol (lib_id "Test:U") (at 80.0 40.0 0) (property "Reference" "U2" (at 0 0 0))))\n',
+        encoding="utf-8",
+    )
+    pcb = tmp_path / "demo.kicad_pcb"
+    pcb.write_text("", encoding="utf-8")
+    supply = [("1V8", "VDD", "power_in"), ("GND", "GND", "power_in")]
+    board = derive(Board("demo", [
+        _fp("U1", "MCU", "BGA-64", supply, sheet=""),
+        _fp("U2", "PMIC", "QFN-24", supply, sheet=""),
+        _fp("C1", "100nF", "C_0402", [("1V8", None, "passive"), ("GND", None, "passive")], sheet=""),
+    ], nets=[Net("1V8", "", 3), Net("GND", "", 3)]))
+    info = kicad_sch.enrich(board, pcb)
+    assert info["sheets_assigned"] == 3 and info["positions_assigned"] == 3
+    by_ref = {fp.ref: fp for fp in board.footprints}
+    assert by_ref["U1"].sheet == "02_MCU" and by_ref["C1"].sheet == "02_MCU"
+    assert by_ref["U2"].sheet == "05_PMIC"
+    intent = infer.draft(board)
+    assert intent["parts"]["C1"]["target"]["value"]["ref"] == "U1"

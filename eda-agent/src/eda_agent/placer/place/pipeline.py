@@ -229,7 +229,7 @@ def _resolve_edge_copper_clearances(placed, pb, solver_pb, core, retained, macro
                 inset_outers.append([(round(x, 6), round(y, 6)) for x, y in list(poly.exterior.coords)[:-1]])
     if not inset_outers:
         return placed, core, findings
-    targets = sorted({member_to_anchor.get(r, r) for f in edge_findings for r in f.refs if r not in pb.fixed})
+    targets = sorted({member_to_anchor.get(r, r) for f in edge_findings for r in f.refs if r not in pb.fixed}, key=str)
     if not targets or not all(r in idx_by_ref for r in targets):
         return placed, core, findings
     poses_now = core.positions()
@@ -377,6 +377,24 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         )
         if passive_alignment["moved"]:
             audit = measure(placed)
+            blocked = blocked_exits(audit)
+            pol_cand, pol_decap = decap.refine(placed, intent, refine_fixed, preserve_escapes=preserve_align)
+            if pol_decap["moved"]:
+                pol_cand, pol_align = decap.align_passives(
+                    pol_cand, intent, refine_fixed, preserve_escapes=preserve_align,
+                    max_trials=200, extend=True, seed_moved=set(pol_decap["moved"]),
+                )
+                pol_metrics = _floorplan_metrics(pol_cand, intent)
+                cur_metrics = _floorplan_metrics(placed, intent)
+                if (pol_metrics["crossings"] <= cur_metrics["crossings"]
+                        and (pol_metrics["decap_median_mm"] or 0.0) <= (cur_metrics["decap_median_mm"] or math.inf)
+                        and (pol_metrics["all_decap_p90_mm"] or 0.0) <= (cur_metrics["all_decap_p90_mm"] or math.inf)):
+                    placed = pol_cand
+                    audit = measure(placed)
+                    passive_alignment["post_decap_polish"] = {
+                        "decap_moved": pol_decap["moved"],
+                        "align_moved": pol_align["moved"],
+                    }
             info.setdefault("cost_final_stage", "before_passive_alignment")
             passive_alignment["output_metrics"] = _floorplan_metrics(placed, intent)
     info["passive_alignment"] = passive_alignment

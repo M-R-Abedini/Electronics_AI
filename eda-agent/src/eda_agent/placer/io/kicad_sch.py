@@ -113,29 +113,35 @@ def read_pins(sch: Path, *, positions: dict | None = None) -> dict[str, dict[str
     return out
 
 
-def project_pins(board_path: Path) -> tuple[dict[str, dict[str, SchPin]], list[str]]:
+def project_pins(
+    board_path: Path, *, positions: dict[str, set[tuple[str, float, float]]] | None = None
+) -> tuple[dict[str, dict[str, SchPin]], list[str]]:
     """Pins from every schematic sheet in the board's folder; the files read are listed for the report."""
     pins: dict[str, dict[str, SchPin]] = {}
     files = sorted(board_path.parent.glob("*.kicad_sch"))
     for sch in files:
-        for ref, rows in read_pins(sch).items():
+        for ref, rows in read_pins(sch, positions=positions).items():
             pins.setdefault(ref, {}).update(rows)
     return pins, [f.name for f in files]
 
 
 def enrich(board: Board, board_path: Path) -> dict:
-    """Fill pad functions and pin types the board file lacks from the schematics beside it.
+    """Fill pad functions, pin types, schematic sheet names, and schematic positions
+    that the board file lacks from the schematics beside it.
 
     A value the board already has is kept: the board is what gets manufactured, the schematic is
     evidence for what is missing.  A pin whose name is its own number says nothing and is skipped.
     """
     missing = [(fp, pad) for fp in board.footprints for pad in fp.pads
                if pad.net and (not pad.function or not pad.pin_type)]
-    info = {"sheets": [], "pads_named": 0, "pads_typed": 0, "parts_matched": 0, "parts_without_symbol": []}
-    if not missing:
+    missing_sheet = [fp for fp in board.footprints if not fp.sheet or fp.schematic_position is None]
+    info = {"sheets": [], "pads_named": 0, "pads_typed": 0, "parts_matched": 0, "parts_without_symbol": [],
+            "sheets_assigned": 0, "positions_assigned": 0}
+    if not missing and not missing_sheet:
         return info
-    pins, info["sheets"] = project_pins(board_path)
-    if not pins:
+    positions: dict[str, set[tuple[str, float, float]]] = {}
+    pins, info["sheets"] = project_pins(board_path, positions=positions)
+    if not pins and not positions:
         return info
     matched: set[str] = set()
     for fp, pad in missing:
@@ -149,6 +155,24 @@ def enrich(board: Board, board_path: Path) -> dict:
         if not pad.pin_type and pin.pin_type:
             pad.pin_type = pin.pin_type
             info["pads_typed"] += 1
+    for fp in missing_sheet:
+        pts = positions.get(fp.ref)
+        if not pts:
+            continue
+        by_sheet: dict[str, list[tuple[float, float]]] = {}
+        for sch_str, x, y in pts:
+            by_sheet.setdefault(Path(sch_str).stem, []).append((x, y))
+        sheet_name = sorted(by_sheet)[0]
+        coords = by_sheet[sheet_name]
+        if not fp.sheet:
+            fp.sheet = sheet_name
+            info["sheets_assigned"] += 1
+        if fp.schematic_position is None:
+            fp.schematic_position = (
+                sum(c[0] for c in coords) / len(coords),
+                sum(c[1] for c in coords) / len(coords),
+            )
+            info["positions_assigned"] += 1
     info["parts_matched"] = len(matched)
     info["parts_without_symbol"] = sorted({fp.ref for fp, _pad in missing} - matched)
     return info
