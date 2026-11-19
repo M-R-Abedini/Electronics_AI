@@ -4,14 +4,17 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
+use crate::geom::placed_rect;
 use crate::problem::Problem;
 
 /// Place movable parts, largest first, at the nearest legal position to their current pose.
 ///
 /// Fixed parts are obstacles from the start.  Positions are searched on rings of
 /// `step` around the target, up to `max_radius`; the current rotation is tried
-/// first, then the others.  Returns the parts that found no legal position (left
-/// at their target).  Caches are rebuilt at the end.
+/// first, then the others.  Rings are clamped to the board outline bounding box
+/// and use a progressive stride beyond 30 rings to keep large-board retries fast
+/// while staying exact near the target.  Returns the parts that found no legal
+/// position (left at their target).  Caches are rebuilt at the end.
 pub fn legalize(p: &mut Problem, step: f64, max_radius: f64, first: &[usize]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..p.parts.len()).filter(|&i| !p.parts[i].fixed).collect();
     order.sort_by(|&a, &b| {
@@ -24,8 +27,9 @@ pub fn legalize(p: &mut Problem, step: f64, max_radius: f64, first: &[usize]) ->
         p.set_placed(i, false);
     }
     let k_max = (max_radius / step).ceil() as i64;
-    // All parts and rotations visit the same offsets. Cache each ring on demand.
-    let mut rings = Vec::new();
+    let bounds = p.outline_bounds();
+    let has_bounds = bounds.x0.is_finite() && bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0;
+    let mut ring_buf: Vec<(i64, i64)> = Vec::new();
     let mut failed = Vec::new();
     for &i in &order {
         let (tx, ty, tr) = (p.parts[i].x, p.parts[i].y, p.parts[i].r);
@@ -36,11 +40,47 @@ pub fn legalize(p: &mut Problem, step: f64, max_radius: f64, first: &[usize]) ->
         let mut found = false;
         'rot: for &r in &rotations {
             p.parts[i].r = r;
-            for k in 0..=k_max {
-                if rings.len() == k as usize {
-                    rings.push(legalize_ring(k));
+            let (min_x, max_x, min_y, max_y, k_start, k_limit) = if has_bounds {
+                let lr = placed_rect(&p.parts[i].local, 0.0, 0.0, r);
+                let min_x = bounds.x0 - lr.x0;
+                let max_x = bounds.x1 - lr.x1;
+                let min_y = bounds.y0 - lr.y0;
+                let max_y = bounds.y1 - lr.y1;
+                if min_x > max_x + 1e-6 || min_y > max_y + 1e-6 {
+                    continue;
                 }
-                for &(a, b) in &rings[k as usize] {
+                let out_d = 0.0_f64
+                    .max(min_x - tx)
+                    .max(tx - max_x)
+                    .max(min_y - ty)
+                    .max(ty - max_y);
+                let far_d = (tx - min_x)
+                    .abs()
+                    .max((max_x - tx).abs())
+                    .max((ty - min_y).abs())
+                    .max((max_y - ty).abs());
+                let ks = ((out_d / step).floor() as i64).max(0);
+                let kl = k_max.min((far_d / step).ceil() as i64 + 1);
+                (min_x - 1e-3, max_x + 1e-3, min_y - 1e-3, max_y + 1e-3, ks, kl)
+            } else {
+                (f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, 0, k_max)
+            };
+            let mut k = k_start;
+            while k <= k_limit {
+                let dk = ring_stride(k);
+                fill_clamped_ring(
+                    &mut ring_buf,
+                    k,
+                    dk,
+                    tx,
+                    ty,
+                    step,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                );
+                for &(a, b) in &ring_buf {
                     p.parts[i].x = round3(tx + a as f64 * step);
                     p.parts[i].y = round3(ty + b as f64 * step);
                     if p.legal_at(i, None) {
@@ -49,6 +89,7 @@ pub fn legalize(p: &mut Problem, step: f64, max_radius: f64, first: &[usize]) ->
                         break 'rot;
                     }
                 }
+                k += dk;
             }
         }
         if !found {
@@ -63,19 +104,91 @@ pub fn legalize(p: &mut Problem, step: f64, max_radius: f64, first: &[usize]) ->
     failed
 }
 
-fn legalize_ring(k: i64) -> Vec<(i64, i64)> {
-    if k == 0 {
-        return vec![(0, 0)];
+#[inline]
+fn ring_stride(k: i64) -> i64 {
+    if k <= 200 {
+        1
+    } else if k <= 400 {
+        2
+    } else if k <= 800 {
+        4
+    } else {
+        8
     }
-    let mut ring = Vec::new();
-    for d in -k..=k {
-        ring.extend([(d, -k), (d, k)]);
-        if d != -k && d != k {
-            ring.extend([(-k, d), (k, d)]);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_clamped_ring(
+    out: &mut Vec<(i64, i64)>,
+    k: i64,
+    dk: i64,
+    tx: f64,
+    ty: f64,
+    step: f64,
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+) {
+    out.clear();
+    if k == 0 {
+        if tx >= min_x && tx <= max_x && ty >= min_y && ty <= max_y {
+            out.push((0, 0));
+        }
+        return;
+    }
+    let a_lo = if min_x.is_finite() {
+        ((min_x - tx) / step).ceil() as i64
+    } else {
+        -k
+    }
+    .max(-k);
+    let a_hi = if max_x.is_finite() {
+        ((max_x - tx) / step).floor() as i64
+    } else {
+        k
+    }
+    .min(k);
+    let b_lo = if min_y.is_finite() {
+        ((min_y - ty) / step).ceil() as i64
+    } else {
+        -k
+    }
+    .max(-k);
+    let b_hi = if max_y.is_finite() {
+        ((max_y - ty) / step).floor() as i64
+    } else {
+        k
+    }
+    .min(k);
+
+    if a_lo <= a_hi {
+        for &b in &[-k, k] {
+            let y = ty + b as f64 * step;
+            if y >= min_y && y <= max_y {
+                let mut a = a_lo;
+                while a <= a_hi {
+                    out.push((a, b));
+                    a += dk;
+                }
+            }
         }
     }
-    ring.sort_unstable_by_key(|&(a, b)| (a * a + b * b, a, b));
-    ring
+    let inner_b_lo = b_lo.max(-k + 1);
+    let inner_b_hi = b_hi.min(k - 1);
+    if inner_b_lo <= inner_b_hi {
+        for &a in &[-k, k] {
+            let x = tx + a as f64 * step;
+            if x >= min_x && x <= max_x {
+                let mut b = inner_b_lo;
+                while b <= inner_b_hi {
+                    out.push((a, b));
+                    b += dk;
+                }
+            }
+        }
+    }
+    out.sort_unstable_by_key(|&(a, b)| (a * a + b * b, a, b));
 }
 
 #[inline]

@@ -19,6 +19,9 @@ from dataclasses import asdict, dataclass, field
 
 from .geometry import Box, Point, box_of, polygon_area, transform
 
+_BOX_CACHE: dict[tuple, Box] = {}
+_CY_WORLD_CACHE: dict[tuple, list[list[Point]]] = {}
+
 SCHEMA = "electronics-ai/board-ir"
 SCHEMA_VERSION = 1
 
@@ -92,8 +95,19 @@ class Footprint:
         return [[transform(p, o, r) for p in poly] for poly in self.courtyard.polygons]
 
     def box(self, x: float | None = None, y: float | None = None, rotation: float | None = None) -> Box:
+        ox = self.x if x is None else x
+        oy = self.y if y is None else y
+        rot = self.rotation if rotation is None else rotation
+        first_pt = self.courtyard.polygons[0][0] if self.courtyard.polygons and self.courtyard.polygons[0] else None
+        key = (self.ref, self.lib_id, ox, oy, rot, len(self.courtyard.polygons), first_pt)
+        if key in _BOX_CACHE:
+            return _BOX_CACHE[key]
         pts = [p for poly in self.courtyard_world(x, y, rotation) for p in poly]
-        return box_of(pts) or (self.x, self.y, self.x, self.y)
+        res = box_of(pts) or (ox, oy, ox, oy)
+        if len(_BOX_CACHE) > 16384:
+            _BOX_CACHE.clear()
+        _BOX_CACHE[key] = res
+        return res
 
     @property
     def courtyard_area(self) -> float:

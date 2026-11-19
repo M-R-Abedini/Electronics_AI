@@ -7,6 +7,7 @@ import itertools
 import math
 from collections.abc import Iterator
 
+import numpy as np
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 from shapely.prepared import prep
@@ -21,7 +22,24 @@ from .copper import (
     pad_layers,
     pad_polygon,
 )
-from .pairs import PairRule, Window, obstacles, trace_path
+from .pairs import (
+    Exits,
+    PairRule,
+    Window,
+    _block_drills,
+    obstacles,
+    rule_for,
+    trace_path,
+)
+
+
+def _obstacle_hits_nets(board: Board, item: dict, skip_nets: set[str]) -> bool:
+    if not item.get("overlapping_pads"):
+        return False
+    if item.get("kind") != "copper_graphic":
+        return True
+    pad_nets = {f"{fp.ref}-{p.number}": p.net for fp in board.footprints for p in fp.pads}
+    return any(pad_nets.get(name) in skip_nets for name in item["overlapping_pads"])
 
 
 def _pad_clearances(board: Board, layers: list[str], net: str, clearance: float):
@@ -74,7 +92,7 @@ def plan_power_link(board: Board, source: tuple[Footprint, Pad], destination: tu
     forbidden = keepouts + [g for sides, g in _pad_clearances(board, layers, net, clearance) if layer in sides]
     forbidden.extend(
         Polygon(ring) for item in board.obstacles if item["copper"] == layer
-        and not item["overlapping_pads"] and not item.get("net")
+        and not _obstacle_hits_nets(board, item, {net}) and not item.get("net")
         for ring in item["outlines"] if len(ring) >= 3
     )
     edge = board.rules.get("copper_edge_clearance", 0)
@@ -150,8 +168,14 @@ class _Site:
             for area in board.rule_areas if area["polygons"]
         ]
         graphics = [
-            (item["copper"], Polygon(ring).buffer(clearance))  # keepouts for the router, with its clearance
-            for item in board.obstacles if not item["overlapping_pads"] and not item.get("net")
+            (
+                item["copper"],
+                Polygon(ring).buffer(
+                    0.0 if item.get("kind") == "mask_aperture"
+                    else max(0.0, clearance - float(item.get("grown_mm") or 0.0))
+                ),
+            )
+            for item in board.obstacles if not _obstacle_hits_nets(board, item, {net}) and not item.get("net")
             for ring in item["outlines"] if len(ring) >= 3
         ]
         self._track = {
@@ -297,3 +321,86 @@ def plan_cross_link(board: Board, source: tuple[Footprint, Pad], destination: tu
                 if _length(back) <= budget + 1e-9 and (second := site.track(far_layer, back)):
                     return [first, via, second]
     return None
+
+
+def traps_pads(board: Board, fixed: list[dict], tracks: list[dict], vias: list[dict],
+               own_nets: set[str], *, margin_mm: float = 4.5, res: float = 0.075) -> list[str]:
+    """Return pad names cut off from the largest free routing region by ``tracks`` + ``vias`` (arch 14 row 2a)."""
+    if not tracks and not vias:
+        return []
+    outer = [cl.canonical for cl in board.copper_layers if cl.canonical in ("F.Cu", "B.Cu")]
+    if not outer:
+        return []
+    pts = [p for t in tracks for p in t["points"]] + [(v["x"], v["y"]) for v in vias]
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    win = Window(board, (min(xs) - margin_mm, min(ys) - margin_mm, max(xs) + margin_mm, max(ys) + margin_mm),
+                 outer, res=res)
+    ref_net = next(iter(own_nets), "")
+    rule = rule_for(board, ref_net)
+    # Use standard trace width (not wide diff-pair width) when checking general pad escape clearance.
+    nc = board.netclass_of(ref_net) or next(c for c in board.netclasses if c.name == "Default")
+    gen_width = max(board.rules.get("min_track_width", nc.track_width), 1e-3)
+    gen_clear = max(board.rules.get("min_clearance", nc.clearance), 1e-3)
+    gen_via_d = max(board.rules.get("min_via_diameter", nc.via_diameter), 1e-3)
+    gen_drill = max(board.rules.get("min_through_drill", nc.via_drill), 1e-3)
+    escape_rule = PairRule(width=gen_width, gap=gen_clear, clearance=gen_clear,
+                           via_d=min(rule.via_d, gen_via_d), via_drill=min(rule.via_drill, gen_drill))
+    blocked_drills = np.zeros((win.ny, win.nx), bool)
+    _block_drills(win, blocked_drills, existing_holes(board, fixed), escape_rule.via_drill,
+                  board.rules.get("hole_to_hole", 0.0))
+    exits = Exits(board, win, escape_rule, fixed, own_nets, blocked_drills)
+    return exits.closed_in(tracks, vias)
+
+
+def reserve_power_escapes(board: Board, intent: dict, *, active_roles: tuple[str, ...],
+                          pours: dict[str, set[str]], tap_max_mm: float = 2.0) -> list[dict]:
+    """Reserve escape space for active-IC power/ground pads without locking copper (arch 14 row 2b).
+
+    Returned dicts are tagged ``kind='reserve'`` and passed only as obstacles during pair routing;
+    they are never written to the PCB as copper.
+    """
+    from ..intent import model
+
+    by_canon = {cl.name: cl.canonical for cl in board.copper_layers}
+    power_nets = {
+        net for net, info in (intent.get("nets") or {}).items()
+        if ((info.get("rail") or {}).get("value")) in ("power", "ground")
+    }
+    if not power_nets:
+        return []
+    reserved: list[dict] = []
+    sites: dict[str, _Site] = {}
+    for ref in sorted(intent.get("parts", {}), key=model.natural_key):
+        if intent["parts"][ref]["role"]["value"] not in active_roles:
+            continue
+        fp = board.fp(ref)
+        for pad in fp.pads:
+            if pad.kind != "smd" or pad.net not in power_nets:
+                continue
+            layer = _outer_layer(board, fp, pad)
+            if layer is None or board.netclass_of(pad.net) is None:
+                continue
+            origin = fp.pad_world(pad)
+            owner = f"{ref}-{pad.number}"
+            if pad.net in pours:
+                targets = sorted({by_canon.get(n, n) for n in pours[pad.net]} - {layer})
+                got = None
+                for target_layer in targets:
+                    got = plan_power_tap(board, fp, pad, target_layer, fixed=reserved, max_length_mm=tap_max_mm)
+                    if got is not None:
+                        break
+                if got is not None:
+                    trk, via = got
+                    reserved.append({**trk, "kind": "reserve", "owner": owner, "origin": origin})
+                    reserved.append({**via, "kind": "reserve", "owner": owner, "origin": origin})
+                    continue
+            site = sites.get(pad.net)
+            if site is None:
+                site = sites[pad.net] = _Site(board, pad.net, [])
+            dx, dy = outward(fp, pad)
+            stub_len = max(pad.size) / 2 + site.clearance + site.width / 2 + 0.35
+            end = (origin[0] + dx * stub_len, origin[1] + dy * stub_len)
+            trk = site.track(layer, [origin, end])
+            if trk is not None:
+                reserved.append({**trk, "kind": "reserve", "owner": owner, "origin": origin})
+    return reserved

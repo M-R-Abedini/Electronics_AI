@@ -170,6 +170,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                            for z in ir.zones if (z.get("name") or "").startswith(MACRO_ZONE_PREFIX)
                            for i, layer in enumerate(z["layers"])]
     text = dsn.add_wire_keepouts(text, macro_zone_keepouts)
+    text = dsn.restore_wiring_precision(text, ir)
     route_dsn = work / "route.dsn"
     route_dsn.write_text(dsn.add_keepouts(text, keepouts), encoding="utf-8", newline="\n")
     t = tick("prepare", t)

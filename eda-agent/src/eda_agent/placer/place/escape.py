@@ -9,6 +9,7 @@ from itertools import pairwise
 from shapely import STRtree
 from shapely.geometry import LineString, Polygon, box
 from shapely.ops import unary_union
+from shapely.prepared import prep
 
 from ..eval.legality import board_polygon, courtyard_polygon
 from ..geometry import Box, Point, rotated_box, transform
@@ -100,20 +101,32 @@ def select_reservations(exits: dict[str, list[Escape]]) -> dict[str, list[Escape
     return selected
 
 
+_KEEPOUTS_CACHE: dict[tuple, dict] = {}
+_ESCAPE_GEOMS_CACHE: dict[tuple, list] = {}
+
+
 def audit(board: Board, exits: dict[str, list[Escape]], *, flipped: set[str] | None = None) -> dict:
     """Count clear exterior exits against the actual outline and nearby courtyards."""
     if not exits:
         return {"total": 0, "clear": 0, "blocked": []}
     outline = board_polygon(board)
+    outline_prep = prep(outline) if outline is not None else None
     shapes = {side: [(fp.ref, geom) for fp in board.footprints if fp.side == side
                      and (geom := courtyard_polygon(fp)) is not None] for side in ("F", "B")}
     trees = {side: STRtree([geom for _, geom in rows]) for side, rows in shapes.items()}
-    names = {layer.name: layer.canonical for layer in board.copper_layers}
-    keepouts = {(side, kind): unary_union([Polygon(ring).buffer(0) for row in board.rule_areas
-                                 if row["keepout"].get(kind)
-                                 and any(names.get(layer, layer) == f"{side}.Cu" for layer in row["layers"])
-                                 for ring in row["polygons"] if len(ring) >= 3])
-                for side in ("F", "B") for kind in ("tracks", "vias")}
+    ko_key = (board.name, len(board.rule_areas), tuple(r.get("uuid") for r in board.rule_areas))
+    if ko_key in _KEEPOUTS_CACHE:
+        keepouts = _KEEPOUTS_CACHE[ko_key]
+    else:
+        names = {layer.name: layer.canonical for layer in board.copper_layers}
+        keepouts = {(side, kind): unary_union([Polygon(ring).buffer(0) for row in board.rule_areas
+                                     if row["keepout"].get(kind)
+                                     and any(names.get(layer, layer) == f"{side}.Cu" for layer in row["layers"])
+                                     for ring in row["polygons"] if len(ring) >= 3])
+                    for side in ("F", "B") for kind in ("tracks", "vias")}
+        if len(_KEEPOUTS_CACHE) > 256:
+            _KEEPOUTS_CACHE.clear()
+        _KEEPOUTS_CACHE[ko_key] = keepouts
     blocked = []
     flipped = flipped or set()
     total = sum(map(len, exits.values()))
@@ -121,18 +134,28 @@ def audit(board: Board, exits: dict[str, list[Escape]], *, flipped: set[str] | N
         fp = board.fp(ref)
 
         mirror = -1 if ref in flipped else 1
-        for exit in rows:
-            start, end = (transform((x, y * mirror), fp.position, fp.rotation) for x, y in (exit.start, exit.end))
-            x, y = end
-            radius = exit.via_space / 2
-            strip = LineString([start, end]).buffer(exit.width / 2, cap_style="flat")
-            via = box(x - radius, y - radius, x + radius, y + radius)
-            region = strip.union(via)
+        g_key = (board.name, ref, fp.x, fp.y, fp.rotation, fp.side, mirror, len(rows))
+        if g_key in _ESCAPE_GEOMS_CACHE:
+            exit_geoms = _ESCAPE_GEOMS_CACHE[g_key]
+        else:
+            exit_geoms = []
+            for exit in rows:
+                start, end = (transform((x, y * mirror), fp.position, fp.rotation) for x, y in (exit.start, exit.end))
+                x, y = end
+                radius = exit.via_space / 2
+                strip = LineString([start, end]).buffer(exit.width / 2, cap_style="flat")
+                via = box(x - radius, y - radius, x + radius, y + radius)
+                region = strip.union(via)
+                outside = outline_prep is None or not outline_prep.covers(region)
+                keepout = any(not keepouts[fp.side, kind].is_empty and geom.intersection(keepouts[fp.side, kind]).area > 1e-6
+                              for geom, kind in ((strip, "tracks"), (via, "vias")))
+                exit_geoms.append((exit, start, end, region, outside, keepout))
+            if len(_ESCAPE_GEOMS_CACHE) > 4096:
+                _ESCAPE_GEOMS_CACHE.clear()
+            _ESCAPE_GEOMS_CACHE[g_key] = exit_geoms
+        for exit, start, end, region, outside, keepout in exit_geoms:
             blockers = sorted(shapes[fp.side][i][0] for i in trees[fp.side].query(region, predicate="intersects")
                               if shapes[fp.side][i][0] != ref and region.intersection(shapes[fp.side][i][1]).area > 1e-6)
-            outside = outline is None or not outline.covers(region)
-            keepout = any(geom.intersection(keepouts[fp.side, kind]).area > 1e-6
-                          for geom, kind in ((strip, "tracks"), (via, "vias")))
             if blockers or outside or keepout:
                 blocked.append({"ref": ref, "pin": exit.pin, "net": exit.net, "blocked_by": blockers,
                                 "outside_outline": outside, "keepout": keepout, "layer": f"{fp.side}.Cu",

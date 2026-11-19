@@ -398,6 +398,10 @@ impl Problem {
         pb
     }
 
+    pub fn outline_bounds(&self) -> Rect {
+        self.bounds
+    }
+
     /// Recompute every cached quantity from the part poses.
     pub fn rebuild(&mut self) {
         self.index = PartIndex::new(self.bounds, self.index.cell);

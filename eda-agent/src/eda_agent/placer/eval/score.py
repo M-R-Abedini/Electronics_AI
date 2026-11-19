@@ -17,7 +17,7 @@ and the best grid weights gained only one pair (75.0 %), below the declared
 from __future__ import annotations
 
 from ..ir import Board
-from . import legality, metrics
+from . import congestion, legality, metrics
 
 WEIGHTS = {"routability": 35, "critical_loops": 25, "ratsnest": 15, "regularity": 15, "lint": 10}
 PRO_SCORE_VERSION = 1
@@ -71,6 +71,7 @@ def evaluate(board: Board, route: dict | None = None, fixed: set[str] | None = N
     loops = metrics.critical_loops(board, intent)
     loops["intent_sha256"] = model.intent_hash(intent)
     m = {"hpwl": metrics.hpwl(board), "crossings": metrics.crossings(board), "rudy": metrics.rudy(board),
+         "pathfinder": congestion.summary(board),
          "critical_loops": loops, "regularity": metrics.regularity(board)}
     return {
         "legality": legal,

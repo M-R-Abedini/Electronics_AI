@@ -20,7 +20,7 @@ from pathlib import Path
 from shapely.geometry import Polygon
 
 from .. import report as run_report
-from ..eval import legality
+from ..eval import congestion, legality
 from ..eval.metrics import critical_loops_intent, crossings
 from ..eval.score import evaluate
 from ..intent import model
@@ -38,6 +38,8 @@ W_CROSS = 2.0  # declared: cost of one pin-pair crossing in mm of wirelength
 LEGALIZE_STEP_MM = 0.2
 LEGALIZE_RETRIES = 2
 MAX_CORRIDOR_TRIALS = 24
+MAX_INFLATION_ROUNDS = 3
+INFLATION_TIME_GUARD_S = 220.0
 
 
 def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None,
@@ -361,9 +363,16 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
                     name, other, other_info, other_audit, other_rank, other_refinement
                 )
     reservations_used = variant in ("reserve", "combined")
+    congestion_refinement = None
     passive_alignment = None
     rigid_macros = info.get("rigid_macros") or {}
     if use_floorplan and not rigid_macros.get("corridors", {}).get("total") and not any(_legality_key(info)):
+        placed, audit, congestion_refinement = _refine_congestion(
+            placed, info, audit, intent=intent, variant=variant,
+            reservations_used=reservations_used, seed=seed, measure=measure, t0=t0,
+        )
+        if congestion_refinement and congestion_refinement["accepted_rounds"] > 0:
+            info.setdefault("cost_final_stage", "before_congestion_refinement")
         rigid_members = {r for group in rigid_macros.get("members", []) for r in group}
         refine_fixed = set(info["fixed"]) | rigid_members
         blocked = blocked_exits(audit)
@@ -397,12 +406,15 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
                     }
             info.setdefault("cost_final_stage", "before_passive_alignment")
             passive_alignment["output_metrics"] = _floorplan_metrics(placed, intent)
+    info["pathfinder"] = congestion.summary(placed)
+    info["congestion_refinement"] = congestion_refinement
     info["passive_alignment"] = passive_alignment
     info["floorplan"] = {"requested": use_floorplan, "reservations_used": reservations_used,
                          "reserved_pad_count": sum(map(len, selected.values())) if reservations_used else 0,
                          "selected_variant": variant, "quality_guard": comparisons.get(variant),
                          "comparisons": comparisons, "escape": audit, "iteration_budget_divisor": divisor,
-                         "decap_refinement": tail_refinement, "passive_alignment": passive_alignment}
+                         "decap_refinement": tail_refinement, "congestion_refinement": congestion_refinement,
+                         "passive_alignment": passive_alignment}
     for row in anchors:
         ref = row["ref"]
         placed.fp(ref).locked = original.fp(ref).locked
@@ -414,6 +426,132 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
 
 def _legality_key(info: dict) -> tuple:
     return info["strict_violations"], len(info["illegal_after_s5"]), len(info["s4_failed"])
+
+
+def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, variant: str,
+                       reservations_used: bool, seed: int, measure, t0: float) -> tuple:
+    """F5 guarded Cell Inflation loop (up to 3 rounds) driven by Rust PathFinder overflow."""
+    cur_pf = congestion.estimate(placed)
+    report: dict = {
+        "available": bool(cur_pf.get("available")),
+        "initial": congestion.public_summary(cur_pf),
+        "rounds": [],
+        "accepted_rounds": 0,
+    }
+    if (not cur_pf.get("available") or cur_pf.get("total_overflow", 0.0) <= 1e-6
+            or time.monotonic() - t0 >= INFLATION_TIME_GUARD_S):
+        report["final"] = report["initial"]
+        return placed, audit, report
+
+    rigid_members = {r for group in (info.get("rigid_macros") or {}).get("members", []) for r in group}
+    fixed_map = {**info["fixed"], **{r: "rigid macro member" for r in rigid_members}}
+    fixed_set = set(fixed_map)
+    cur_placed, cur_audit = placed, audit
+    cur_metrics = _floorplan_metrics(cur_placed, intent) if intent else {"crossings": crossings(cur_placed)["count"]}
+
+    for round_idx in range(MAX_INFLATION_ROUNDS):
+        if cur_pf.get("total_overflow", 0.0) <= 1e-6 or time.monotonic() - t0 >= INFLATION_TIME_GUARD_S:
+            break
+        infl = congestion.part_inflations(cur_placed, cur_pf, fixed_set, scale_mm=0.2 * (round_idx + 1))
+        if not infl:
+            break
+        inf_pb = problem.build(
+            cur_placed, side_policy="expert", intent=intent,
+            floorplan=(variant in ("blocks", "combined")), reserve=reservations_used,
+            inflations=infl, fixed_override=fixed_map,
+        )
+        inf_core = problem.rust_problem(inf_pb, w_cross=W_CROSS)
+        start_poses = inf_pb.poses()
+        inf_core.set_positions(start_poses)
+        diag = problem.board_diag(inf_pb)
+        prio = sorted((i for i, ref in enumerate(inf_pb.refs) if ref in infl),
+                      key=lambda i: (-infl[inf_pb.refs[i]], i))
+        failed = inf_core.legalize(LEGALIZE_STEP_MM, diag, prio)
+        if failed:
+            inf_core.set_positions(start_poses)
+            failed = inf_core.legalize(LEGALIZE_STEP_MM / 2, diag, sorted(set(failed)))
+        if failed:
+            report["rounds"].append({"round": round_idx + 1, "inflated_parts": len(infl),
+                                     "accepted": False, "reason": "legalize_failed"})
+            break
+        iters = min(60_000, max(20_000, 1000 * len(infl)))
+        inf_core.anneal(iters, seed + 101 * (round_idx + 1), max(diag * 0.08, 0.8), 0.05)
+        if inf_core.illegal_parts():
+            report["rounds"].append({"round": round_idx + 1, "inflated_parts": len(infl),
+                                     "accepted": False, "reason": "illegal_after_anneal"})
+            continue
+        cand = problem.apply(inf_pb, inf_core.positions())
+        findings = legality.check(cand, fixed=set(info["fixed"]))
+        th_findings = [f for f in findings if not f.fixed and f.detail.startswith("thru_hole_pads:")]
+        if th_findings and "F" in inf_pb.sides.values() and "B" in inf_pb.sides.values():
+            cand, inf_core, findings = _resolve_movable_th_collisions(
+                cand, inf_pb, inf_pb, inf_core, list(range(len(inf_pb.parts))), {}, diag, th_findings, findings
+            )
+        cand, inf_core, findings = _resolve_edge_copper_clearances(
+            cand, inf_pb, inf_pb, inf_core, list(range(len(inf_pb.parts))), {}, diag, findings
+        )
+        if any(not f.fixed for f in findings):
+            report["rounds"].append({"round": round_idx + 1, "inflated_parts": len(infl),
+                                     "accepted": False, "reason": "legality"})
+            continue
+        cand_audit = measure(cand)
+        if cand_audit["clear"] < cur_audit["clear"]:
+            report["rounds"].append({"round": round_idx + 1, "inflated_parts": len(infl),
+                                     "accepted": False, "reason": "blocked_escape"})
+            continue
+        if intent:
+            cand_metrics = _floorplan_metrics(cand, intent)
+            if ((cand_metrics["decap_median_mm"] or 0.0) > (cur_metrics["decap_median_mm"] or math.inf) + 1e-3
+                    or (cand_metrics["all_decap_p90_mm"] or 0.0) > (cur_metrics["all_decap_p90_mm"] or math.inf) + 1e-3):
+                min_clear = cur_audit["clear"]
+
+                def _pres(bs, _mc=min_clear):
+                    return measure(bs)["clear"] >= _mc
+
+                cand, _ = decap.refine(cand, intent, fixed_set, preserve_escapes=_pres)
+                cand_audit = measure(cand)
+                if any(not f.fixed for f in legality.check(cand, fixed=set(info["fixed"]))) or (
+                    cand_audit["clear"] < cur_audit["clear"]
+                ):
+                    report["rounds"].append({"round": round_idx + 1, "inflated_parts": len(infl),
+                                             "accepted": False, "reason": "decap_legality"})
+                    continue
+        cand_pf = congestion.estimate(cand)
+        cand_metrics = _floorplan_metrics(cand, intent) if intent else {"crossings": crossings(cand)["count"]}
+        improved = (
+            cand_pf["total_overflow"] < cur_pf["total_overflow"] - 1e-3
+            or (cand_pf["total_overflow"] <= cur_pf["total_overflow"] + 1e-6
+                and cand_pf["routability_cost"] < cur_pf["routability_cost"] * 0.99)
+        )
+        big_relief = cur_pf["total_overflow"] > 1e-6 and cand_pf["total_overflow"] <= cur_pf["total_overflow"] * 0.75
+        xing_tol = max(0, int(0.01 * cur_metrics["crossings"])) if big_relief else 0
+        no_regress = cand_metrics["crossings"] <= cur_metrics["crossings"] + xing_tol
+        if intent and no_regress:
+            no_regress = (
+                (cand_metrics["decap_median_mm"] or 0.0) <= (cur_metrics["decap_median_mm"] or math.inf) + 1e-3
+                and (cand_metrics["all_decap_p90_mm"] or 0.0) <= (cur_metrics["all_decap_p90_mm"] or math.inf) + 1e-3
+                and cand_metrics["resolved_decaps"] >= cur_metrics["resolved_decaps"]
+            )
+        entry = {
+            "round": round_idx + 1,
+            "inflated_parts": len(infl),
+            "overflow_before": cur_pf["total_overflow"],
+            "overflow_after": cand_pf["total_overflow"],
+            "rcost_before": cur_pf["routability_cost"],
+            "rcost_after": cand_pf["routability_cost"],
+            "accepted": bool(improved and no_regress),
+        }
+        if improved and no_regress:
+            cur_placed, cur_pf, cur_audit, cur_metrics = (
+                cand, cand_pf, cand_audit, cand_metrics
+            )
+            report["accepted_rounds"] += 1
+        else:
+            entry["reason"] = "no_improvement" if not improved else "metric_regression"
+        report["rounds"].append(entry)
+
+    report["final"] = congestion.public_summary(cur_pf)
+    return cur_placed, cur_audit, report
 
 
 def _floorplan_metrics(board, intent: dict) -> dict:

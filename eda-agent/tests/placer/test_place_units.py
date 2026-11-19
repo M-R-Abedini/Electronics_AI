@@ -12,7 +12,7 @@ from xml.etree import ElementTree
 
 import pytest
 from eda_agent.placer import mcp as placer_mcp
-from eda_agent.placer.eval import legality, metrics
+from eda_agent.placer.eval import congestion, legality, metrics
 from eda_agent.placer.eval.score import evaluate
 from eda_agent.placer.intent import infer, model, validate
 from eda_agent.placer.io import schematic_input
@@ -987,6 +987,58 @@ def test_multisheet_floorplan_adds_sheet_cohesion_affinities():
     pb_fp = problem.build(b, floorplan=True)
     assert pb_no_fp.sheet_cohesion_links == 0
     assert pb_fp.sheet_cohesion_links == 2
+
+
+def test_pathfinder_congestion_is_deterministic_and_routing_invariant():
+    """PathFinder congestion summary is deterministic, JSON-safe, and invariant to existing tracks."""
+    b = _board()
+    e1 = congestion.summary(b)
+    e2 = congestion.summary(b)
+    assert e1["available"] is True
+    assert e1 == e2
+    assert "_grid_meta" not in e1
+    assert json.dumps(e1)  # JSON-serializable
+
+    # Adding routed tracks must not alter effective signal layers or congestion metrics.
+    b_routed = b.copy()
+    b_routed.routing = {"tracks": [{"layer": "F.Cu", "net": "A", "width": 0.2, "points": [(0.0, 0.0), (15.0, 0.0)]}], "vias": []}
+    b_routed = derive(b_routed)
+    assert congestion.summary(b_routed) == e1
+
+    ev = evaluate(b)
+    assert ev["metrics"]["pathfinder"] == e1
+
+
+def test_problem_build_inflations_expand_only_movable_parts():
+    """Cell inflation expands movable footprints' local boxes while leaving fixed parts untouched."""
+    b = _board()
+    pb_base = problem.build(b)
+    pb_inf = problem.build(b, inflations={"U1": 0.5, "R1": 0.4})
+    u1_idx = pb_base.refs.index("U1")
+    r1_idx = pb_base.refs.index("R1")
+    # U1 is locked (fixed) -> unchanged
+    assert pb_inf.parts[u1_idx][:4] == pb_base.parts[u1_idx][:4]
+    # R1 is movable -> expanded by 0.4 mm on all 4 sides
+    bx0, by0, bx1, by1 = pb_base.parts[r1_idx][:4]
+    ix0, iy0, ix1, iy1 = pb_inf.parts[r1_idx][:4]
+    assert math.isclose(ix0, bx0 - 0.4, abs_tol=1e-6)
+    assert math.isclose(iy0, by0 - 0.4, abs_tol=1e-6)
+    assert math.isclose(ix1, bx1 + 0.4, abs_tol=1e-6)
+    assert math.isclose(iy1, by1 + 0.4, abs_tol=1e-6)
+
+
+def test_congestion_refinement_preserves_legality_and_non_regression():
+    """F5 guarded cell inflation loop records metrics and never introduces legality violations."""
+    b = _board()
+    intent = infer.draft(b)
+    placed, info = solve(b, mode="sa_only", seed=0, intent=intent, floorplan=True)
+    assert info["strict_violations"] == 0
+    assert info["pathfinder"]["available"] is True
+    assert info["congestion_refinement"] is not None
+    assert info["congestion_refinement"]["available"] is True
+    assert info["congestion_refinement"]["final"]["total_overflow"] <= info["congestion_refinement"]["initial"]["total_overflow"] + 1e-6
+    assert not legality.check(placed, fixed=set(info["fixed"]))
+
 
 
 

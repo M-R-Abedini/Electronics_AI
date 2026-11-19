@@ -113,8 +113,10 @@ def _quarter(rotation: float) -> int:
 
 
 def build(board: Board, *, side_policy: str = "expert", intent: dict | None = None,
-          floorplan: bool = False, reserve: bool | None = None) -> PlaceProblem:
-    fixed = fixed_parts(board)
+          floorplan: bool = False, reserve: bool | None = None,
+          inflations: dict[str, float] | None = None,
+          fixed_override: dict[str, str] | None = None) -> PlaceProblem:
+    fixed = dict(fixed_override) if fixed_override is not None else fixed_parts(board)
     sides = assign_sides(board, side_policy, fixed)
     planes = zone_nets(board) | {n for r in board.stackup.roles for n in r.nets}
     pb = PlaceProblem(board=board, refs=[fp.ref for fp in board.footprints], fixed=fixed, sides=sides)
@@ -129,6 +131,10 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         x0, y0, x1, y1 = boxes[fp.ref]
         if fp.ref in pb.exits:
             x0, y0, x1, y1 = escape.reserved_box((x0, y0, x1, y1), pb.exits[fp.ref])
+        if not is_fixed and inflations:
+            pad_inf = float(inflations.get(fp.ref, 0.0))
+            if pad_inf > 0.0:
+                x0, y0, x1, y1 = x0 - pad_inf, y0 - pad_inf, x1 + pad_inf, y1 + pad_inf
         if flip:  # the footprint frame mirrors in y when the part changes side (KiCad left-right flip)
             y0, y1 = -y1, -y0
         on_grid = abs(fp.rotation / 90.0 - round(fp.rotation / 90.0)) < 1e-6
@@ -207,7 +213,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
     if floorplan:
         sheets_map: dict[str, list[Footprint]] = {}
         for fp in board.footprints:
-            if fp.sheet:
+            if fp.sheet and fp.sheet != "/":
                 sheets_map.setdefault(fp.sheet, []).append(fp)
         if len(sheets_map) >= 2:
             # Build a quick first-pin index per footprint so sheet cohesion uses valid pin indices

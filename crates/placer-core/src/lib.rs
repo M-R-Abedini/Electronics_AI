@@ -9,6 +9,7 @@
 
 pub mod geom;
 pub mod grid_route;
+pub mod pathfinder;
 pub mod problem;
 pub mod sa;
 
@@ -241,11 +242,54 @@ fn grid_astar(nx: usize, ny: usize, nl: usize, blocked: &[u8], via_ok: &[u8], st
     Ok(grid_route::astar(&grid, &starts, &goals, &costs, max_expansions))
 }
 
+/// Coarse-grid PathFinder congestion estimator (plan F5).
+#[pyfunction]
+#[pyo3(signature = (nx, ny, cap_h, cap_v, nets, iterations=8, history_inc=0.5, present_fac=1.0, present_mult=1.5))]
+#[allow(clippy::too_many_arguments)]
+fn pathfinder_estimate<'py>(
+    py: Python<'py>,
+    nx: usize,
+    ny: usize,
+    cap_h: Vec<f64>,
+    cap_v: Vec<f64>,
+    nets: Vec<Vec<(usize, usize)>>,
+    iterations: usize,
+    history_inc: f64,
+    present_fac: f64,
+    present_mult: f64,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let res = pathfinder::estimate(
+        nx,
+        ny,
+        &cap_h,
+        &cap_v,
+        &nets,
+        iterations,
+        history_inc,
+        present_fac,
+        present_mult,
+    )
+    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("total_overflow", res.total_overflow)?;
+    dict.set_item("max_overflow", res.max_overflow)?;
+    dict.set_item("overflowed_edges", res.overflowed_edges)?;
+    dict.set_item("peak_utilization", res.peak_utilization)?;
+    dict.set_item("congestion_energy", res.congestion_energy)?;
+    dict.set_item("total_wirelength_cells", res.total_wirelength_cells)?;
+    dict.set_item("routed_connections", res.routed_connections)?;
+    dict.set_item("iterations_run", res.iterations_run)?;
+    dict.set_item("cell_overflow", res.cell_overflow)?;
+    dict.set_item("congestion_score", res.congestion_score)?;
+    Ok(dict)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(hpwl, m)?)?;
     m.add_function(wrap_pyfunction!(grid_astar, m)?)?;
+    m.add_function(wrap_pyfunction!(pathfinder_estimate, m)?)?;
     m.add_class::<PlacementProblem>()?;
     Ok(())
 }

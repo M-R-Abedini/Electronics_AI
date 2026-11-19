@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from shapely import STRtree
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
+from shapely.prepared import prep
 
 from ..geometry import transform
 from ..ir import Board, Footprint
@@ -33,20 +34,46 @@ class Finding:
     waived_by: str | None = None  # project rule that accepts it on the input board (expert exception)
 
 
+_CY_POLY_CACHE: dict[tuple, Polygon | None] = {}
+_BOARD_POLY_CACHE: dict[tuple, Polygon | None] = {}
+_INNER_OUTLINE_CACHE: dict[tuple, tuple] = {}
+_COPPER_OBS_CACHE: dict[tuple, list[tuple[str, str, Polygon]]] = {}
+_TH_INFO_CACHE: dict[tuple, tuple] = {}
+_SIDE_PAD_CACHE: dict[tuple, tuple] = {}
+
+
 def courtyard_polygon(fp: Footprint) -> Polygon | None:
+    first_pt = fp.courtyard.polygons[0][0] if fp.courtyard.polygons and fp.courtyard.polygons[0] else None
+    pose = (fp.ref, fp.lib_id, fp.x, fp.y, fp.rotation, len(fp.courtyard.polygons), first_pt)
+    if pose in _CY_POLY_CACHE:
+        return _CY_POLY_CACHE[pose]
     polys = [Polygon(p) for p in fp.courtyard_world() if len(p) >= 3]
     polys = [p if p.is_valid else p.buffer(0) for p in polys]
     polys = [p for p in polys if not p.is_empty]
     if not polys:
-        return None
-    shape = unary_union(polys)
-    return shape if shape.geom_type == "Polygon" else shape.convex_hull
+        res = None
+    else:
+        shape = unary_union(polys)
+        res = shape if shape.geom_type == "Polygon" else shape.convex_hull
+    if len(_CY_POLY_CACHE) > 8192:
+        _CY_POLY_CACHE.clear()
+    _CY_POLY_CACHE[pose] = res
+    return res
 
 
 def board_polygon(board: Board) -> Polygon | None:
+    first_pt = board.outline[0].outer[0] if board.outline and board.outline[0].outer else None
+    key = (board.name, len(board.outline), board.board_area_mm2, first_pt,
+           sum(len(o.outer) + len(o.holes) for o in board.outline))
+    if key in _BOARD_POLY_CACHE:
+        return _BOARD_POLY_CACHE[key]
     parts = [Polygon(o.outer, o.holes) for o in board.outline if len(o.outer) >= 3]
     parts = [p if p.is_valid else p.buffer(0) for p in parts]
-    return unary_union(parts) if parts else None
+    res = unary_union(parts) if parts else None
+    if len(_BOARD_POLY_CACHE) > 256:
+        _BOARD_POLY_CACHE.clear()
+    _BOARD_POLY_CACHE[key] = res
+    return res
 
 
 def copper_layer_map(board: Board | None) -> dict[str, str]:
@@ -181,6 +208,16 @@ def board_copper_obstacles(board: Board, fixed: set[str] | None = None) -> list[
     """Free-standing board copper graphics (outside fixed footprints) per side."""
     fixed_set = board.fixed_refs() if fixed is None else set(fixed)
     existing = {fp.ref for fp in board.footprints}
+    obs_sig = tuple((o.get("uuid"), o.get("kind"), o.get("copper"), o.get("layer"), o.get("net"),
+                     len(o.get("outlines", ()))) for o in board.obstacles)
+    cache_key = (
+        board.name,
+        obs_sig,
+        tuple((r, board.fp(r).x, board.fp(r).y, board.fp(r).rotation, board.fp(r).side)
+              for r in sorted(fixed_set) if r in existing),
+    )
+    if cache_key in _COPPER_OBS_CACHE:
+        return _COPPER_OBS_CACHE[cache_key]
     fixed_shapes = [
         shape for r in fixed_set
         if r in existing and (shape := courtyard_polygon(board.fp(r))) is not None
@@ -207,6 +244,9 @@ def board_copper_obstacles(board: Board, fixed: set[str] | None = None) -> list[
         for comp in _iter_polygons(free_poly):
             if comp.area > OVERLAP_TOL_MM2:
                 out.append((uid, copper_side, comp))
+    if len(_COPPER_OBS_CACHE) > 256:
+        _COPPER_OBS_CACHE.clear()
+    _COPPER_OBS_CACHE[cache_key] = out
     return out
 
 
@@ -231,6 +271,7 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
     clearance = board.rules.get("courtyard_clearance", 0.0) if clearance_mm is None else clearance_mm
     fixed = board.fixed_refs() if fixed is None else set(fixed)
     shapes = {fp.ref: courtyard_polygon(fp) for fp in board.footprints}
+    shape_bounds = {r: s.bounds for r, s in shapes.items() if s is not None}
     sev = board.drc_severities.get("courtyards_overlap")
     overlap_waiver = f"project rule courtyards_overlap={sev}" if sev else None
     findings: list[Finding] = []
@@ -255,19 +296,34 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
     outline = board_polygon(board)
     edge_clear = float(board.rules.get("copper_edge_clearance") or 0.0)
     if outline is not None:
-        inner_outline = outline.buffer(-edge_clear + 1e-4) if edge_clear > 0 else None
+        inner_key = (id(outline), edge_clear)
+        if inner_key in _INNER_OUTLINE_CACHE:
+            outline_prep, inner_outline, inner_prep = _INNER_OUTLINE_CACHE[inner_key]
+        else:
+            outline_prep = prep(outline)
+            inner_outline = outline.buffer(-edge_clear + 1e-4) if edge_clear > 0 else None
+            inner_prep = prep(inner_outline) if inner_outline is not None and not inner_outline.is_empty else None
+            if len(_INNER_OUTLINE_CACHE) > 256:
+                _INNER_OUTLINE_CACHE.clear()
+            _INNER_OUTLINE_CACHE[inner_key] = (outline_prep, inner_outline, inner_prep)
         for fp in board.footprints:
             shape = shapes[fp.ref]
-            if shape is not None:
+            if shape is not None and not outline_prep.covers(shape):
                 outside = shape.difference(outline).area
                 if outside > OUTSIDE_TOL_MM2:
                     findings.append(Finding("outside_outline", [fp.ref], round(outside, 4), fp.side,
                                             detail=f"{outside / shape.area:.0%} of the courtyard", fixed=fp.ref in fixed))
                     continue
-            if inner_outline is not None and fp.ref not in fixed:
+            if inner_outline is not None and fp.ref not in fixed and (
+                shape is None or inner_prep is None or not inner_prep.covers(shape)
+            ):
                 for pad in fp.pads:
                     p_poly = _pad_polygon(fp, pad, margin_mm=0.0)
-                    if p_poly is not None and (out_area := p_poly.difference(inner_outline).area) > 1e-4:
+                    if (
+                        p_poly is not None
+                        and (inner_prep is None or not inner_prep.covers(p_poly))
+                        and (out_area := p_poly.difference(inner_outline).area) > 1e-4
+                    ):
                         findings.append(Finding(
                             "outside_outline", [fp.ref], round(max(out_area, 0.0101), 4), fp.side,
                             detail=f"copper_edge_clearance:{pad.number}", fixed=False,
@@ -300,35 +356,44 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
 
         pad_unions: dict[str, object] = {}
         raw_pad_unions: dict[str, object] = {}
-        side_pad_polys: dict[str, list[tuple[object, float]]] = {}
+        raw_pad_bounds: dict[str, tuple[float, float, float, float] | None] = {}
+        side_pad_polys: dict[str, list[tuple[object, tuple[float, float, float, float], float]]] = {}
         th_pairs: dict[tuple[str, str], tuple[float, str, str]] = {}
         check_pth_cy = board.drc_severities.get("pth_inside_courtyard") != "ignore"
+        rules_sig = (board.name, base_clear, default_nc_clear, tuple(sorted(nc_clear.items())), check_pth_cy)
         for fp1 in board.footprints:
-            th_poly = thru_hole_pad_polygon(fp1, margin_mm=0.05, layer_map=names)
-            th_raw = thru_hole_pad_polygon(fp1, margin_mm=0.0, layer_map=names)
-            opp_pads1: list[tuple[set[str], object, float]] = []
-            for p1 in fp1.pads:
-                if has_opposite_side_copper(fp1, p1, names) and (poly1 := _pad_polygon(fp1, p1, margin_mm=0.0)) is not None:
-                    req1 = max(0.15, base_clear, net_clear.get(p1.net, default_nc_clear) if p1.net else default_nc_clear)
-                    opp_pads1.append((pad_copper_sides(fp1, p1, names), poly1, req1))
-            drill_polys1 = []
-            if check_pth_cy:
+            pose1 = (fp1.ref, fp1.lib_id, fp1.x, fp1.y, fp1.rotation, fp1.side, len(fp1.pads), rules_sig)
+            if pose1 in _TH_INFO_CACHE:
+                th_poly, th_raw, opp_pads1, drill_union1, dbx1, tbx = _TH_INFO_CACHE[pose1]
+            else:
+                th_poly = thru_hole_pad_polygon(fp1, margin_mm=0.05, layer_map=names)
+                th_raw = thru_hole_pad_polygon(fp1, margin_mm=0.0, layer_map=names)
+                opp_pads1 = []
                 for p1 in fp1.pads:
-                    if p1.kind == "thru_hole" and p1.drill:
-                        d_val = min(p1.drill) if isinstance(p1.drill, (tuple, list)) else float(p1.drill)
-                        if d_val > 0:
-                            px, py = fp1.pad_world(p1)
-                            drill_polys1.append(Point(px, py).buffer(d_val / 2.0))
-            drill_union1 = unary_union(drill_polys1) if drill_polys1 else None
-            dbx1 = drill_union1.bounds if drill_union1 is not None and not drill_union1.is_empty else None
+                    if has_opposite_side_copper(fp1, p1, names) and (poly1 := _pad_polygon(fp1, p1, margin_mm=0.0)) is not None:
+                        req1 = max(0.15, base_clear, net_clear.get(p1.net, default_nc_clear) if p1.net else default_nc_clear)
+                        opp_pads1.append((pad_copper_sides(fp1, p1, names), poly1, poly1.bounds, req1))
+                drill_polys1 = []
+                if check_pth_cy:
+                    for p1 in fp1.pads:
+                        if p1.kind == "thru_hole" and p1.drill:
+                            d_val = min(p1.drill) if isinstance(p1.drill, (tuple, list)) else float(p1.drill)
+                            if d_val > 0:
+                                px, py = fp1.pad_world(p1)
+                                drill_polys1.append(Point(px, py).buffer(d_val / 2.0))
+                drill_union1 = unary_union(drill_polys1) if drill_polys1 else None
+                dbx1 = drill_union1.bounds if drill_union1 is not None and not drill_union1.is_empty else None
+                tbx = th_raw.bounds if th_raw is not None else None
+                if len(_TH_INFO_CACHE) > 8192:
+                    _TH_INFO_CACHE.clear()
+                _TH_INFO_CACHE[pose1] = (th_poly, th_raw, opp_pads1, drill_union1, dbx1, tbx)
             if (th_poly is None or th_raw is None) and drill_union1 is None:
                 continue
-            tbx = th_raw.bounds if th_raw is not None else None
             for fp2 in board.footprints:
                 if fp1.ref == fp2.ref or fp1.side == fp2.side or (fp1.ref in fixed and fp2.ref in fixed):
                     continue
                 if check_pth_cy and drill_union1 is not None and dbx1 is not None and (cy2 := shapes[fp2.ref]) is not None:
-                    cbx2 = cy2.bounds
+                    cbx2 = shape_bounds[fp2.ref]
                     if not (cbx2[0] > dbx1[2] or cbx2[2] < dbx1[0] or cbx2[1] > dbx1[3] or cbx2[3] < dbx1[1]):
                         d_area = drill_union1.intersection(cy2).area
                         if d_area > 1e-4:
@@ -340,29 +405,37 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                 if th_poly is None or th_raw is None or tbx is None:
                     continue
                 if fp2.ref not in pad_unions:
-                    pads2_buf = []
-                    pads2_raw = []
-                    pads2_info = []
-                    for pad in fp2.pads:
-                        if fp2.side not in pad_copper_sides(fp2, pad, names):
-                            continue
-                        if (pb := _pad_polygon(fp2, pad, margin_mm=0.10)) is not None:
-                            pads2_buf.append(pb)
-                        if (pr := _pad_polygon(fp2, pad, margin_mm=0.0)) is not None:
-                            pads2_raw.append(pr)
-                            req2 = max(
-                                0.15, base_clear,
-                                net_clear.get(pad.net, default_nc_clear) if pad.net else default_nc_clear,
-                            )
-                            pads2_info.append((pr, req2))
-                    pad_unions[fp2.ref] = unary_union(pads2_buf) if pads2_buf else None
-                    raw_pad_unions[fp2.ref] = unary_union(pads2_raw) if pads2_raw else None
-                    side_pad_polys[fp2.ref] = pads2_info
+                    pose2 = (fp2.ref, fp2.lib_id, fp2.x, fp2.y, fp2.rotation, fp2.side, len(fp2.pads), rules_sig)
+                    if pose2 in _SIDE_PAD_CACHE:
+                        pad_unions[fp2.ref], raw_pad_unions[fp2.ref], raw_pad_bounds[fp2.ref], side_pad_polys[fp2.ref] = _SIDE_PAD_CACHE[pose2]
+                    else:
+                        pads2_buf = []
+                        pads2_raw = []
+                        pads2_info = []
+                        for pad in fp2.pads:
+                            if fp2.side not in pad_copper_sides(fp2, pad, names):
+                                continue
+                            if (pb := _pad_polygon(fp2, pad, margin_mm=0.10)) is not None:
+                                pads2_buf.append(pb)
+                            if (pr := _pad_polygon(fp2, pad, margin_mm=0.0)) is not None:
+                                pads2_raw.append(pr)
+                                req2 = max(
+                                    0.15, base_clear,
+                                    net_clear.get(pad.net, default_nc_clear) if pad.net else default_nc_clear,
+                                )
+                                pads2_info.append((pr, pr.bounds, req2))
+                        u_buf = unary_union(pads2_buf) if pads2_buf else None
+                        u_raw = unary_union(pads2_raw) if pads2_raw else None
+                        u_bounds = u_raw.bounds if u_raw is not None and not u_raw.is_empty else None
+                        if len(_SIDE_PAD_CACHE) > 8192:
+                            _SIDE_PAD_CACHE.clear()
+                        _SIDE_PAD_CACHE[pose2] = (u_buf, u_raw, u_bounds, pads2_info)
+                        pad_unions[fp2.ref], raw_pad_unions[fp2.ref], raw_pad_bounds[fp2.ref], side_pad_polys[fp2.ref] = u_buf, u_raw, u_bounds, pads2_info
                 u2 = pad_unions[fp2.ref]
                 u2_raw = raw_pad_unions[fp2.ref]
-                if u2 is None or u2.is_empty or u2_raw is None or u2_raw.is_empty:
+                ubx = raw_pad_bounds[fp2.ref]
+                if u2 is None or ubx is None or u2_raw is None:
                     continue
-                ubx = u2_raw.bounds
                 if (
                     ubx[0] > tbx[2] + max_board_clear
                     or ubx[2] < tbx[0] - max_board_clear
@@ -372,13 +445,11 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                     continue
                 area = u2.intersection(th_poly).area
                 if area <= OVERLAP_TOL_MM2 and th_raw.distance(u2_raw) < max_board_clear - 1e-4:
-                    for opp_sides1, poly1, req1 in opp_pads1:
+                    for opp_sides1, poly1, b1, req1 in opp_pads1:
                         if fp2.side not in opp_sides1:
                             continue
-                        b1 = poly1.bounds
-                        for poly2, req2 in side_pad_polys[fp2.ref]:
+                        for poly2, b2, req2 in side_pad_polys[fp2.ref]:
                             req = max(req1, req2)
-                            b2 = poly2.bounds
                             if b2[0] > b1[2] + req or b2[2] < b1[0] - req or b2[1] > b1[3] + req or b2[3] < b1[1] - req:
                                 continue
                             d = poly1.distance(poly2)
@@ -405,7 +476,7 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                 continue
             if fp.side != copper_side and not any(has_opposite_side_copper(fp, pad, names) for pad in fp.pads):
                 continue
-            sbx = shape.bounds
+            sbx = shape_bounds[fp.ref]
             if sbx[0] > obx[2] or sbx[2] < obx[0] or sbx[1] > obx[3] or sbx[3] < obx[1]:
                 continue
             area = shape.intersection(obs_poly).area

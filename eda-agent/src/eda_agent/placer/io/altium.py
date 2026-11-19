@@ -16,6 +16,7 @@ from ...fileio.altium_sch import (
     read_schematic_wires,
 )
 from ...fileio.netlist_solver import pin_electrical_end, solve_nets
+from ...units import MM_PER_MIL
 from ..geometry import rotate
 from ..ir import (
     Board,
@@ -28,7 +29,6 @@ from ..ir import (
     StackupLayer,
     derive,
 )
-from ...units import MM_PER_MIL
 from ..toolchain import sha256_file
 
 PIN_TYPES = ("input", "bidirectional", "output", "open_collector", "passive",

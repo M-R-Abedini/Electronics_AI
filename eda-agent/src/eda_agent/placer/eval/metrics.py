@@ -157,18 +157,24 @@ def critical_loops_intent(board: Board, intent: dict, *, resolved_by_ref: dict[s
 
     fps = {fp.ref: fp for fp in board.footprints}
     parts = intent.get("parts", {})
+    pads_cache: dict[str, list[tuple]] = {}
+
+    def fp_pads(ref: str) -> list[tuple]:
+        res = pads_cache.get(ref)
+        if res is None:
+            fp = fps.get(ref)
+            res = pads_cache[ref] = list(fp.pads_world()) if fp else []
+        return res
 
     def pins(ref: str, net: str, numbers: set[str]) -> list[tuple]:
-        fp = fps.get(ref)
-        return [(pad, pos) for pad, pos in fp.pads_world()
-                if pad.net == net and (not numbers or pad.number in numbers)] if fp else []
+        return [(pad, pos) for pad, pos in fp_pads(ref)
+                if pad.net == net and (not numbers or pad.number in numbers)]
 
     def nearest(ref: str, targets: list[str], net: str | None, numbers: set[str]) -> tuple | None:
-        fp = fps.get(ref)
-        if fp is None:
+        if ref not in fps:
             return None
         best = None
-        for pad, (x, y) in fp.pads_world():
+        for pad, (x, y) in fp_pads(ref):
             if not pad.net or is_ground_net(pad.net) or (net and pad.net != net):
                 continue
             for t in targets:

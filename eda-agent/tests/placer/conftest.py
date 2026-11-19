@@ -25,9 +25,11 @@ def pytest_runtest_makereport(item, call):
             report.longrepr = (
                 str(item.path),
                 None,
-                "Skipped: placer_core Rust extension not built; "
-                "run `maturin develop --release` in crates/placer-core "
-                "(CI builds it before the suite).",
+                (
+                    "Skipped: placer_core Rust extension not built; "
+                    "run `maturin develop --release` in crates/placer-core "
+                    "(CI builds it before the suite)."
+                ),
             )
             return report
         # The pinned external toolchains (KiCad 10, Freerouting/Java) are

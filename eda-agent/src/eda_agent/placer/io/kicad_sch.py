@@ -162,7 +162,7 @@ def enrich(board: Board, board_path: Path) -> dict:
         by_sheet: dict[str, list[tuple[float, float]]] = {}
         for sch_str, x, y in pts:
             by_sheet.setdefault(Path(sch_str).stem, []).append((x, y))
-        sheet_name = sorted(by_sheet)[0]
+        sheet_name = min(by_sheet)
         coords = by_sheet[sheet_name]
         if not fp.sheet:
             fp.sheet = sheet_name

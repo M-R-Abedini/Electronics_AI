@@ -396,7 +396,7 @@ def _pad_dict(board, pad, ox, oy, rot):
     lx, ly = _to_local(pcbnew.ToMM(p.x), pcbnew.ToMM(p.y), ox, oy, rot)
     size, drill = pad.GetSize(), pad.GetDrillSize()
     sx, sy = size.x, size.y
-    shape_layer = pcbnew.F_Cu
+    shape_layer = pcbnew.F_Cu if pad.IsOnLayer(pcbnew.F_Cu) else pcbnew.B_Cu
     for lyr in (pcbnew.F_Cu, pcbnew.B_Cu):
         if pad.IsOnLayer(lyr):
             try:
@@ -411,6 +411,17 @@ def _pad_dict(board, pad, ox, oy, rot):
         prot = _norm(pad.GetFPRelativeOrientation().AsDegrees())
     else:
         prot = _norm(pad.GetOrientationDegrees() - rot)
+    if hasattr(pcbnew, "PAD_SHAPE_CUSTOM") and pad.GetShape() == pcbnew.PAD_SHAPE_CUSTOM:
+        px_mm, py_mm = pcbnew.ToMM(p.x), pcbnew.ToMM(p.y)
+        pad_deg = _norm(rot + prot)
+        max_error = board.GetDesignSettings().m_MaxError
+        pts = [pt for ring in _world_outlines(_item_poly(pad, shape_layer, max_error)) for pt in ring]
+        if pts:
+            local_pts = [_to_local(x, y, px_mm, py_mm, pad_deg) for x, y in pts]
+            us = [u for u, _ in local_pts]
+            vs = [v for _, v in local_pts]
+            sx = max(sx, pcbnew.FromMM(max(us) - min(us)))
+            sy = max(sy, pcbnew.FromMM(max(vs) - min(vs)))
     return {
         "number": pad.GetNumber(),
         "net": pad.GetNetname() or None,

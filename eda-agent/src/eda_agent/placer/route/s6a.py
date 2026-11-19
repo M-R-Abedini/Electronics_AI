@@ -40,7 +40,13 @@ from ..toolchain import RUNTIME_DIR, sha256_file
 from . import drc
 from .check import route_check
 from .copper import pad_layers
-from .fanout import plan_cross_link, plan_power_link, plan_power_tap
+from .fanout import (
+    plan_cross_link,
+    plan_power_link,
+    plan_power_tap,
+    reserve_power_escapes,
+    traps_pads,
+)
 from .freerouting import RouterConfig
 from .pairs import route_pair, rule_for
 
@@ -61,13 +67,19 @@ def _segments(tracks: list[dict]) -> list[dict]:
     return out
 
 
-def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict], retry_coarse: bool = False) -> dict:
+def _pair_pad_xy(board: Board, pos: str, neg: str) -> list[tuple[float, float]]:
+    return [fp.pad_world(p) for fp in board.footprints for p in fp.pads if p.net in (pos, neg)]
+
+
+def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict],
+                 reservations: list[dict] | None = None, retry_coarse: bool = False) -> dict:
     """Route the pairs one after another; a pair that fails goes to the front of the next round.
 
     Measured on StickHub: 6 of 8 pairs route alone but only 4 in netlist order, because an earlier pair
     takes the channel a later one needs.  Rounds stop when a round routes everything, repeats an order
     already tried, or after ``PAIR_ROUNDS``.  The best round wins (most pairs, then least copper).
     """
+    reservations = list(reservations or [])
     order, seen, best, rounds = list(pairs), set(), None, []
     for _ in range(PAIR_ROUNDS):
         if tuple(order) in seen:
@@ -75,8 +87,25 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict
         seen.add(tuple(order))
         copper, rows, failed, ok = [], {}, [], []
         for pos, neg in order:
-            res = route_pair(board, pos, neg, rule_for(board, pos), fixed=fixed + copper, retry_coarse=retry_coarse)
-            rows[(pos, neg)] = res.summary()
+            rule = rule_for(board, pos)
+            relaxed = None
+            res = route_pair(board, pos, neg, rule, fixed=fixed + copper + reservations, retry_coarse=retry_coarse)
+            if res.failed is not None and reservations:
+                pts = _pair_pad_xy(board, pos, neg)
+                far = [r for r in reservations
+                       if not pts or min(math.dist(r["origin"], q) for q in pts) > 1.5]
+                if len(far) < len(reservations):
+                    res = route_pair(board, pos, neg, rule, fixed=fixed + copper + far, retry_coarse=retry_coarse)
+                    if res.failed is None:
+                        relaxed = "near_terminal"
+                if res.failed is not None:
+                    res = route_pair(board, pos, neg, rule, fixed=fixed + copper, retry_coarse=retry_coarse)
+                    if res.failed is None:
+                        relaxed = "all"
+            summary = res.summary()
+            if relaxed is not None:
+                summary["reservations_relaxed"] = relaxed
+            rows[(pos, neg)] = summary
             if res.failed is None:
                 copper += res.tracks + res.vias
                 ok.append((pos, neg))
@@ -100,6 +129,24 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
     fixed: list[dict] = []
     report: dict = {"pairs": [], "links": [], "taps": []}
     layers = [cl.canonical for cl in board.copper_layers]
+    # A tap is locked copper with a through via. It is made only for a net that owns an inner plane,
+    # which the router does not route on. On a board without one both outer layers carry signals
+    # and a locked via blocks them on both (StickHub: one such via cost 56 connections).
+    planes = plane_zone_layers(board)
+    pours: dict[str, set[str]] = {}
+    for zone in board.zones:
+        if zone.get("net") and zone.get("outline") and zone.get("uuid") in planes:
+            pours.setdefault(zone["net"], set()).update(planes[zone["uuid"]])
+
+    reservations: list[dict] = []
+    if pairs and not power_first:
+        reservations = reserve_power_escapes(
+            board, intent, active_roles=ACTIVE_ROLES, pours=pours, tap_max_mm=TAP_MAX_MM,
+        )
+        report["power_escape_reservations"] = {
+            "count": len(reservations),
+            "pads": sorted({r["owner"] for r in reservations}),
+        }
 
     def route_confirmed_pairs() -> None:
         confirmed = []
@@ -112,21 +159,16 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 report["pairs"].append({"pair": [pos, neg], "routed": False, "failed": "pair not confirmed by the intent"})
             else:
                 confirmed.append((pos, neg))
-        best = _route_pairs(board, confirmed, fixed=fixed, retry_coarse=retry_coarse)
+        if not power_first and reservations:
+            best = _route_pairs(board, confirmed, fixed=fixed, reservations=reservations, retry_coarse=retry_coarse)
+        else:
+            best = _route_pairs(board, confirmed, fixed=fixed, retry_coarse=retry_coarse)
         report["pairs"].extend(best["rows"])
         report["pair_rounds"] = best["rounds"]
         fixed.extend(best["copper"])
 
     if pairs and not power_first:
         route_confirmed_pairs()
-    # A tap is locked copper with a through via. It is made only for a net that owns an inner plane,
-    # which the router does not route on. On a board without one both outer layers carry signals
-    # and a locked via blocks them on both (StickHub: one such via cost 56 connections).
-    planes = plane_zone_layers(board)
-    pours: dict[str, set[str]] = {}
-    for zone in board.zones:
-        if zone.get("net") and zone.get("outline") and zone.get("uuid") in planes:
-            pours.setdefault(zone["net"], set()).update(planes[zone["uuid"]])
     plane_links: list[tuple[dict, tuple[str, str], tuple[str, str]]] = []  # row, cap pad, IC pin: both tap the pour
     linked: set[tuple[str, str]] = set()  # (cap, net) joined to its pin by surface copper
     if links:
@@ -154,6 +196,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 # opposite sides of a board with a plane on the net: each end taps the plane (decided after the taps)
                 plane_links.append((row, (ref, str(src.number)), (target["ref"], str(cands[0].number))))
                 continue
+            trapped_reason = None
             for pin in cands[:2]:  # nearest pin first; the next one if that pin is boxed in
                 if same_side:
                     got = plan_power_link(board, (chip, pin), (cap, src), fixed=fixed, max_length_mm=LINK_MAX_MM)
@@ -161,15 +204,22 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                     got = plan_cross_link(board, (chip, pin), (cap, src), fixed=fixed, max_length_mm=LINK_MAX_MM,
                                           tap_max_mm=TAP_MAX_MM)
                 if got is not None:
+                    cand_tracks = [c for c in got if "points" in c]
+                    cand_vias = [c for c in got if "points" not in c]
+                    closed = traps_pads(board, fixed, cand_tracks, cand_vias, {net})
+                    if closed:
+                        trapped_reason = f"closes in {closed[0]}"
+                        continue
                     fixed += got
                     linked.add((ref, net))
                     row.update(routed=True, pin=str(pin.number), kind="surface" if same_side else "one_via",
-                               length_mm=round(sum(math.dist(*t["points"]) for t in _segments(
-                                   [c for c in got if "points" in c])), 3))
+                               length_mm=round(sum(math.dist(*t["points"]) for t in _segments(cand_tracks)), 3))
                     break
             if not row["routed"]:
-                row["failed"] = ("no pin within reach on the cap's layer" if same_side
-                                 else f"no via site joins the two sides within {LINK_MAX_MM} mm")
+                row["failed"] = trapped_reason or (
+                    "no pin within reach on the cap's layer" if same_side
+                    else f"no via site joins the two sides within {LINK_MAX_MM} mm"
+                )
     tap_items: list[tuple[dict, dict, dict]] = []
     if taps:
         by_canon = {cl.name: cl.canonical for cl in board.copper_layers}
@@ -189,6 +239,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 row = {"ref": ref, "pad": str(pad.number), "net": pad.net, "routed": False}
                 if kind == "decap":
                     row["kind"] = "decap"
+                trapped_reason = None
                 for layer in targets:
                     share = [v for v in tap_vias if users[id(v)] < MAX_PADS_PER_VIA]
                     got = plan_power_tap(board, fp, pad, layer, fixed=fixed, max_length_mm=TAP_MAX_MM,
@@ -196,6 +247,10 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                     if got:
                         track, via = got
                         shared = id(via) in users
+                        closed = traps_pads(board, fixed, [track], [] if shared else [via], {pad.net})
+                        if closed:
+                            trapped_reason = f"closes in {closed[0]}"
+                            continue
                         fixed += [track] if shared else [track, via]
                         if not shared:
                             tap_vias.append(via)
@@ -206,7 +261,9 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                                                        itertools.pairwise(track["points"])), 3))
                         break
                 if not row["routed"]:
-                    row["failed"] = f"no via site within {TAP_MAX_MM} mm" if targets else "pour only on the pad's own layer"
+                    row["failed"] = trapped_reason or (
+                        f"no via site within {TAP_MAX_MM} mm" if targets else "pour only on the pad's own layer"
+                    )
                 report["taps"].append(row)
     settle_plane_links(report, plane_links)
     if pairs and power_first:

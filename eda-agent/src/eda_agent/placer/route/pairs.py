@@ -243,11 +243,24 @@ def obstacles(board: Board, win: Window, rule: PairRule, extra: list[dict], *, s
             g = Point(item["x"], item["y"]).buffer(item["diameter"] / 2 + rule.clearance + MARGIN_MM)
             for geoms in per.values():
                 geoms.append(g)
+    pad_nets = {f"{fp.ref}-{p.number}": p.net for fp in board.footprints for p in fp.pads}
     for row in board.obstacles:
         layer = row["copper"]
-        if layer in per and not row["overlapping_pads"] and not row.get("net"):
-            # the router sees these as keepouts and keeps its clearance from them
-            per[layer].extend(Polygon(ring).buffer(rule.clearance + MARGIN_MM) for ring in row["outlines"] if len(ring) >= 3)
+        if layer not in per or row.get("net"):
+            continue
+        if row["overlapping_pads"] and (
+            row.get("kind") != "copper_graphic"
+            or any(pad_nets.get(name) in skip_pad_nets for name in row["overlapping_pads"])
+        ):
+            continue
+        # Mask apertures only forbid copper overlapping the opening (solder_mask_bridge);
+        # copper graphics already carry grown_mm from pcbnew.
+        if row.get("kind") == "mask_aperture":
+            pad_buf = MARGIN_MM
+        else:
+            grown = float(row.get("grown_mm") or 0.0)
+            pad_buf = max(0.0, rule.clearance - grown) + MARGIN_MM
+        per[layer].extend(Polygon(ring).buffer(pad_buf) for ring in row["outlines"] if len(ring) >= 3)
     edge = None
     if board.outline:
         inside = unary_union([Polygon(o.outer, o.holes) for o in board.outline]).buffer(-rule.clearance - MARGIN_MM)

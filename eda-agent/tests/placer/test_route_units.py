@@ -598,3 +598,79 @@ def test_tap_finds_a_plane_whose_layer_has_an_eda_name():
                   nets=[Net("GND", "Default", 1)], netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
                   zones=[{"net": "GND", "layers": ["Mid-Layer 1"], "outline": [outline]}], rules={"hole_to_hole": 0.25})
     assert plan_power_tap(board, chip, chip.pads[0], "In1.Cu", fixed=[]) is not None
+
+
+def test_dsn_restore_wiring_precision_fixes_6g_truncation_above_100mm():
+    # Rotated IC pad at (147.629891, 101.516555) mm -> (147629.9, -101516.6) um
+    # and half-tenth cap pad at (146.61845005, 94.78266405) mm -> (146618.5, -94782.7) um
+    u1 = Footprint("U1", "", "", 147.629891, 101.516555, 0, side="B",
+                   pads=[Pad("31", "+3.3V", (0.0, 0.0), (0.3, 1.4), layers=("B.Cu",))])
+    c9 = Footprint("C9", "", "", 146.61845005, 94.78266405, 0, side="B",
+                   pads=[Pad("1", "+3.3V", (0.0, 0.0), (0.5, 0.5), layers=("B.Cu",))])
+    board = Board(
+        "rot", [u1, c9],
+        routing={
+            "tracks": [
+                {"net": "+3.3V", "layer": "B.Cu", "width": 0.15, "locked": True,
+                 "points": [[147.629891, 101.516555], [146.95, 102.216555], [146.61845, 94.782664]]},
+            ],
+            "vias": [
+                {"net": "/U1D+", "x": 152.75, "y": 101.0933, "diameter": 0.5, "drill": 0.3, "locked": True},
+            ],
+        },
+    )
+    sample = (
+        "(pcb b.dsn\n"
+        "  (resolution um 10)\n"
+        "  (unit um)\n"
+        "  (wiring\n"
+        "    (wire (path B.Cu 150  147630 -101517\n"
+        "          146950 -102217  146618 -94782.7)(net +3.3V)(type fix))\n"
+        "    (via \"Via[0-1]_500:300_um\"  152750 -101093 (net /U1D+)(type fix))\n"
+        "  )\n"
+        ")\n"
+    )
+    fixed = dsn.restore_wiring_precision(sample, board)
+    assert "147629.9 -101516.6" in fixed
+    assert "146950 -102216.6" in fixed
+    assert "146618.5 -94782.7" in fixed
+    assert "152750 -101093.3" in fixed
+
+
+def test_reserve_power_escapes_creates_non_copper_reservations():
+    from eda_agent.placer.route.fanout import reserve_power_escapes
+
+    outline = [(0, 0), (20, 0), (20, 20), (0, 20)]
+    chip = Footprint("U1", "", "", 10, 10, 0, side="F",
+                     pads=[Pad("1", "+3V3", (-1.0, 0.0), (0.6, 0.3), layers=("F.Cu",)),
+                           Pad("2", "SIG", (1.0, 0.0), (0.6, 0.3), layers=("F.Cu",))])
+    board = Board("res", [chip], outline=[Outline(outline)],
+                  copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+                  nets=[Net("+3V3", "Default", 2), Net("SIG", "Default", 2)],
+                  netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                  rules={"hole_to_hole": 0.25})
+    intent = {
+        "parts": {"U1": {"role": {"value": "ic", "confidence": 1.0}}},
+        "nets": {"+3V3": {"rail": {"value": "power"}}, "SIG": {"rail": {"value": "signal"}}},
+    }
+    res = reserve_power_escapes(board, intent, active_roles=("ic",), pours={})
+    assert len(res) == 1
+    assert res[0]["kind"] == "reserve" and res[0]["owner"] == "U1-1" and res[0]["net"] == "+3V3"
+
+
+def test_traps_pads_detects_closed_in_pad_for_power_link():
+    from eda_agent.placer.route.fanout import traps_pads
+
+    outline = [(0, 0), (12, 0), (12, 12), (0, 12)]
+    trapped = Footprint("R1", "", "", 6, 6, 0, side="F",
+                        pads=[Pad("1", "SIG", (0, 0), (0.4, 0.4), layers=("F.Cu",))])
+    board = Board("trap", [trapped], outline=[Outline(outline)],
+                  copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+                  nets=[Net("SIG", "Default", 2), Net("+3V3", "Default", 2)],
+                  netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.3)],
+                  rules={"min_track_width": 0.15, "min_clearance": 0.15, "min_via_diameter": 0.5, "min_through_drill": 0.3})
+    ring_f = {"net": "+3V3", "layer": "F.Cu", "width": 0.3,
+              "points": [(5.0, 5.0), (7.0, 5.0), (7.0, 7.0), (5.0, 7.0), (5.0, 5.0)]}
+    ring_b = {"net": "+3V3", "layer": "B.Cu", "width": 0.3,
+              "points": [(5.0, 5.0), (7.0, 5.0), (7.0, 7.0), (5.0, 7.0), (5.0, 5.0)]}
+    assert traps_pads(board, [ring_b], [ring_f], [], {"+3V3"}) == ["R1-1"]
