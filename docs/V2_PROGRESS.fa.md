@@ -9,13 +9,13 @@
 | alpha.1 | F0c | تمام شد (commit `3cd7f9c`، tag `v2.0.0-alpha.1`) | 2026-11-08 | ۴ از ۴ |
 | alpha.2 | F1 | تمام شد (tag `v2.0.0-alpha.2`)؛ Cypress کنار گذاشته شد (پلن F1: جزو گیت نیست)؛ بودجهٔ router: ۳۰ دقیقه؛ hash برد مرجع تو هنوز ثبت نشده | 2026-11-08 | ۵ از ۵ |
 | alpha.3 | F2 | تمام شد (`9f57200` و commit بستن فاز)؛ tag alpha.3 بعد از F3 | 2026-11-09 | ۴ از ۴ |
-| alpha.3 | F3 | در حال اجرا | — | ۴ از ۸ جفت StickHub با tapهای تغذیهٔ مرجع، بدون خطای DRC یا اتصال باز روی آن چهار جفت؛ گیت برد کامل باز است |
-| alpha.4 | F4 | — | — | — |
-| alpha.4 | F5 | — | — | — |
-| beta.1 | F6 | — | — | — |
-| rc.1 | F7 | — | — | — |
-| rc.1 | F8 | — | — | — |
-| 2.0.0 | F9 | — | — | — |
+| alpha.3 | F3 | تمام شد (commit `3356755`) | 2026-11-19 | ۸/۹ جفت (۸۸٫۹٪ ≥ ۸۵٪)، ۰ DRC روی S6a، رفع برش `%.6g` DSN و `reserve_power_escapes` (جدول مرجع Polar باز برای تکمیل اختیاری) |
+| alpha.4 | F4 | تمام شد (commit `3356755`) | 2026-11-19 | ۷/۷ برد `dev`+`validation` با ۰ نقض سخت، `<= 300s` و `Pro Score >= 80` |
+| alpha.4 | F5 | تمام شد (commit `3356755`) | 2026-11-19 | تخمین‌گر Rust PathFinder (`Spearman +0.907 ≥ 0.70`) + حلقهٔ محافظت‌شدهٔ Cell Inflation + `diagnose`/`refine` |
+| beta.1 | F6 | تمام شد (commits `4f1b8e5`، `df8d9f4`) | 2026-11-19 | هر ۹ قاعدهٔ لینت الکتریکی فدول/هارتلی روی مس واقعی + ۰ DRC روتر/غیرروتر و پاک‌سازی عمومی سیلک‌اسکرین (`pic_programmer` ۳۱→۰) |
+| rc.1 | F7 | تمام شد (commit `df9bfe7`) | 2026-11-19 | `placer__apply` و `placer__revert` تراکنشی (`< 50 ms < 2 s`)، پیش‌فرض `P8`، `altium_plan` سطح ۱ |
+| rc.1 | F8 | تمام شد | 2026-11-19 | Skill «طراح حرفه‌ای PCB» (`skills/electronics-ai-pro-pcb-designer`) + آزمون قرارداد ۱۱ ابزار و ۳۷ نقش + برابری ۳ کلاینت روی ۲ برد واقعی (`ecc83`، `pic_programmer`) |
+| 2.0.0 | F9 | در نوبت بعدی | — | `doctor` + بسته‌بندی `ElectronicsAI-Setup.exe` + بازکردن یک‌بارهٔ مجموعهٔ مهرشدهٔ `test` |
 
 ## گزارش فازها
 
@@ -486,6 +486,25 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
   - بستهٔ سطح مونتاژ ۱ `altium_plan`: ۵۴ عملیات جابه‌جایی، ۰ flip، برگشت **`16.0 ms`**.
   - آزمون‌ها: `cargo test` (`۱۶/۱۶`)، `cargo clippy -D warnings` (۰)، `ruff check` (۰)، `pytest` (**۱۳۷ پاس، ۱۲ skip**).
 - **موارد باز باقی‌مانده برای `2.0.0`:** فاز `F8` (Skill «طراح حرفه‌ای» + آزمون برابری کلاینت‌ها)، فاز `F9` (`doctor` و installer + آزمون مجموعهٔ مهرشده `test`)، و الگوریتم escape خودکار BGA روی بردهای بسیار متراکم.
+
+### F8 · Skill «طراح حرفه‌ای PCB» و آزمون برابری کلاینت‌ها (`skills/electronics-ai-pro-pcb-designer`) (2026-11-19)
+
+- **ساختار بستهٔ Skill (`skills/electronics-ai-pro-pcb-designer/`):**
+  - `SKILL.md`: گردش کار اجرایی ۶ مرحله‌ای (`inspect` → `intent_draft`/`intent_validate` → `score` → `place_board`/`place_cluster` → `gallery`/`diagnose`/`refine` → `apply`/`revert`) با قوانین الزام‌آور `P1–P8`، مرز سخت LLM در برابر موتور قطعی (ممنوعیت تولید مختصات `(x, y)` و ممنوعیت اعلام «DRC-clean» بدون شاهد `run_report.json`) و گیت‌های تصمیم‌گیری (`stackup_policy == "needs_decision"` و سطوح مونتاژ ۱/۲/۳).
+  - `references/feranec-floorplan-methodology.md`: متدولوژی چیدمان بیرونی-به-درونی و بحرانی-اول رابرت فرانتس (FEDEVEL)، اولویت‌های مکانیکی و جریان سیگنال/توان، حلقه‌های بحرانی (مبدل سوئیچینگ، دیکاپلینگ، کریستال، ESD، جفت‌های تفاضلی)، سطوح مونتاژ، نظم DFA و چک‌لیست بازبینی بصری گالری.
+  - `references/hartley-return-path-si-pi.md`: فیزیک مسیر بازگشت جریان ریک هارتلی و اریک بوگاتین، مقایسهٔ شفاف استک‌آپ‌های ۲، ۴ (Dual-GND در برابر Split-Reference) و ۶+ لایه، و نگاشت یک‌به‌یک همهٔ ۹ قاعدهٔ لینت `F6` (`eval/lint.py`) و آستانه‌های آن‌ها.
+  - `references/intent-and-tool-contract.md`: قرارداد دقیق `design_intent.json` نسخهٔ ۱ (هر ۳۷ نقش قطعه، ۶ کلاس نت، ۳ نوع ریل، ۶ نوع جفت تفاضلی، ۸ نوع بلوک، ۷ منبع و قواعد سخت/نرم/نامطمئن) به همراه امضای دقیق هر ۱۱ ابزار MCP `placer__*` و جداسازی کامل از فضای نام V1 (`layout__*`).
+  - `references/review-and-signoff-checklist.md`: جدول گیت‌های سخت، تفسیر `Pro Score` (`35/25/15/15/10`) و `PathFinder`، قواعد مقایسهٔ `C1`/`C2`/`C3` و `inconclusive`، ماتریس علت‌یابی خطاها، ادعاهای ممنوع و قالب گزارش تحویل مهندسی.
+- **اصلاحات هم‌ترازی کشف‌شده در بازبینی حلقه‌ای (`F8`):**
+  1. در `eda_agent/placer/eval/lint.py`: افزودن `"sensitive_analog"` به `_FAST_NET_CLASSES` برای انطباق کامل با مقدار اسکیمای `design_intent.schema.json` (`SENSITIVE_ANALOG`).
+  2. در `eda_agent/placer/mcp.py`: افزودن خلاصهٔ مستقیم `pathfinder` (`total_overflow`، `max_overflow`، `routability_cost`، `hotspot_count`) و `lint` (`score`، `critical_errors`، `warnings`، `has_copper`) به خروجی JSON ابزارهای `placer__place_board` و `placer__score` تا هر سه کلاینت بدون نیاز به خوانش جداگانهٔ `run_report.json` به شواهد F5 و F6 دسترسی مستقیم داشته باشند.
+  3. حذف هرگونه ارجاع به پارامتر غیرموجود در امضای MCP و قفل‌کردن آن در آزمون خودکار `test_skill_f8.py`.
+- **نتایج آزمون‌های خودکار و برابری ۳ کلاینت (`Claude Code`، `Codex`، `Antigravity`):**
+  - آزمون واحد و قرارداد اسکیما/ابزار (`eda-agent/tests/placer/test_skill_f8.py` — ۳ تست جدید، جمع **۱۴۰ تست `pytest` پاس، ۱۲ skip**، `cargo test` ۱۶/۱۶، `cargo clippy -- -D warnings` ۰، `ruff check` ۰): تطابق ۱۰۰٪ همهٔ ۱۱ ابزار `placer__*`، پارامترهای مستندشده، و هر ۳۷ نقش و تمام enumهای `design_intent.schema.json`.
+  - **آزمون برابری سرتاسری ۳ کلاینت روی ۲ برد واقعی (ایزوله در `.runtime/f8_forward_parity/`):**
+    - `ecc83`: `intent_sha256 = f31972b275a5…` یکسان، مختصات و زوایای همهٔ قطعات در هر ۳ کلاینت **بیت‌به‌بیت یکسان**، `Pro Score = 90.89`، `apply(dry_run)` + `apply(copy)` + `revert` در **`16.0 ms`**.
+    - `pic_programmer`: `intent_sha256 = ef7bd8b814a8…` یکسان، مختصات و زوایای همهٔ قطعات در هر ۳ کلاینت **بیت‌به‌بیت یکسان**، `Pro Score = 81.99`، `apply(dry_run)` + `apply(copy)` + `revert` در **`16.0 ms`**.
+- **موارد باز باقی‌مانده برای `2.0.0`:** فاز `F9` (`doctor` و بسته‌بندی `ElectronicsAI-Setup.exe` + بازکردن یک‌بارهٔ مجموعهٔ مهرشدهٔ `test`).
 
 
 

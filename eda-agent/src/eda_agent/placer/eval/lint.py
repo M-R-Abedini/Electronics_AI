@@ -49,7 +49,9 @@ ESD_CONN_HIGH_MM = 10.0
 MIN_ISLAND_AREA_MM2 = 1.0
 ESCAPE_PERFORATION_LIMIT = 0.40
 
-_FAST_NET_CLASSES = frozenset({"clock", "high_speed", "diff_pair", "rf", "sw_node", "crystal", "analog_sensitive"})
+_FAST_NET_CLASSES = frozenset({
+    "clock", "high_speed", "diff_pair", "rf", "sw_node", "crystal", "analog_sensitive", "sensitive_analog",
+})
 
 
 def _layer_maps(board: Board) -> tuple[dict[str, str], dict[str, int], list[str]]:

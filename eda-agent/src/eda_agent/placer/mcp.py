@@ -228,6 +228,8 @@ class PlacerService:
                           seed=seed, route=route, intent_path=intent_path, floorplan=floorplan,
                           schematic_path=schematic_path)
         info = rep["stages"]["place"]
+        pf = rep["metrics"].get("pathfinder")
+        lint = rep["metrics"].get("lint")
         return {
             "passed": rep["passed"],
             "gates": [{k: g[k] for k in ("name", "value", "op", "threshold", "passed")} for g in rep["gates"]],
@@ -240,6 +242,11 @@ class PlacerService:
             "metrics": {"hpwl_signal_mm": rep["metrics"]["hpwl"]["signal_mm"],
                         "crossings": rep["metrics"]["crossings"]["count"],
                         "fanout_escape": {k: info["floorplan"]["escape"][k] for k in ("total", "clear")},
+                        "pathfinder": ({k: pf[k] for k in ("total_overflow", "max_overflow", "routability_cost")}
+                                       | {"hotspot_count": len(pf.get("hotspots", ()))}
+                                       if pf else None),
+                        "lint": ({k: lint[k] for k in ("score", "critical_errors", "warnings", "has_copper")}
+                                 if lint else None),
                         "route": ({k: rep["metrics"]["route"][k] for k in ("coverage", "unrouted", "vias",
                                                                             "track_length_mm", "router_stop")}
                                   if rep["metrics"]["route"] else None)},
@@ -337,6 +344,8 @@ class PlacerService:
             unknowns=board.unknowns, warnings=board.warnings,
         )
         path = run_report.write(rep, run_dir / "run_report.json")
+        pf = evaluation["metrics"].get("pathfinder")
+        lint = evaluation["metrics"].get("lint")
         return {
             "passed": rep["passed"],
             "gates": [{k: g[k] for k in ("name", "value", "op", "threshold", "passed")} for g in gates],
@@ -345,6 +354,11 @@ class PlacerService:
             "metrics": {"hpwl_signal_mm": evaluation["metrics"]["hpwl"]["signal_mm"],
                         "crossings": evaluation["metrics"]["crossings"],
                         "rudy": evaluation["metrics"]["rudy"],
+                        "pathfinder": ({k: pf[k] for k in ("total_overflow", "max_overflow", "routability_cost")}
+                                       | {"hotspot_count": len(pf.get("hotspots", ()))}
+                                       if pf else None),
+                        "lint": ({k: lint[k] for k in ("score", "critical_errors", "warnings", "has_copper")}
+                                 if lint else None),
                         "critical_loops": evaluation["metrics"]["critical_loops"],
                         "regularity": evaluation["metrics"]["regularity"]},
             "pro_score": evaluation["pro_score"],
