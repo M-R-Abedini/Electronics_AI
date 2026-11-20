@@ -279,11 +279,30 @@ def _starved_thermal_pad_uuids(other_violations: list[dict]) -> list[str]:
     return sorted(uuids)
 
 
+def _mask_bridge_aperture_uuids(other_violations: list[dict]) -> list[str]:
+    """Extract deterministic sorted .Mask graphic UUIDs from new zone-bridging solder_mask_bridge DRC violations."""
+    uuids: set[str] = set()
+    for v in other_violations:
+        if v.get("type") != "solder_mask_bridge":
+            continue
+        items = v.get("items", [])
+        has_zone = any("zone" in (i.get("description") or "").lower() for i in items)
+        if not has_zone:
+            continue
+        for item in items:
+            uid = item.get("uuid")
+            desc = item.get("description") or ""
+            if uid and (".Mask" in desc) and ("pad" not in desc.lower()):
+                uuids.add(str(uid))
+    return sorted(uuids)
+
+
 def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 config: RouterConfig | None = None, neck_width_um: float | None = None,
                 obstacle_keepouts: bool = True, reference_board: str | Path | None = None,
                 router_timeout_s: int | None = None, intent: dict | None = None,
-                sanitize_drc: bool = True, heal_thermals: bool = True) -> dict:
+                sanitize_drc: bool = True, heal_thermals: bool = True,
+                heal_mask_bridges: bool = True) -> dict:
     """Route-check ``board``.  ``reference_board`` is the original input whose DRC
     findings count as pre-existing (architecture 8.1.3); it defaults to ``board``
     itself, which is right only when ``board`` *is* the designer's file.  A
@@ -431,6 +450,31 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 break
         t = tick("thermal_heal", t)
 
+    initial_mask_bridges = _mask_bridge_aperture_uuids(attribution.new_other)
+    mask_heal_info = {
+        "applied": False,
+        "initial_bridges": len(initial_mask_bridges),
+        "added_rule_areas": 0,
+        "final_bridges": len(initial_mask_bridges),
+    }
+    if heal_mask_bridges and initial_mask_bridges:
+        spec_file = work / "mask_heal_spec.json"
+        heal_out = work / "mask_heal_out.json"
+        spec_file.write_text(json.dumps({"mask_uuids": initial_mask_bridges}, indent=1), encoding="utf-8")
+        run_helper("heal_mask_bridges", out_board, spec_file, out_board, heal_out)
+        healed = _load(heal_out)
+        if healed.get("added_count", 0) > 0:
+            mask_heal_info["applied"] = True
+            mask_heal_info["added_rule_areas"] = int(healed["added_count"])
+            finished["unrouted_tracks_only"] = healed["unrouted_tracks_only"]
+            finished["unrouted_final"] = healed["unrouted_final"]
+            finished["routing"] = healed["routing"]
+            finished["pads"] = healed["pads"]
+            result = drc.run(out_board, work / "drc_mask_healed.json")
+            attribution = drc.attribute(result, reference)
+            mask_heal_info["final_bridges"] = len(_mask_bridge_aperture_uuids(attribution.new_other))
+        t = tick("mask_bridge_heal", t)
+
     unrouted_items = [u for u in result.get("unconnected_items", [])]
     failures = classify_unrouted(unrouted_items, finished, routed.stop_reason)
     plane_nets = {z["net"] for z in ir.zones if z.get("uuid") in keep and z.get("net")}
@@ -488,6 +532,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "finish": {k: v for k, v in finished.items() if k != "pads"},
             "sanitize": sanitize_info,
             "thermal_heal": thermal_heal_info,
+            "mask_bridge_heal": mask_heal_info,
             "drc": attribution.counts(),
         },
         metrics=metrics,

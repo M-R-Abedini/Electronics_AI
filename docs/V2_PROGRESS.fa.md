@@ -589,6 +589,21 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
     - `cynthion`: **`starved_thermal: 3 → 0`** در هر سه اجرا (`0/0` DRC).
 - **آزمون‌ها و شواهد:** `cargo test` (`۱۶/۱۶`)، `cargo clippy -- -D warnings` (۰)، `ruff check` (۰)، `test_no_em_dashes.py` (`۳/۳`)، `pytest tests/ -q` (**۸۶۹ پاس**)، `eda-agent/tests/placer/` (**۱۶۰ پاس، ۱۲ skip** شامل ۶ تست جدید `test_bga_eco_thermal.py`)، `smoke_stdio.py` و `smoke_suite_stdio.py --toolset full` (`535` ابزار)، و `pixi run doctor` (`GREEN`). شواهد سبک: [bga_eco_thermal_summary.json](benchmarks/bga_eco_thermal_summary.json).
 
+### پسافاز `F9` · رفع عمومی `mask_bridge` روی `openair_max` + بنچمارک A/B `BGA Escape` روی `urti_mainboard` و اصلاح تشخیص ماژول LGA (2026-11-20)
+
+- **رفع عمومی `solder_mask_bridge` روی دهانه‌های آزاد `.Mask` (`kicad_pcbnew_helper.py::heal_mask_bridges` + `route/check.py`):**
+  - علت ریشه‌ای ۲ خطای آخر جدول گام ۱ روی `openair_max`: دو نوار آزاد `F.Mask` روی زون‌های محلی `SW1` (اولویت ۳۶) و `SW2` (اولویت ۳۷)؛ پس از برداشتن ترک‌های مرجع و refill، زون پس‌زمینهٔ `PGND` (اولویت ۴) به نیمهٔ بالایی همان دهانه‌های `F.Mask` نشت می‌کرد و پل ماسک می‌ساخت.
+  - راه‌حل ۱۰۰٪ عمومی: برای هر `solder_mask_bridge` جدید شامل گرافیک `.Mask` و `Zone`، یک ناحیهٔ قانونی بومی KiCad (`SetIsRuleArea(True)` و `SetDoNotAllowZoneFills(True)`) دقیقاً روی بخش خارج از زون غالبِ دهانهٔ ماسک اضافه می‌شود و زون‌ها refill می‌شوند (بدون حذف هیچ ترک، ویا، پد یا زون).
+  - **شاهد زنده روی `openair_max`:** `solder_mask_bridge: 2 → 0`، **`drc_router_caused = 0` و `drc_new_non_routing = 0`** با حفظ دقیق اتصال (`unrouted_final = 150` ثابت).
+- **بنچمارک A/B هم‌شرایط (۳۰۰s) روی بردهای دارای BGA خارج از `test`:**
+  - **`urti_mainboard` (`validation_ext`، ۶ لایه، `U1` ۲۵۶ توپ `0.8 mm` + `U8` ۲۴ توپ `1.0 mm`، مخرج `1247`):**
+    - خط پایه (`baseline`): پوشش `36.57%` (`791` روت‌نشده)، `0` ویا، `0/0` DRC.
+    - حالت پیش‌فرض `S6a` (`plane_bga`): پوشش **`40.50%` (`+3.93%`، کاهش `49` اتصال روت‌نشده به `742`)**، **`83` ویا** (`74` فرار BGA + `13` لینک decap)، **`0/0` DRC**.
+    - حالت کامل (`full_bga` / `--bga-signals`): پوشش **`40.26%` (`+3.69%`، کاهش `46` اتصال روت‌نشده به `745`)**، **`169` ویا** (`160` فرار BGA + `13` لینک decap)، **`0/0` DRC**.
+  - **اصلاح تشخیص `detect_bga` روی ماژول LGA (`royalblue54L_feather`):** بنچمارک A/B نشان داد قطعهٔ `U1` (`BM15x-LGA-45`) با پدهای مستطیلی کشیده `(0.4 × 0.5 mm)` به‌اشتباه BGA تشخیص داده شده بود (`71.88% → 65.62%`). با افزودن قید هندسی تقارن پد توپ (`abs(w - h) <= 0.12 * max(w, h)` روی حداقل ۸۵٪ پدها)، دقت و بازیابی تشخیص BGA روی هر ۱۷ برد کورپوس به **۱۰۰٪** رسید (`royalblue54L_feather: []`؛ `urti_mainboard`، `cynthion` و `vme_wren`: ۱۰۰٪ دقیق).
+- شواهد سبک: [bga_validation_ab_summary.json](benchmarks/bga_validation_ab_summary.json).
+
+
 
 
 
