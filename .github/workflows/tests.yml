@@ -129,9 +129,19 @@ jobs:
         # This suite is the long pole (about 10 minutes serial on
         # Windows). Four workers with loadfile distribution parallelize
         # across test files while keeping each file's tests together on
-        # one worker, so file-local shared state stays ordered.
-        run: python -m pytest tests -q -n 4 --dist loadfile
+        # one worker, so file-local shared state stays ordered. On
+        # failure the failed test names are republished as an annotation
+        # so they are visible without downloading the full log.
+        shell: bash
         working-directory: eda-agent
+        run: |
+          set +e
+          python -m pytest tests -q -n 4 --dist loadfile 2>&1 | tee /tmp/eda-pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=EDA failed tests::$(grep -E '^FAILED' /tmp/eda-pytest.log | head -c 3000 | tr '\n' ' ')"
+          fi
+          exit $status
   package:
     strategy:
       fail-fast: false
