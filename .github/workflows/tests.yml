@@ -126,7 +126,11 @@ jobs:
       - name: Lint and build native script bundle used by regression tests
         run: python eda-agent/scripts/altium/build.py
       - name: Complete EDA regression suite
-        run: python -m pytest tests -q
+        # This suite is the long pole (about 10 minutes serial on
+        # Windows). Four workers with loadfile distribution parallelize
+        # across test files while keeping each file's tests together on
+        # one worker, so file-local shared state stays ordered.
+        run: python -m pytest tests -q -n 4 --dist loadfile
         working-directory: eda-agent
   package:
     strategy:
