@@ -33,6 +33,20 @@ from eda_agent.placer.route.bga_escape import detect_bga, plan_bga_escapes
 from eda_agent.placer.route.check import _starved_thermal_pad_uuids
 from eda_agent.placer.route.copper import pad_polygon
 
+# The two integration tests below read the real StickHub corpus board,
+# which lives in the KiCad 10 demo tree on developer machines and does
+# not exist on CI runners. Follow the gating precedent of
+# test_route_check_stickhub.py: skip when the board file is absent
+# instead of failing with FileNotFoundError. When the board is present
+# but the KiCad toolchain is not, the conftest hook already converts
+# ToolchainError into a skip.
+_STICKHUB_PATH = corpus.get("stickhub").path
+_requires_stickhub = pytest.mark.skipif(
+    not _STICKHUB_PATH.is_file(),
+    reason="StickHub corpus board unavailable (KiCad 10 demos not installed; "
+    "set ELECTRONICS_AI_KICAD to the KiCad install root)",
+)
+
 
 def _synthetic_bga_board(*, layers: int = 4, pitch: float = 0.8, grid_n: int = 6) -> Board:
     pads: list[Pad] = []
@@ -261,8 +275,9 @@ def test_starved_thermal_uuid_extraction() -> None:
     assert _starved_thermal_pad_uuids(violations) == ["pad-uuid-a", "pad-uuid-b"]
 
 
+@_requires_stickhub
 def test_safe_eco_place_cluster_preserves_outside_routing(tmp_path: Path) -> None:
-    src = corpus.get("stickhub").path
+    src = _STICKHUB_PATH
     orig = read_board(src)
     assert orig.routing_items > 100
 
@@ -292,8 +307,9 @@ def test_safe_eco_place_cluster_preserves_outside_routing(tmp_path: Path) -> Non
     assert attr.counts()["router_caused"] == 0
 
 
+@_requires_stickhub
 def test_heal_thermals_helper_modes(tmp_path: Path) -> None:
-    src = corpus.get("stickhub").path
+    src = _STICKHUB_PATH
     dst = tmp_path / src.name
     shutil.copyfile(src, dst)
     board = read_board(dst)
