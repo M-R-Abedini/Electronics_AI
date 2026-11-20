@@ -530,7 +530,7 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
     2. **تعارض قواعد سفارشی `.kicad_dru` با Freerouting 2.5.0:** روی `esp32_c6_devkit_lipo` حتی چیدمان متخصص هم **`16` خطای DRC از سهم روتر** گرفت (`clearance` و `solder_mask_bridge`).
     3. **تعامل پس از روت با زون‌ها و سیلک‌اسکرین روی footprintهای غیراستاندارد:** روی `interf_u` با وجود ۰ خطای روتر و پوشش ۹۹٪، `7` مورد `starved_thermal` (قطع شدن پل‌های حرارتی زون پس از عبور ترک‌ها) و `7` مورد سیلک‌اسکرین ایجاد شد.
     4. **تأثیر نبود `design_intent` تأییدشده در اجرای تمام‌خودکار:** در این بنچمارک هیچ پاسخ مهندسی/شماتیکی به پرسش‌های `intent_draft` داده نشد، که روی برد متراکم دولایهٔ RF (`esp32_c6_devkit_lipo`) فاصلهٔ چیدمان تا متخصص را باز کرد.
-- شواهد خام و گالری‌های هر ۴ برد در `.runtime/f9_sealed_eval/` ذخیره شده‌اند.
+- شواهد خام و گالری‌های هر ۴ برد در `.runtime/f9_sealed_eval/` و خلاصهٔ قابل راستی‌آزمایی در [f9_sealed_summary.json](benchmarks/f9_sealed_summary.json) ثبت شده‌اند.
 
 ### پسافاز `F9` · آزمایش کنترل‌شدهٔ `fanout=True` و اتصال خودکار و DRC-محافظت‌شدهٔ `S6a` به `place_board` (2026-11-19)
 
@@ -539,7 +539,7 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
   - `esp32_c6` (متخصص): پوشش از **۹۳٫۶٪** به ۹۰٫۲٪ افت کرد و DRC روتر از ۱۶ به **۲۰** (`track_width: 13`) رسید.
   - `neo6502kbd` (ما): پوشش از ۶۲٫۳٪ به ۶۴٫۵٪ (+۲٫۲٪) و ویاها از ۸۹ به ۱۴۲ رفت، اما DRC روتر از **۱** به **۲۰** (`track_width: 17`) پرید.
   - `cynthion` (متخصص / ما): ویاها از `0` به **`130` / `134`** و پوشش از ۵۵٫۸٪ / ۳۷٫۵٪ به **۶۳٫۵٪ / ۵۳٫۵٪** (+۷٫۷٪ و +۱۶٫۰٪) پرید، اما کل ۳۰۰ ثانیه صرف مرحلهٔ fanout شد (`p=0`) و **`192` / `199` خطای `track_width` DRC** تولید شد.
-  - **نتیجهٔ قطعی:** `fanout=False` در `freerouting.py` **باید پیش‌فرض بماند** (باگ `insertFanoutMicroNeckdown` در Freerouting 2.5.0 روی همهٔ ۵ برد فعال می‌شود)؛ در عین حال جهش `+16%` روی `cynthion` ثابت کرد که fanout/escape قطعی و بدون خطای DRC (از طریق `S6a` و سپس موتور escape برای BGA در 2.1+) مسیر صحیح معماری است. شواهد: `.runtime/f9_fanout_ab/summary.json`.
+  - **نتیجهٔ قطعی:** `fanout=False` در `freerouting.py` **باید پیش‌فرض بماند** (باگ `insertFanoutMicroNeckdown` در Freerouting 2.5.0 روی همهٔ ۵ برد فعال می‌شود)؛ در عین حال جهش `+16%` روی `cynthion` ثابت کرد که fanout/escape قطعی و بدون خطای DRC (از طریق `S6a` و سپس موتور escape برای BGA در 2.1+) مسیر صحیح معماری است. شواهد: [f9_fanout_ab_summary.json](benchmarks/f9_fanout_ab_summary.json).
 - **کار ۲ — اتصال خودکار و DRC-محافظت‌شدهٔ `S6a` به `place_board` (`route/s6a.py` + `place/pipeline.py` + `mcp.py` + `place/__main__.py` + Skill `F8`):**
   - افزودن `s6a.apply_to_board()` با مسیر سریع بدون سربار (`no_critical_copper`)، تأیید `filled_hits` پس از refill، هرس جراحی ۱-پاس برای هر نت خطاکار در DRC پیش از روت، و بازگشت خودکار به برد خام در صورت باقی‌ماندن هرگونه خطای `drc_touching_s6a`؛ همراه با `verify_taps_after_route` پس از import SES.
   - فعال‌سازی پیش‌فرض `s6a=True` در `place_board` (و پارامتر اختیاری `s6a` در `placer__place_board` و `--no-s6a` در CLI) همراه با همگام‌سازی Skill `F8` و ۴ تست واحد جدید (`test_s6a_pipeline.py`).
@@ -568,7 +568,7 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
 | `royalblue54L_feather` | `dev` ۸L | **۰** | ۸۹٫۳ | ۶۱٫۶٪ → **۶۴٫۷٪** (`44/64` tap) | ۳۱ → **۰** (`31→0`) | ۰ → **۰** | ۸۶٫۰ (۰) → **۸۷٫۳ (۰)** | ۶۹٫۲۷ → **۷۰٫۱۷** | **`True` (۰/۰ DRC!)** |
 | `openair_max` | `validation` ۴L | **۰** | ۱۵۳٫۴ | **۶۹٫۴٪** (`51/76` tap، `7/7` decap) | ۲۱ → **۰** (`21→0`) | ۲ (`mask_bridge`) | ۴۰٫۰ (۳) | **۷۰٫۵۱** | `False` (۲ `mask_bridge`) |
 
-- **نکتهٔ برجسته:** روی **هر ۵ برد از ۵ برد**، `drc_router_caused == 0`، `strict_violations == 0` و `s0_s5_seconds <= 300s` برقرار شد، و `neo6502kbd` و `royalblue54L_feather` برای اولین بار **`passed = True` با ۰/۰ خطای DRC** گرفتند. شواهد: `.runtime/step1_e2e_verify/`.
+- **نکتهٔ برجسته:** روی **هر ۵ برد از ۵ برد**، `drc_router_caused == 0`، `strict_violations == 0` و `s0_s5_seconds <= 300s` برقرار شد، و `neo6502kbd` و `royalblue54L_feather` برای اولین بار **`passed = True` با ۰/۰ خطای DRC** گرفتند. شواهد قابل راستی‌آزمایی: [step1_e2e_summary.json](benchmarks/step1_e2e_summary.json).
 
 
 

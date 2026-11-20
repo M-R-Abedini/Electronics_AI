@@ -263,3 +263,13 @@ def test_s6a_taps_include_critical_passives_on_four_layer_board():
     routed_taps = {(r["ref"], r["pad"]) for r in planned["report"]["taps"] if r["routed"]}
     assert ("C10", "2") in routed_taps
     assert ("D1", "2") in routed_taps
+
+
+def test_dru_rule_names_parses_custom_rules(tmp_path):
+    dru = tmp_path / "demo.kicad_dru"
+    dru.write_text(
+        '(version 1)\n(rule silk_text_over_via\n  (constraint silk_clearance (min 0.07mm)))\n'
+        '(rule "hv_spacing"\n  (constraint clearance (min 1.5mm)))\n',
+        encoding="utf-8",
+    )
+    assert route_check_mod._dru_rule_names(dru) == ["hv_spacing", "silk_text_over_via"]

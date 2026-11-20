@@ -1,0 +1,197 @@
+[
+  {
+    "board": "interf_u",
+    "coverage": 0.955,
+    "denominator": 200,
+    "drc_new_non_routing": 12,
+    "drc_router_caused": 0,
+    "intent_wire_keepouts": 2,
+    "lint_critical": 0,
+    "lint_score": 88.22,
+    "passed": false,
+    "pro_score": 71.93,
+    "router_stop": "converged",
+    "s0_s5_seconds": 27.06,
+    "s6a_applied": false,
+    "s6a_counts": {
+      "links": {
+        "planned": 0,
+        "routed": 0
+      },
+      "pairs": {
+        "planned": 0,
+        "routed": 0
+      },
+      "taps": {
+        "planned": 0,
+        "routed": 0
+      }
+    },
+    "sanitize": {
+      "final_router_drc": 0,
+      "initial_router_drc": 0,
+      "passes": 0,
+      "removed_tracks": 0,
+      "removed_vias": 0
+    },
+    "strict_violations": 0,
+    "unrouted": 9,
+    "vias": 42
+  },
+  {
+    "board": "esp32_c6_devkit_lipo",
+    "coverage": 0.8873,
+    "denominator": 204,
+    "drc_new_non_routing": 4,
+    "drc_router_caused": 0,
+    "intent_wire_keepouts": 1,
+    "lint_critical": 0,
+    "lint_score": 71.38,
+    "passed": false,
+    "pro_score": 79.02,
+    "router_stop": "timeout",
+    "s0_s5_seconds": 55.92,
+    "s6a_applied": true,
+    "s6a_counts": {
+      "links": {
+        "planned": 2,
+        "routed": 2
+      },
+      "pairs": {
+        "planned": 2,
+        "routed": 1
+      },
+      "taps": {
+        "planned": 0,
+        "routed": 0
+      }
+    },
+    "sanitize": {
+      "final_router_drc": 0,
+      "initial_router_drc": 0,
+      "passes": 0,
+      "removed_tracks": 0,
+      "removed_vias": 0
+    },
+    "strict_violations": 0,
+    "unrouted": 23,
+    "vias": 32
+  },
+  {
+    "board": "neo6502kbd",
+    "coverage": 0.6609,
+    "denominator": 404,
+    "drc_new_non_routing": 0,
+    "drc_router_caused": 0,
+    "intent_wire_keepouts": 0,
+    "lint_critical": 1,
+    "lint_score": 50.0,
+    "passed": true,
+    "pro_score": 59.77,
+    "router_stop": "timeout",
+    "s0_s5_seconds": 77.25,
+    "s6a_applied": true,
+    "s6a_counts": {
+      "links": {
+        "planned": 15,
+        "routed": 10
+      },
+      "pairs": {
+        "planned": 14,
+        "routed": 1
+      },
+      "taps": {
+        "planned": 78,
+        "routed": 56
+      }
+    },
+    "sanitize": {
+      "final_router_drc": 0,
+      "initial_router_drc": 0,
+      "passes": 0,
+      "removed_tracks": 0,
+      "removed_vias": 0
+    },
+    "strict_violations": 0,
+    "unrouted": 137,
+    "vias": 150
+  },
+  {
+    "board": "royalblue54L_feather",
+    "coverage": 0.6473,
+    "denominator": 224,
+    "drc_new_non_routing": 0,
+    "drc_router_caused": 0,
+    "intent_wire_keepouts": 1,
+    "lint_critical": 0,
+    "lint_score": 87.35,
+    "passed": true,
+    "pro_score": 70.17,
+    "router_stop": "timeout",
+    "s0_s5_seconds": 89.34,
+    "s6a_applied": true,
+    "s6a_counts": {
+      "links": {
+        "planned": 8,
+        "routed": 4
+      },
+      "pairs": {
+        "planned": 1,
+        "routed": 0
+      },
+      "taps": {
+        "planned": 64,
+        "routed": 44
+      }
+    },
+    "sanitize": {
+      "final_router_drc": 0,
+      "initial_router_drc": 31,
+      "passes": 1,
+      "removed_tracks": 31,
+      "removed_vias": 0
+    },
+    "strict_violations": 0,
+    "unrouted": 79,
+    "vias": 55
+  },
+  {
+    "board": "openair_max",
+    "coverage": 0.6939,
+    "denominator": 490,
+    "drc_new_non_routing": 2,
+    "drc_router_caused": 0,
+    "intent_wire_keepouts": 10,
+    "lint_critical": 3,
+    "lint_score": 40.0,
+    "passed": false,
+    "pro_score": 70.51,
+    "router_stop": "timeout",
+    "s0_s5_seconds": 153.38,
+    "s6a_applied": true,
+    "s6a_counts": {
+      "links": {
+        "planned": 7,
+        "routed": 7
+      },
+      "pairs": {
+        "planned": 3,
+        "routed": 0
+      },
+      "taps": {
+        "planned": 76,
+        "routed": 51
+      }
+    },
+    "sanitize": {
+      "final_router_drc": 0,
+      "initial_router_drc": 21,
+      "passes": 1,
+      "removed_tracks": 0,
+      "removed_vias": 21
+    },
+    "strict_violations": 0,
+    "unrouted": 150,
+    "vias": 47
+  }
+]

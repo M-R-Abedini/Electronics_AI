@@ -1,0 +1,313 @@
+[
+  {
+    "apply_history_files": 0,
+    "board": "interf_u",
+    "expert_c1": {
+      "cov": 1.0,
+      "denom": 200,
+      "drc_non_routing": 1,
+      "drc_router": 0,
+      "len_mm": 5001.81,
+      "lint": 34.51,
+      "lint_crit": 3,
+      "lint_warn": 0,
+      "passed": false,
+      "pro": 62.19,
+      "settled": true,
+      "stop": "timeout",
+      "unrouted": 0,
+      "vias": 37
+    },
+    "expert_orig_lint": {
+      "crit": 3,
+      "score": 30.9,
+      "warn": 0
+    },
+    "footprints": 25,
+    "layers": 2,
+    "ours": {
+      "cov": 0.99,
+      "denom": 200,
+      "drc_non_routing": 14,
+      "drc_router": 0,
+      "len_mm": 4872.483,
+      "lint": 23.97,
+      "lint_crit": 6,
+      "lint_findings": [
+        {
+          "detail": "unrelated signal /LED1 on F.Cu passes inside crystal X1 keepout",
+          "rule": "signal_under_crystal",
+          "severity": "critical"
+        },
+        {
+          "detail": "unrelated signal /PC-A4 on B.Cu passes inside crystal X1 keepout",
+          "rule": "signal_under_crystal",
+          "severity": "critical"
+        },
+        {
+          "detail": "unrelated signal /PC-A6 on B.Cu passes inside crystal X1 keepout",
+          "rule": "signal_under_crystal",
+          "severity": "critical"
+        },
+        {
+          "detail": "unrelated signal /PC-A6 on F.Cu passes inside crystal X1 keepout",
+          "rule": "signal_under_crystal",
+          "severity": "critical"
+        },
+        {
+          "detail": "unrelated signal /PC-A9 on B.Cu passes inside crystal X1 keepout",
+          "rule": "signal_under_crystal",
+          "severity": "critical"
+        },
+        {
+          "detail": "unrelated signal /PC-A9 on F.Cu passes inside crystal X1 keepout",
+          "rule": "signal_under_crystal",
+          "severity": "critical"
+        },
+        {
+          "detail": "unrelated power rail VCC on B.Cu passes inside crystal X1 keepout",
+          "rule": "signal_under_crystal",
+          "severity": "warning"
+        },
+        {
+          "detail": "fast/critical net Net-(U9-P{slash}A3) on F.Cu crosses a reference plane gap (1.65 mm uncovered, 76% segment covered)",
+          "rule": "two_layer_return_gap",
+          "severity": "warning"
+        }
+      ],
+      "lint_warn": 2,
+      "passed": false,
+      "pf_overflow": 0.0,
+      "pro": 65.0,
+      "s0_s5_s": 19.99,
+      "settled": true,
+      "stop": "converged",
+      "strict_violations": 0,
+      "unrouted": 2,
+      "variant": "rigid",
+      "vias": 71
+    },
+    "sides": {
+      "B": 0,
+      "F": 25
+    }
+  },
+  {
+    "apply_history_files": 0,
+    "board": "esp32_c6_devkit_lipo",
+    "expert_c1": {
+      "cov": 0.9363,
+      "denom": 204,
+      "drc_non_routing": 3,
+      "drc_router": 16,
+      "len_mm": 1113.725,
+      "lint": 70.51,
+      "lint_crit": 0,
+      "lint_warn": 6,
+      "passed": false,
+      "pro": 73.71,
+      "settled": true,
+      "stop": "converged",
+      "unrouted": 13,
+      "vias": 33
+    },
+    "expert_orig_lint": {
+      "crit": 0,
+      "score": 61.2,
+      "warn": 10
+    },
+    "footprints": 83,
+    "layers": 2,
+    "ours": {
+      "cov": 0.7353,
+      "denom": 204,
+      "drc_non_routing": 18,
+      "drc_router": 24,
+      "len_mm": 715.133,
+      "lint": 39.93,
+      "lint_crit": 4,
+      "lint_findings": [
+        {
+          "detail": "feedback net Net-(U2-FB) runs 0.05 mm from switching node Net-(U2-SW) (< 1.0 mm)",
+          "rule": "fb_near_sw",
+          "severity": "critical"
+        },
+        {
+          "detail": "feedback net Net-(U2-FB) on B.Cu passes beneath converter inductor L1",
+          "rule": "fb_under_inductor",
+          "severity": "critical"
+        },
+        {
+          "detail": "feedback net Net-(U2-FB) on B.Cu passes beneath converter inductor L1",
+          "rule": "fb_under_inductor",
+          "severity": "critical"
+        },
+        {
+          "detail": "feedback net Net-(U2-FB) on B.Cu passes beneath converter inductor L1",
+          "rule": "fb_under_inductor",
+          "severity": "critical"
+        }
+      ],
+      "lint_warn": 0,
+      "passed": false,
+      "pf_overflow": 0.0,
+      "pro": 71.84,
+      "s0_s5_s": 15.64,
+      "settled": true,
+      "stop": "converged",
+      "strict_violations": 0,
+      "unrouted": 54,
+      "variant": "reserve",
+      "vias": 9
+    },
+    "sides": {
+      "B": 57,
+      "F": 26
+    }
+  },
+  {
+    "apply_history_files": 0,
+    "board": "neo6502kbd",
+    "expert_c1": {
+      "cov": 0.6559,
+      "denom": 404,
+      "drc_non_routing": 0,
+      "drc_router": 4,
+      "len_mm": 2459.229,
+      "lint": 50.0,
+      "lint_crit": 1,
+      "lint_warn": 16,
+      "passed": false,
+      "pro": 43.74,
+      "settled": false,
+      "stop": "timeout",
+      "unrouted": 139,
+      "vias": 88
+    },
+    "expert_orig_lint": {
+      "crit": 0,
+      "score": 70.0,
+      "warn": 10
+    },
+    "footprints": 165,
+    "layers": 4,
+    "ours": {
+      "cov": 0.6228,
+      "denom": 403,
+      "drc_non_routing": 2,
+      "drc_router": 1,
+      "len_mm": 1963.825,
+      "lint": 70.0,
+      "lint_crit": 0,
+      "lint_findings": [
+        {
+          "detail": "feedback net Net-(U2-FB) runs 1.50 mm from switching node /SW1 (< 2.0 mm)",
+          "rule": "fb_near_sw",
+          "severity": "warning"
+        },
+        {
+          "detail": "signal via on /CK+ changes reference plane (+3.3V/GND) without a stitching capacitor within 3.0 mm",
+          "rule": "reference_change_stitch_cap",
+          "severity": "warning"
+        },
+        {
+          "detail": "signal via on /CK+ changes reference plane (+3.3V/GND) without a stitching capacitor within 3.0 mm",
+          "rule": "reference_change_stitch_cap",
+          "severity": "warning"
+        },
+        {
+          "detail": "signal via on /CK- changes reference plane (+3.3V/GND) without a stitching capacitor within 3.0 mm",
+          "rule": "reference_change_stitch_cap",
+          "severity": "warning"
+        },
+        {
+          "detail": "signal via on /CK- changes reference plane (+3.3V/GND) without a stitching capacitor within 3.0 mm",
+          "rule": "reference_change_stitch_cap",
+          "severity": "warning"
+        },
+        {
+          "detail": "signal via on /D0+ changes reference plane (+3.3V/GND) without a stitching capacitor within 3.0 mm",
+          "rule": "reference_change_stitch_cap",
+          "severity": "warning"
+        },
+        {
+          "detail": "signal via on /D0+ changes reference plane (+3.3V/GND) without a stitching capacitor within 3.0 mm",
+          "rule": "reference_change_stitch_cap",
+          "severity": "warning"
+        },
+        {
+          "detail": "signal via on /D0- changes reference plane (+3.3V/GND) without a stitching capacitor within 3.0 mm",
+          "rule": "reference_change_stitch_cap",
+          "severity": "warning"
+        }
+      ],
+      "lint_warn": 29,
+      "passed": false,
+      "pf_overflow": 13.766,
+      "pro": 67.54,
+      "s0_s5_s": 66.8,
+      "settled": false,
+      "stop": "timeout",
+      "strict_violations": 0,
+      "unrouted": 152,
+      "variant": "baseline",
+      "vias": 89
+    },
+    "sides": {
+      "B": 7,
+      "F": 158
+    }
+  },
+  {
+    "apply_history_files": 0,
+    "board": "cynthion",
+    "expert_c1": {
+      "cov": 0.5575,
+      "denom": 974,
+      "drc_non_routing": 1,
+      "drc_router": 0,
+      "len_mm": 1415.876,
+      "lint": 96.0,
+      "lint_crit": 0,
+      "lint_warn": 1,
+      "passed": false,
+      "pro": 65.89,
+      "settled": false,
+      "stop": "timeout",
+      "unrouted": 431,
+      "vias": 0
+    },
+    "expert_orig_lint": {
+      "crit": 0,
+      "score": 70.0,
+      "warn": 14
+    },
+    "footprints": 348,
+    "layers": 6,
+    "ours": {
+      "cov": 0.3747,
+      "denom": 974,
+      "drc_non_routing": 3,
+      "drc_router": 1,
+      "len_mm": 919.119,
+      "lint": 100.0,
+      "lint_crit": 0,
+      "lint_findings": [],
+      "lint_warn": 0,
+      "passed": false,
+      "pf_overflow": 0.327,
+      "pro": 62.78,
+      "s0_s5_s": 197.39,
+      "settled": false,
+      "stop": "timeout",
+      "strict_violations": 0,
+      "unrouted": 609,
+      "variant": "combined",
+      "vias": 0
+    },
+    "sides": {
+      "B": 253,
+      "F": 95
+    }
+  }
+]

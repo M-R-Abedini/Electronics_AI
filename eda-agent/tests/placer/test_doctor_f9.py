@@ -4,25 +4,45 @@
 from __future__ import annotations
 
 import json
+import sys
 import tomllib
 from pathlib import Path
 
-from eda_agent.placer import doctor
+from eda_agent.placer import doctor, toolchain
 
 
-def test_doctor_is_green_on_dev_environment():
+def test_doctor_checks_and_is_green_when_external_tools_installed():
     rep = doctor.run_doctor()
     assert rep["schema"] == "electronics-ai/doctor"
     assert rep["schema_version"] == 1
-    assert rep["ok"] is True, f"doctor failed: {json.dumps(rep['checks'], indent=2)}"
-    for key in ("platform", "python_packages", "rust_core", "kicad", "freerouting", "skill_and_mcp"):
+    # Pure Python, Rust native core, and Skill/MCP parity must ALWAYS pass on every CI runner (Windows & Ubuntu).
+    for key in ("python_packages", "rust_core", "skill_and_mcp"):
         assert rep["checks"][key]["ok"] is True, f"check {key} failed: {rep['checks'][key]}"
     assert rep["checks"]["skill_and_mcp"]["live_tool_count"] == 11
     assert rep["checks"]["skill_and_mcp"]["skill_tools_match"] is True
 
+    # On full local Windows dev machines with KiCad 10.0.8 + Freerouting 2.5.0 installed, doctor must be 100% GREEN.
+    has_kicad = False
+    has_fr = False
+    try:
+        toolchain.kicad()
+        has_kicad = True
+    except toolchain.ToolchainError:
+        pass
+    try:
+        toolchain.freerouting()
+        has_fr = True
+    except toolchain.ToolchainError:
+        pass
+    if sys.platform == "win32" and has_kicad and has_fr:
+        assert rep["ok"] is True, f"doctor failed on full dev environment: {json.dumps(rep['checks'], indent=2)}"
+        for key in ("platform", "kicad", "freerouting"):
+            assert rep["checks"][key]["ok"] is True, f"check {key} failed: {rep['checks'][key]}"
+
 
 def test_emit_client_manifests_for_claude_code_codex_and_antigravity(tmp_path: Path):
-    written = doctor.emit_client_manifests(tmp_path, python_exe=r"C:\Apps\ElectronicsAI\python\python.exe")
+    fake_py = str(tmp_path / "python_bin")
+    written = doctor.emit_client_manifests(tmp_path / "out", python_exe=fake_py)
     assert set(written) == {"claude-code", "codex", "antigravity", "readme"}
 
     claude = json.loads(Path(written["claude-code"]).read_text(encoding="utf-8"))

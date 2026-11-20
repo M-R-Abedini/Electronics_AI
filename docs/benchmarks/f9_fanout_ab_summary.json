@@ -1,0 +1,136 @@
+[
+  {
+    "cov": 0.9602,
+    "denom": 226,
+    "drc_non_routing": 0,
+    "drc_non_routing_types": {},
+    "drc_router": 74,
+    "drc_router_types": {
+      "track_width": 74
+    },
+    "fanout": true,
+    "label": "stickhub_expert",
+    "len_mm": 694.162,
+    "passed": false,
+    "passes": 18,
+    "seconds": 304.19,
+    "stop": "converged",
+    "unrouted": 9,
+    "unrouted_causes": {
+      "escape_blocked": 2,
+      "path_blocked": 4,
+      "via_blocked": 3
+    },
+    "vias": 32
+  },
+  {
+    "cov": 0.902,
+    "denom": 204,
+    "drc_non_routing": 2,
+    "drc_non_routing_types": {
+      "starved_thermal": 2
+    },
+    "drc_router": 20,
+    "drc_router_types": {
+      "clearance": 4,
+      "solder_mask_bridge": 3,
+      "track_width": 13
+    },
+    "fanout": true,
+    "label": "esp32_c6_expert",
+    "len_mm": 1052.159,
+    "passed": false,
+    "passes": 20,
+    "seconds": 340.19,
+    "stop": "timeout",
+    "unrouted": 20,
+    "unrouted_causes": {
+      "escape_blocked": 8,
+      "path_blocked": 8,
+      "via_blocked": 4
+    },
+    "vias": 36
+  },
+  {
+    "cov": 0.6355,
+    "denom": 974,
+    "drc_non_routing": 2,
+    "drc_non_routing_types": {
+      "starved_thermal": 2
+    },
+    "drc_router": 192,
+    "drc_router_types": {
+      "track_width": 192
+    },
+    "fanout": true,
+    "label": "cynthion_expert",
+    "len_mm": 1522.906,
+    "passed": false,
+    "passes": 0,
+    "seconds": 381.94,
+    "stop": "timeout",
+    "unrouted": 355,
+    "unrouted_causes": {
+      "escape_blocked": 270,
+      "path_blocked": 28,
+      "via_blocked": 57
+    },
+    "vias": 130
+  },
+  {
+    "cov": 0.5349,
+    "denom": 974,
+    "drc_non_routing": 2,
+    "drc_non_routing_types": {
+      "starved_thermal": 2
+    },
+    "drc_router": 200,
+    "drc_router_types": {
+      "copper_edge_clearance": 1,
+      "track_width": 199
+    },
+    "fanout": true,
+    "label": "cynthion_ours",
+    "len_mm": 1543.985,
+    "passed": false,
+    "passes": 0,
+    "seconds": 376.45,
+    "stop": "timeout",
+    "unrouted": 453,
+    "unrouted_causes": {
+      "escape_blocked": 363,
+      "path_blocked": 17,
+      "via_blocked": 73
+    },
+    "vias": 134
+  },
+  {
+    "cov": 0.6452,
+    "denom": 403,
+    "drc_non_routing": 2,
+    "drc_non_routing_types": {
+      "shorting_items": 1,
+      "solder_mask_bridge": 1
+    },
+    "drc_router": 20,
+    "drc_router_types": {
+      "clearance": 1,
+      "hole_clearance": 1,
+      "solder_mask_bridge": 1,
+      "track_width": 17
+    },
+    "fanout": true,
+    "label": "neo6502kbd_ours",
+    "len_mm": 2414.85,
+    "passed": false,
+    "passes": 1,
+    "seconds": 325.27,
+    "stop": "timeout",
+    "unrouted": 143,
+    "unrouted_causes": {
+      "escape_blocked": 120,
+      "path_blocked": 23
+    },
+    "vias": 142
+  }
+]

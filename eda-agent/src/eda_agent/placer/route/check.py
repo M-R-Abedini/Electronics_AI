@@ -9,6 +9,7 @@ copies inside one run directory, and the result is one ``run_report.json``
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 from dataclasses import asdict, replace
@@ -245,6 +246,14 @@ def intent_wire_keepouts(board: Board, intent: dict | None) -> list[dsn.Keepout]
     return keepouts
 
 
+def _dru_rule_names(path: Path) -> list[str]:
+    """Return sorted custom rule names declared in a KiCad ``.kicad_dru`` file."""
+    if not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return sorted(set(re.findall(r'\(\s*rule\s+"?([^\s"()]+)"?', text)))
+
+
 def _router_item_uuids(router_violations: list[dict]) -> list[str]:
     """Extract deterministic sorted UUIDs of routing items implicated in router-caused DRC findings."""
     uuids: set[str] = set()
@@ -284,6 +293,12 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
 
     t = time.monotonic()
     source, inputs = stage_input(board, run_dir)
+    warnings: list[str] = []
+    dru_sidecar = source.with_suffix(".kicad_dru")
+    if dru_sidecar.is_file():
+        dru_rules = _dru_rule_names(dru_sidecar)
+        names_str = ", ".join(dru_rules) if dru_rules else dru_sidecar.name
+        warnings.append(f"custom .kicad_dru rules are not translated to Specctra DSN: {names_str}")
     reference = drc.run_cached(Path(reference_board) if reference_board else Path(board), work / "drc_input.json")
     inputs["reference_board"] = str(Path(reference_board).resolve()) if reference_board else inputs["board"]["path"]
     t = tick("drc_input", t)
@@ -434,6 +449,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
              "pre_existing": attribution.pre_existing,
              "input_pin_violations_seen_by_router": routed.pre_existing_violations},
         timings=timings,
+        warnings=warnings,
         artifacts={"run_dir": str(run_dir), "routed_board": str(out_board), "session": str(ses),
                    "dsn": str(route_dsn)},
     )

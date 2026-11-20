@@ -284,3 +284,17 @@ def test_protocol_initialize_discover_forward_and_prompt(tmp_path, toolset):
                 prompt = await client.get_prompt("eda__design")
                 assert prompt.messages[0].content.text == "design"
     asyncio.run(check())
+
+
+def test_smoke_counts_match_live_placer_catalog():
+    """Guard against smoke_suite_stdio COUNTS drifting when placer__* tools are added."""
+    spec = importlib.util.spec_from_file_location("smoke_suite_stdio_guard", ROOT / "tests" / "smoke_suite_stdio.py")
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    sys.path.insert(0, str(ROOT / "eda-agent" / "src"))
+    from eda_agent.placer.mcp import PlacerService
+
+    assert smoke.COUNTS["placer"] == len(PlacerService.list_tools()), (
+        f"Update tests/smoke_suite_stdio.py COUNTS['placer'] from {smoke.COUNTS['placer']} "
+        f"to {len(PlacerService.list_tools())}"
+    )

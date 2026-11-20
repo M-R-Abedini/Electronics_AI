@@ -304,7 +304,7 @@ def emit_client_manifests(
     manifests = render_client_manifests(repo_root, pixi_exe=pixi_exe, python_exe=python_exe)
     written: dict[str, str] = {}
     readme_lines = [
-        "# Electronics AI 2.0 — Client MCP Manifests",
+        "# Electronics AI 2.0: Client MCP Manifests",
         "",
         "All three clients connect to the exact same local `electronics-ai-placer` backend:",
         "",
