@@ -1,5 +1,18 @@
 name: Suite tests
-on: [push, pull_request, workflow_dispatch]
+# Pull requests are the merge path (branch ruleset on main), so branch
+# pushes do not need their own run: the former push+pull_request pair
+# executed the whole suite twice per pull request. Pushes to main still
+# run to verify every merge, and workflow_dispatch stays manual.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+# A new push to a pull request supersedes its previous run; cancel the
+# stale one instead of queueing behind it. Main runs are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -15,7 +28,26 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-windows-py312.txt
+            eda-agent/pyproject.toml
       - run: python -m pip install -r requirements.txt
+      - name: Cache Rust toolchain and placer-core build artifacts
+        # The maturin build below dominated job setup time when it had to
+        # download the toolchain, fetch every crate and compile from a
+        # cold target directory on each run.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup
+            crates/placer-core/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('crates/placer-core/Cargo.lock', 'crates/placer-core/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
       - name: Build Rust placement core used by the placer tests
         # crates/placer-core is a maturin (PyO3 abi3-py312) extension; the
         # hosted runners ship a Rust toolchain via rustup. Without this the
