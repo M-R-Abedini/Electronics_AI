@@ -30,7 +30,10 @@ from eda_agent.placer.mcp import PlacerService
 from eda_agent.placer.place.pipeline import place_board
 from eda_agent.placer.route import drc
 from eda_agent.placer.route.bga_escape import detect_bga, plan_bga_escapes
-from eda_agent.placer.route.check import _starved_thermal_pad_uuids
+from eda_agent.placer.route.check import (
+    _mask_bridge_aperture_uuids,
+    _starved_thermal_pad_uuids,
+)
 from eda_agent.placer.route.copper import pad_polygon
 
 # The two integration tests below read the real StickHub corpus board,
@@ -249,6 +252,46 @@ def test_detect_bga_rejects_perimeter_qfn() -> None:
     assert detect_bga(qfn) is None
 
 
+def test_detect_bga_rejects_elongated_lga_module() -> None:
+    # Module like BM15x-LGA-45: elongated rectangular perimeter pads (0.4 x 0.5 mm) + interior dots.
+    pads: list[Pad] = []
+    idx = 0
+    for r in range(6):
+        for c in range(6):
+            idx += 1
+            is_outer = r in (0, 5) or c in (0, 5)
+            pads.append(
+                Pad(
+                    number=str(idx),
+                    net=f"N{idx}",
+                    local=(c * 0.9, r * 0.9),
+                    size=(0.4, 0.5) if is_outer else (0.4, 0.4),
+                    rotation=0.0,
+                    shape="Rectangle" if is_outer else "Circle",
+                    kind="smd",
+                    layers=("F.Cu",),
+                    drill=None,
+                    function="",
+                    pin_type="",
+                    uuid=f"lga-{idx}",
+                )
+            )
+    lga = Footprint(
+        ref="U_LGA",
+        value="BM15x",
+        lib_id="Module:LGA-36",
+        x=15.0,
+        y=15.0,
+        rotation=0.0,
+        side="F",
+        locked=False,
+        pads=pads,
+        courtyard=Courtyard(source="courtyard", polygons=[[(-5, -5), (5, -5), (5, 5), (-5, 5)]]),
+        uuid="fp-lga",
+    )
+    assert detect_bga(lga) is None
+
+
 def test_starved_thermal_uuid_extraction() -> None:
     violations = [
         {
@@ -324,3 +367,45 @@ def test_heal_thermals_helper_modes(tmp_path: Path) -> None:
         assert rep["mode"] == mode
         assert rep["modified_count"] == 1
         assert rep["modified"][0]["uuid"] == pad_uuid
+
+
+def test_mask_bridge_aperture_uuid_extraction() -> None:
+    violations = [
+        {
+            "type": "solder_mask_bridge",
+            "items": [
+                {"description": "Segment on F.Mask", "uuid": "mask-seg-1"},
+                {"description": "Zone [/Solar_module/SW2] on F.Cu and B.Cu, priority 37", "uuid": "zone-1"},
+            ],
+        },
+        {
+            # Pad-to-pad solder_mask_bridge (no zone) must NOT be targeted by zone-fill rule areas.
+            "type": "solder_mask_bridge",
+            "items": [
+                {"description": "Pad 5 [Net-(Q1-D)] of Q1 on B.Cu", "uuid": "pad-5"},
+                {"description": "Pad 9 [<no net>] of Q1 on B.Cu", "uuid": "pad-9"},
+            ],
+        },
+        {
+            "type": "clearance",
+            "items": [
+                {"description": "Segment on F.Mask", "uuid": "mask-ignored"},
+                {"description": "Zone [GND] on F.Cu", "uuid": "zone-ignored"},
+            ],
+        },
+    ]
+    assert _mask_bridge_aperture_uuids(violations) == ["mask-seg-1"]
+
+
+@_requires_stickhub
+def test_heal_mask_bridges_helper_safe_noop(tmp_path: Path) -> None:
+    src = _STICKHUB_PATH
+    dst = tmp_path / src.name
+    shutil.copyfile(src, dst)
+    spec = tmp_path / "mask_spec.json"
+    out = tmp_path / "mask_out.json"
+    spec.write_text(json.dumps({"mask_uuids": ["nonexistent-uuid"]}), encoding="utf-8")
+    run_helper("heal_mask_bridges", dst, spec, dst, out)
+    rep = json.loads(out.read_text(encoding="utf-8"))
+    assert rep["added_count"] == 0
+    assert rep["unrouted_final"] == 0

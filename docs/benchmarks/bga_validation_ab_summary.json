@@ -1,0 +1,87 @@
+{
+  "benchmark": "mask_bridge_heal_and_bga_validation_ab",
+  "date": "2026-11-20",
+  "mask_bridge_heal_openair_max": {
+    "board": "openair_max",
+    "split": "validation",
+    "layers": 4,
+    "routed_copy_before_after": {
+      "drc_router_caused_before": 0,
+      "drc_new_non_routing_before": 2,
+      "drc_router_caused_after": 0,
+      "drc_new_non_routing_after": 0,
+      "added_rule_areas": 2,
+      "unrouted_before": 150,
+      "unrouted_after": 150
+    },
+    "full_route_check_e2e": {
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0,
+      "mask_bridge_heal": {
+        "applied": true,
+        "initial_bridges": 2,
+        "added_rule_areas": 2,
+        "final_bridges": 0
+      }
+    }
+  },
+  "bga_escape_validation_ext_urti_mainboard": {
+    "board": "urti_mainboard",
+    "split": "validation_ext",
+    "layers": 6,
+    "denominator": 1247,
+    "detected_bgas": [
+      {"ref": "U1", "balls": 256, "pitch_mm": 0.8},
+      {"ref": "U8", "balls": 24, "pitch_mm": 1.0}
+    ],
+    "baseline_300s": {
+      "coverage": 0.3657,
+      "unrouted": 791,
+      "unrouted_plane": 170,
+      "vias": 0,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0
+    },
+    "plane_bga_default_300s": {
+      "s6a_escapes_routed": 74,
+      "s6a_links_routed": 13,
+      "coverage": 0.405,
+      "delta_coverage_pp": 3.93,
+      "unrouted": 742,
+      "delta_unrouted": -49,
+      "vias": 83,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0
+    },
+    "full_bga_signals_300s": {
+      "s6a_escapes_routed": 160,
+      "s6a_links_routed": 13,
+      "coverage": 0.4026,
+      "delta_coverage_pp": 3.69,
+      "unrouted": 745,
+      "delta_unrouted": -46,
+      "vias": 169,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0
+    }
+  },
+  "bga_detector_lga_guard_royalblue54L_feather": {
+    "board": "royalblue54L_feather",
+    "split": "dev",
+    "layers": 8,
+    "u1_package": "BM15x-LGA-45_15.8x10mm",
+    "before_guard": {
+      "falsely_detected_as_bga": true,
+      "baseline_coverage": 0.7188,
+      "plane_bga_coverage": 0.6562,
+      "full_bga_coverage": 0.6562,
+      "cause": "Rectangular perimeter LGA pads (0.4 x 0.5 mm) falsely treated as BGA balls, blocking 14 nearby signal escapes."
+    },
+    "after_ball_symmetry_guard": {
+      "detected_bgas_royalblue54L_feather": [],
+      "detected_bgas_urti_mainboard": ["U1(256,0.8mm)", "U8(24,1.0mm)"],
+      "detected_bgas_cynthion": ["IC1(256,0.8mm)", "U10(24,1.0mm)"],
+      "detected_bgas_vme_wren": ["IC13(96,0.8mm)", "IC5(96,0.8mm)"]
+    }
+  }
+}

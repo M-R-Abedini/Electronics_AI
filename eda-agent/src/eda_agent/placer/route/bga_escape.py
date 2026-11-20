@@ -72,6 +72,14 @@ def detect_bga(fp: Footprint) -> dict[str, Any] | None:
     balls = [p for p in smd if p.size[0] * p.size[1] <= max(med_area * 2.5, 0.01)]
     if len(balls) < BGA_MIN_PADS:
         return None
+    # True BGA balls are symmetric (square/circular); reject elongated LGA/QFN perimeter modules.
+    symmetric = sum(
+        1 for p in balls
+        if max(p.size[0], p.size[1]) > 0
+        and abs(p.size[0] - p.size[1]) <= 0.12 * max(p.size[0], p.size[1])
+    )
+    if symmetric / len(balls) < 0.85:
+        return None
 
     cols = _cluster_coords([p.local[0] for p in balls])
     rows = _cluster_coords([p.local[1] for p in balls])

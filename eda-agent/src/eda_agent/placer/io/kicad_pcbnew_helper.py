@@ -509,6 +509,107 @@ def heal_thermals(board_path, spec_json, out_board, out_json):
     del zones, copper
 
 
+def heal_mask_bridges(board_path, spec_json, out_board, out_json):
+    """Prevent lower-priority background copper pours from intruding into free-standing solder-mask
+    apertures that already expose a higher-priority zone or pad (resolving new solder_mask_bridge DRC).
+
+    Adds surgical zone-fill-only rule areas (SetDoNotAllowZoneFills=True) outside the dominant
+    zone's outline on the affected copper layer, never deleting tracks, vias, pads, or zones.
+    """
+    board = pcbnew.LoadBoard(board_path)
+    with open(spec_json, encoding="utf-8") as fh:
+        spec = json.load(fh)
+    target_mask_uuids = list(spec.get("mask_uuids") or [])
+
+    ds = board.GetDesignSettings()
+    max_error = ds.m_MaxError
+    def_clr = int(ds.m_NetSettings.GetDefaultNetclass().GetClearance())
+    grow = max(def_clr, pcbnew.FromMM(0.15))
+
+    mask_items = {}
+    for _src, item in _graphic_sources(board):
+        if item.GetLayer() in (pcbnew.F_Mask, pcbnew.B_Mask):
+            mask_items[item.m_Uuid.AsString()] = item
+
+    copper_zones = [z for z in board.Zones() if not z.GetIsRuleArea()]
+    added_rule_areas = []
+    for uid in target_mask_uuids:
+        item = mask_items.get(uid)
+        if item is None:
+            continue
+        mask_layer = item.GetLayer()
+        cu_layer = pcbnew.F_Cu if mask_layer == pcbnew.F_Mask else pcbnew.B_Cu
+        mask_poly = _item_poly(item, mask_layer, max_error, 0)
+        if mask_poly.OutlineCount() == 0:
+            continue
+
+        # Identify filled copper zones overlapping this solder-mask aperture on cu_layer.
+        overlapping = []
+        for z in copper_zones:
+            if not z.IsOnLayer(cu_layer) or not z.HasFilledPolysForLayer(cu_layer):
+                continue
+            filled = z.GetFilledPolysList(cu_layer)
+            if filled.OutlineCount() > 0 and _overlaps(mask_poly, filled):
+                overlapping.append(z)
+        if not overlapping:
+            continue
+
+        keep_poly = _item_poly(item, mask_layer, max_error, grow)
+        distinct_nets = {z.GetNetCode() for z in overlapping}
+        if len(distinct_nets) >= 2:
+            # Preserve the highest-priority (local) zone; block lower-priority pours outside it.
+            overlapping.sort(key=lambda z: (int(z.GetAssignedPriority()), -float(z.GetOutlineArea())), reverse=True)
+            owner = overlapping[0]
+            keep_poly.BooleanSubtract(owner.Outline())
+        rings = _poly_points(keep_poly)
+        for idx, ring in enumerate(rings):
+            if len(ring) < 3:
+                continue
+            ra = pcbnew.ZONE(board)
+            ra.SetIsRuleArea(True)
+            lset = pcbnew.LSET()
+            lset.AddLayer(cu_layer)
+            ra.SetLayerSet(lset)
+            ra.SetDoNotAllowZoneFills(True)
+            ra.SetDoNotAllowTracks(False)
+            ra.SetDoNotAllowVias(False)
+            ra.SetDoNotAllowPads(False)
+            ra.SetDoNotAllowFootprints(False)
+            ra.SetZoneName(f"eai_mask_guard_{uid[:8]}_{idx}")
+            outline = ra.Outline()
+            outline.NewOutline()
+            for x, y in ring:
+                outline.Append(pcbnew.FromMM(float(x)), pcbnew.FromMM(float(y)))
+            ident = uuid5(NAMESPACE_URL, f"electronics-ai/mask-guard/{uid}/{idx}")
+            ra.SetUuidDirect(pcbnew.KIID(str(ident)))
+            board.Add(ra)
+            added_rule_areas.append({"mask_uuid": uid, "layer": board.GetLayerName(cu_layer), "index": idx})
+
+    zones = list(board.Zones())
+    copper = [z for z in zones if not z.GetIsRuleArea()]
+    for z in copper:
+        board.Remove(z)
+    unrouted_tracks_only = _unconnected(board)
+    stats = _routing_stats(board)
+    pads = _pad_rows(board)
+    for z in copper:
+        board.Add(z)
+    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    unrouted_final = _unconnected(board)
+    pcbnew.SaveBoard(out_board, board)
+    report = {
+        "added_count": len(added_rule_areas),
+        "added": added_rule_areas,
+        "unrouted_tracks_only": unrouted_tracks_only,
+        "unrouted_final": unrouted_final,
+        "routing": stats,
+        "pads": pads,
+    }
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=1)
+    del zones, copper
+
+
 # --------------------------------------------------------------------------
 # Board IR dump and placement write (F0b)
 # --------------------------------------------------------------------------
@@ -1345,4 +1446,5 @@ def filled_hits(board_path, points_json, out_json):
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
     {"prepare": prepare, "finish": finish, "sanitize": sanitize, "heal_thermals": heal_thermals,
-     "dump": dump, "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)
+     "heal_mask_bridges": heal_mask_bridges, "dump": dump, "place": place,
+     "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)
