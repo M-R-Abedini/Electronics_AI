@@ -16,13 +16,42 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  python:
+  # The suites used to run sequentially inside one job per OS, so wall
+  # time was the sum of every suite. They are independent, so they now
+  # run as parallel jobs; wall time is the slowest single job. The
+  # "python" gate job at the bottom preserves the historical required
+  # check names for the branch ruleset.
+  smoke:
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-windows-py312.txt
+            eda-agent/pyproject.toml
+      - run: python -m pip install -r requirements.txt
+      - name: Lint and build native script bundle used by regression tests
+        run: python eda-agent/scripts/altium/build.py
+      - name: Offline stdio startup without an Altium installation
+        run: python tests/smoke_stdio.py
+      - name: Native gateway catalog and all library contracts without external executables
+        run: python tests/smoke_suite_stdio.py --toolset full
+  root:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@v7
@@ -35,9 +64,6 @@ jobs:
             eda-agent/pyproject.toml
       - run: python -m pip install -r requirements.txt
       - name: Cache Rust toolchain and placer-core build artifacts
-        # The maturin build below dominated job setup time when it had to
-        # download the toolchain, fetch every crate and compile from a
-        # cold target directory on each run.
         uses: actions/cache@v4
         with:
           path: |
@@ -60,18 +86,113 @@ jobs:
           python -m pip install ./crates/placer-core
       - name: Lint and build native script bundle used by regression tests
         run: python eda-agent/scripts/altium/build.py
-      - name: Offline stdio startup without an Altium installation
-        run: python tests/smoke_stdio.py
       - name: Complete root regression suite, native codecs and package license closure
         run: python -m pytest tests -q
-      - name: Native gateway catalog and all library contracts without external executables
-        run: python tests/smoke_suite_stdio.py --toolset full
+  eda:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-windows-py312.txt
+            eda-agent/pyproject.toml
+      - run: python -m pip install -r requirements.txt
+      - name: Cache Rust toolchain and placer-core build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup
+            crates/placer-core/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('crates/placer-core/Cargo.lock', 'crates/placer-core/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build Rust placement core used by the placer tests
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          python -m pip install ./crates/placer-core
+      - name: Lint and build native script bundle used by regression tests
+        run: python eda-agent/scripts/altium/build.py
       - name: Complete EDA regression suite
-        run: python -m pytest tests -q
+        # This suite is the long pole (about 10 minutes serial on
+        # Windows). Four workers with loadfile distribution parallelize
+        # across test files while keeping each file's tests together on
+        # one worker, so file-local shared state stays ordered. On
+        # failure the failed test names are republished as an annotation
+        # so they are visible without downloading the full log.
+        shell: bash
         working-directory: eda-agent
+        run: |
+          set +e
+          python -m pytest tests -q -n 4 --dist loadfile 2>&1 | tee /tmp/eda-pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=EDA failed tests::$(grep -E '^FAILED' /tmp/eda-pytest.log | head -c 3000 | tr '\n' ' ')"
+          fi
+          exit $status
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-windows-py312.txt
+            eda-agent/pyproject.toml
+      - run: python -m pip install -r requirements.txt
+      - name: Lint and build native script bundle used by regression tests
+        run: python eda-agent/scripts/altium/build.py
       - name: Build and verify actual EDA wheel native project closure
         run: |
           python -m pip wheel --no-deps ./eda-agent --wheel-dir dist/wheels
           python scripts/build_plugin.py --check-wheel dist/wheels
       - name: Clean plugin package, reproducibility and isolated MCP startup
         run: python scripts/build_plugin.py --output dist --smoke --check-reproducible
+  python:
+    # Gate job. The branch ruleset requires the check names
+    # "python (windows-latest)" and "python (ubuntu-latest)"; this job
+    # keeps those exact names while the suites above run in parallel.
+    # It runs even when a needed job fails (if: always) and then fails
+    # itself unless every needed job succeeded, so a red suite still
+    # blocks the merge exactly as before.
+    needs: [smoke, root, eda, package]
+    if: always()
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - name: Require every suite job to have succeeded
+        shell: bash
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "Suite job results: $results"
+          for result in $results; do
+            if [ "$result" != "success" ]; then
+              echo "A suite job did not succeed ($result); failing the gate."
+              exit 1
+            fi
+          done
+          echo "All suite jobs succeeded."

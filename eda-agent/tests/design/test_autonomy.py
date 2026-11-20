@@ -9,7 +9,15 @@ from eda_agent.design.session import STAGES
 from eda_agent.design.state_machine import STAGE_PLAYBOOKS
 
 
-def test_guide_covers_all_stages_without_drift():
+def test_guide_covers_all_stages_without_drift(monkeypatch):
+    # The guide adapts its stage tools to the active backend, and the
+    # playbooks it is compared against describe the default one. Which
+    # backend is active depends on process-global registration state
+    # left by earlier tests (module-scope registrations survive the
+    # per-test restore fixture), so file order -- and, under xdist, the
+    # worker a file lands on -- used to decide whether this passed.
+    # Pin the backend this comparison is about.
+    monkeypatch.setenv("EDA_AGENT_BACKEND", "altium")
     g = autonomy_guide()
     guide_stages = [s["stage"] for s in g["stages"]]
     assert guide_stages == list(STAGES)
