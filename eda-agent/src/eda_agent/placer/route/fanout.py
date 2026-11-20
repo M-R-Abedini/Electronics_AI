@@ -142,7 +142,7 @@ def _candidate_paths(origin: tuple[float, float], angle: float,
 class _Site:
     """What a short power track or via of one net must clear on a board."""
 
-    def __init__(self, board: Board, net: str, fixed: list[dict]):
+    def __init__(self, board: Board, net: str, fixed: list[dict], *, static_cache: dict | None = None):
         rules = board.netclass_of(net)
         self.board, self.net = board, net
         self.layers = [layer.canonical for layer in board.copper_layers]
@@ -151,14 +151,34 @@ class _Site:
         self.drill = max(rules.via_drill, board.rules.get("min_through_drill", 0))
         self.clearance = clearance = max(rules.clearance, board.rules.get("min_clearance", 0))
         self.edge = board.rules.get("copper_edge_clearance", 0)
-        self.outline = board_polygon(board)
         self.holes = existing_holes(board, fixed)
         self.other = []
+        self._other_shapes = []
         for item in fixed:
             if item["net"] != net:
                 other_rules = board.netclass_of(item["net"])
-                self.other.append((item, max(clearance, other_rules.clearance) if other_rules else clearance))
+                gap = max(clearance, other_rules.clearance) if other_rules else clearance
+                self.other.append((item, gap))
+                if "points" in item:
+                    g = LineString(item["points"])
+                    r = item["width"] / 2.0
+                    lyrs = {item["layer"]}
+                else:
+                    g = Point(item["x"], item["y"])
+                    r = item["diameter"] / 2.0
+                    lyrs = set(item["layers"])
+                x0, y0, x1, y1 = g.bounds
+                pad_b = r + gap + 1e-4
+                self._other_shapes.append((g, r, lyrs, (x0 - pad_b, y0 - pad_b, x1 + pad_b, y1 + pad_b), gap))
         self.same_vias = [v for v in fixed if v["net"] == net and "points" not in v]
+
+        cache_key = (id(board), net, clearance)
+        cached = static_cache.get(cache_key) if static_cache is not None else None
+        if cached is not None:
+            self.outline, self._track, self._via = cached
+            return
+
+        self.outline = board_polygon(board)
         pad_obstacles = list(_pad_clearances(board, self.layers, net, clearance))
         # A via keeps the clearance to SMD pads of its own net as well: the router counts a via
         # closer than that to a same-net SMD pad as a violation (no via on or against a pad).
@@ -190,18 +210,31 @@ class _Site:
             + [g for _, flags, g in keepouts if flags["vias"]]
             + [g for _, g in graphics]
         ))
+        if static_cache is not None:
+            static_cache[cache_key] = (self.outline, self._track, self._via)
 
     def track(self, layer: str, points: list[tuple[float, float]]) -> dict | None:
         """The track, when it clears pads, keep-outs, the board edge and other nets' new copper."""
-        shape = LineString(points).buffer(self.width / 2)
+        line = LineString(points)
+        hr = self.width / 2.0
+        shape = line.buffer(hr)
         if self._track[layer].intersects(shape) or not self.outline.covers(shape.buffer(self.edge)):
             return None
-        track = {"net": self.net, "layer": layer, "width": self.width, "points": points}
-        return track if all(copper_separated([track], [], [item], gap) for item, gap in self.other) else None
+        bx0, by0, bx1, by1 = line.bounds
+        for g, r, lyrs, (ox0, oy0, ox1, oy1), gap in self._other_shapes:
+            if layer not in lyrs:
+                continue
+            if bx1 + hr < ox0 or ox1 < bx0 - hr or by1 + hr < oy0 or oy1 < by0 - hr:
+                continue
+            if line.distance(g) < hr + r + gap - 1e-6:
+                return None
+        return {"net": self.net, "layer": layer, "width": self.width, "points": points}
 
     def via(self, x: float, y: float, inside=None) -> dict | None:
         """A through via at the point, when it is legal there (and inside ``inside`` if given)."""
-        shape = Point(x, y).buffer(self.diameter / 2)
+        pt = Point(x, y)
+        vr = self.diameter / 2.0
+        shape = pt.buffer(vr)
         if (inside is not None and not inside.covers(shape)) or self._via.intersects(shape):
             return None
         if not self.outline.covers(shape.buffer(self.edge)):
@@ -216,8 +249,15 @@ class _Site:
             return None
         # The writer needs the two end layers, but a through via crosses every
         # copper layer when checking its clearance to existing routing.
-        span = {**via, "layers": self.layers}
-        return via if all(copper_separated([], [span], [item], gap) for item, gap in self.other) else None
+        all_layers = set(self.layers)
+        for g, r, lyrs, (ox0, oy0, ox1, oy1), gap in self._other_shapes:
+            if not (all_layers & lyrs):
+                continue
+            if x + vr < ox0 or ox1 < x - vr or y + vr < oy0 or oy1 < y - vr:
+                continue
+            if pt.distance(g) < vr + r + gap - 1e-6:
+                return None
+        return via
 
 
 def _outer_layer(board: Board, footprint: Footprint, pad: Pad) -> str | None:
@@ -243,7 +283,8 @@ def _length(points: list[tuple[float, float]]) -> float:
 
 def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: str, *,
                    fixed: list[dict], max_length_mm: float = 2.0,
-                   share: list[dict] | None = None, share_max_mm: float = 1.5) -> tuple[dict, dict] | None:
+                   share: list[dict] | None = None, share_max_mm: float = 1.5,
+                   site_cache: dict | None = None) -> tuple[dict, dict] | None:
     """Plan a track polyline and through via. Emit one track per consecutive pair of points.
 
     A via in ``share`` (same net, already tapping the pour) within ``share_max_mm`` of track is
@@ -268,7 +309,7 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
     ])
     if target.is_empty or board_polygon(board) is None:
         return None
-    site = _Site(board, net, fixed)
+    site = _Site(board, net, fixed, static_cache=site_cache)
     origin = footprint.pad_world(pad)
     dx, dy = outward(footprint, pad)
     angle = math.atan2(dy, dx)

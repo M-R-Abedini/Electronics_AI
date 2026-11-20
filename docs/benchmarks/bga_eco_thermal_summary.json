@@ -1,0 +1,106 @@
+{
+  "benchmark": "bga_escape_safe_eco_thermal_heal",
+  "date": "2026-11-19",
+  "scope": "Option 1A (S6a BGA quadrant dogbone escape), Option 1B (Safe ECO preserve_routing='outside_cluster'), Option 2 (post-route starved_thermal healing)",
+  "option_1a_bga_escape_cynthion_6L": {
+    "board": "cynthion",
+    "layers": 6,
+    "denominator": 974,
+    "detected_bgas": [
+      {"ref": "IC1", "balls": 256, "pitch_mm": 0.8},
+      {"ref": "U10", "balls": 24, "pitch_mm": 1.0}
+    ],
+    "baseline_f9_expert_300s": {
+      "s6a_escapes": 0,
+      "vias": 0,
+      "coverage": 0.5575,
+      "unrouted": 431,
+      "unrouted_plane": 60,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 1
+    },
+    "full_signal_plus_plane_v1_0p4572mm": {
+      "s6a_escapes_routed": 154,
+      "vias": 165,
+      "coverage": 0.4209,
+      "unrouted": 564,
+      "unrouted_plane": 83,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0,
+      "thermal_heal": {"initial": 3, "final": 0},
+      "finding": "Default 0.4572 mm via left 0.3428 mm < 0.381 mm between adjacent 0.80 mm vias, blocking inner layers (In2.Cu=4, In3.Cu=3)."
+    },
+    "full_signal_plus_plane_v2_0p41mm_channel": {
+      "s6a_escapes_routed": 154,
+      "via_diameters_mm": [0.41, 0.4572],
+      "vias": 165,
+      "coverage": 0.4302,
+      "unrouted": 555,
+      "unrouted_plane": 73,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0,
+      "thermal_heal": {"initial": 3, "final": 0},
+      "finding": "0.41 mm legal minimum vias opened 0.390 mm > 0.381 mm channels with 0/0 DRC, but 89 unescaped signal terminals inflated Freerouting Pass #1 queue under 300s timeout (0 router-placed destination vias)."
+    },
+    "plane_only_default_0p41mm": {
+      "s6a_escapes_routed": 71,
+      "vias": 82,
+      "coverage": 0.4692,
+      "unrouted": 517,
+      "unrouted_plane": 50,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0,
+      "thermal_heal": {"initial": 3, "final": 0},
+      "finding": "Plane-only BGA escape cut unrouted_plane 60 -> 50 with 0/0 DRC; full breakout routing to BGA perimeter remains needed to beat 55.75% under 300s single-threaded Freerouting."
+    }
+  },
+  "option_1b_safe_eco_stickhub": {
+    "board": "stickhub",
+    "cluster_refs": ["R1", "R2", "C1"],
+    "input_routing_items": 1380,
+    "mode_none_routing_items": 0,
+    "mode_outside_cluster": {
+      "moved_footprints": 3,
+      "kept_original": false,
+      "preserved_items": 1347,
+      "preserved_pct": 97.61,
+      "removed_items": 33,
+      "unfilled_zones": 5,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0
+    }
+  },
+  "option_2_starved_thermal_heal": {
+    "esp32_c6_devkit_lipo_e2e_route_check": {
+      "passed": true,
+      "coverage": 0.8922,
+      "unrouted": 22,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0,
+      "thermal_heal": {
+        "passes": 2,
+        "initial_starved": 7,
+        "relief_modified": 7,
+        "solid_modified": 1,
+        "final_starved": 0
+      }
+    },
+    "esp32_c6_step1_routed_copy": {
+      "starved_before": 4,
+      "after_pass1_relief": 2,
+      "after_pass2_solid": 0,
+      "unrouted_before": 23,
+      "unrouted_after": 23,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0
+    },
+    "interf_u_step1_routed_copy": {
+      "starved_before": 5,
+      "after_pass1_relief": 3,
+      "after_pass2_solid": 0,
+      "unrouted_before": 9,
+      "unrouted_after": 9,
+      "drc_router_caused": 0
+    }
+  }
+}

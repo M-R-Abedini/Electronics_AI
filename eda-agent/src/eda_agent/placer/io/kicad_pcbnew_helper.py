@@ -449,6 +449,66 @@ def sanitize(board_path, remove_json, out_board, out_json):
     del to_remove, zones, copper
 
 
+def heal_thermals(board_path, spec_json, out_board, out_json):
+    """Apply targeted per-pad thermal relief overrides to DRC-starved pads and refill zones.
+
+    Modes:
+      - 'relief': rotate spokes to 45 deg and tighten local thermal spoke/gap to fab-legal
+        values so orthogonal tracks no longer pinch off thermal spokes.
+      - 'solid': fall back to ZONE_CONNECTION_FULL on pads that remain starved after relief.
+    """
+    board = pcbnew.LoadBoard(board_path)
+    with open(spec_json, encoding="utf-8") as fh:
+        spec = json.load(fh)
+    mode = spec.get("mode", "relief")
+    target_uuids = set(spec.get("pad_uuids") or [])
+
+    ds = board.GetDesignSettings()
+    def_clr = int(ds.m_NetSettings.GetDefaultNetclass().GetClearance())
+    min_gap = max(int(ds.m_MinClearance), def_clr, pcbnew.FromMM(0.20))
+
+    modified = []
+    for fp in board.GetFootprints():
+        ref = fp.GetReference()
+        for pad in fp.Pads():
+            uid = pad.m_Uuid.AsString()
+            if uid not in target_uuids:
+                continue
+            if mode == "relief":
+                pad.SetThermalSpokeAngleDegrees(45.0)
+                pad.SetThermalGap(min_gap)
+            elif mode == "solid":
+                pad.SetLocalZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
+            else:
+                continue
+            modified.append({"uuid": uid, "ref": ref, "pad": pad.GetNumber(), "mode": mode})
+
+    zones = list(board.Zones())
+    copper = [z for z in zones if not z.GetIsRuleArea()]
+    for z in copper:
+        board.Remove(z)
+    unrouted_tracks_only = _unconnected(board)
+    stats = _routing_stats(board)
+    pads = _pad_rows(board)
+    for z in copper:
+        board.Add(z)
+    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    unrouted_final = _unconnected(board)
+    pcbnew.SaveBoard(out_board, board)
+    report = {
+        "mode": mode,
+        "modified_count": len(modified),
+        "modified": modified,
+        "unrouted_tracks_only": unrouted_tracks_only,
+        "unrouted_final": unrouted_final,
+        "routing": stats,
+        "pads": pads,
+    }
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=1)
+    del zones, copper
+
+
 # --------------------------------------------------------------------------
 # Board IR dump and placement write (F0b)
 # --------------------------------------------------------------------------
@@ -920,12 +980,197 @@ def _clean_silkscreen(board):
     return {"checked": len(movable_texts), "colliding": len(pending), "moved": moved_count}
 
 
+def _eco_strip_routing(board, moved_fps, old_pad_polys):
+    """Surgically remove routing invalidated by moving ``moved_fps`` while keeping outside copper.
+
+    Removes:
+      1. Any track/arc/via attached to a moved footprint's OLD pad (pre-move geometry).
+      2. Any track/arc/via colliding with a moved footprint's NEW pad within clearance.
+      3. Iteratively prunes resulting dead-end dangling stubs and orphan vias on affected nets.
+    """
+    max_error = board.GetDesignSettings().m_MaxError
+    ds = board.GetDesignSettings()
+    def_clr = int(ds.m_NetSettings.GetDefaultNetclass().GetClearance())
+    hole_clr = int(getattr(ds, "m_HoleClearance", 0))
+    copper_layers = list(board.GetEnabledLayers().CuStack())
+    moved_uuids = {fp.m_Uuid.AsString() for fp in moved_fps}
+
+    # Build NEW pad clearance polygons for moved footprints (after move).
+    new_pad_polys = []  # (layer, net_code, is_smd, is_npth, poly)
+    for fp in moved_fps:
+        for pad in fp.Pads():
+            net_code = pad.GetNetCode()
+            attr = pad.GetAttribute()
+            is_smd = attr == pcbnew.PAD_ATTRIB_SMD
+            is_npth = attr == pcbnew.PAD_ATTRIB_NPTH
+            raw_clr = pad.GetLocalClearance("") if hasattr(pad, "GetLocalClearance") else None
+            loc_clr = int(raw_clr) if raw_clr is not None else 0
+            grow = max(loc_clr, def_clr, hole_clr if is_npth else 0) + pcbnew.FromMM(0.02)
+            lyrs = copper_layers if is_npth else [lyr for lyr in copper_layers if pad.IsOnLayer(lyr)]
+            for lyr in lyrs:
+                poly = _item_poly(pad, lyr, max_error, grow)
+                if poly.OutlineCount() == 0 and is_npth:
+                    poly = _item_poly(pad, pcbnew.F_Cu, max_error, grow)
+                if poly.OutlineCount() > 0:
+                    new_pad_polys.append((lyr, net_code, is_smd, is_npth, poly))
+
+    all_tracks = list(board.GetTracks())
+    seed_remove = set()
+    for idx, item in enumerate(all_tracks):
+        is_via = item.GetClass() == "PCB_VIA"
+        item_net = item.GetNetCode()
+        item_lyrs = list(item.GetLayerSet().CuStack()) if is_via else [item.GetLayer()]
+        hit = False
+        for lyr in item_lyrs:
+            item_poly = _item_poly(item, lyr, max_error, 0)
+            if item_poly.OutlineCount() == 0:
+                continue
+            for o_lyr, o_net, o_poly in old_pad_polys:
+                if o_lyr == lyr and (o_net == item_net or o_net <= 0) and _overlaps(item_poly, o_poly):
+                    hit = True
+                    break
+            if hit:
+                break
+            for n_lyr, n_net, n_smd, n_npth, n_poly in new_pad_polys:
+                if n_lyr != lyr:
+                    continue
+                if n_net == item_net and not n_npth and not (is_via and n_smd):
+                    continue
+                if _overlaps(item_poly, n_poly):
+                    hit = True
+                    break
+            if hit:
+                break
+        if hit:
+            seed_remove.add(idx)
+
+    if not seed_remove:
+        return [], len(all_tracks)
+
+    # Fixed pads on affected nets anchor surviving copper.
+    affected_nets = {all_tracks[i].GetNetCode() for i in seed_remove}
+    fixed_pads_by_net = {}
+    for fp in board.GetFootprints():
+        if fp.m_Uuid.AsString() in moved_uuids:
+            continue
+        for pad in fp.Pads():
+            nc = pad.GetNetCode()
+            if nc in affected_nets:
+                fixed_pads_by_net.setdefault(nc, []).append(pad)
+
+    zone_layers_by_net = {}
+    for z in board.Zones():
+        if z.GetIsRuleArea():
+            continue
+        nc = z.GetNetCode()
+        if nc in affected_nets:
+            zone_layers_by_net.setdefault(nc, set()).update(z.GetLayerSet().CuStack())
+
+    # Iteratively prune dangling dead-end tracks and orphan vias on affected nets.
+    removed_idxs = set(seed_remove)
+    by_net_alive = {}
+    for idx, item in enumerate(all_tracks):
+        if idx in removed_idxs:
+            continue
+        nc = item.GetNetCode()
+        if nc in affected_nets:
+            by_net_alive.setdefault(nc, set()).add(idx)
+
+    def _pt_hits_fixed_pad(nc, lyr, pt):
+        for pad in fixed_pads_by_net.get(nc, ()):
+            if pad.IsOnLayer(lyr) and pad.HitTest(pt, 0):
+                return True
+        return False
+
+    def _pt_hits_other_item(nc, lyr, pt, self_idx):
+        for other_idx in by_net_alive.get(nc, ()):
+            if other_idx == self_idx:
+                continue
+            other = all_tracks[other_idx]
+            if other.GetClass() == "PCB_VIA":
+                if lyr in other.GetLayerSet().CuStack() and other.HitTest(pt, 0):
+                    return True
+            else:
+                if other.GetLayer() == lyr and other.HitTest(pt, 0):
+                    return True
+        return False
+
+    changed = True
+    while changed:
+        changed = False
+        for nc, alive in list(by_net_alive.items()):
+            drop = set()
+            z_lyrs = zone_layers_by_net.get(nc, set())
+            for idx in alive:
+                item = all_tracks[idx]
+                if item.GetClass() == "PCB_VIA":
+                    pos = item.GetPosition()
+                    v_lyrs = list(item.GetLayerSet().CuStack())
+                    if any(_pt_hits_fixed_pad(nc, lyr, pos) for lyr in v_lyrs):
+                        continue
+                    track_layers = {lyr for lyr in v_lyrs if _pt_hits_other_item(nc, lyr, pos, idx)}
+                    if not track_layers:
+                        drop.add(idx)
+                        continue
+                    connected_layers = track_layers | (set(v_lyrs) & z_lyrs)
+                    if len(connected_layers) < 2:
+                        drop.add(idx)
+                else:
+                    lyr = item.GetLayer()
+                    for pt in (item.GetStart(), item.GetEnd()):
+                        if not _pt_hits_fixed_pad(nc, lyr, pt) and not _pt_hits_other_item(nc, lyr, pt, idx):
+                            drop.add(idx)
+                            break
+            if drop:
+                alive -= drop
+                removed_idxs |= drop
+                changed = True
+
+    removed = [all_tracks[i] for i in sorted(removed_idxs)]
+    preserved = len(all_tracks) - len(removed)
+    return removed, preserved
+
+
 def place(board_path, placement_json, out_board, strip_routing, out_json, clean_silk="0"):
     """Write a placement ``{uuid: {x, y, rotation, side}}`` into a new board file."""
     board = pcbnew.LoadBoard(board_path)
     with open(placement_json, encoding="utf-8") as fh:
         placement = json.load(fh)
     by_uuid = {fp.m_Uuid.AsString(): fp for fp in board.GetFootprints()}
+
+    # For Safe ECO mode ('4'), snapshot old pad polygons of footprints that will actually move.
+    moved_fps = []
+    old_pad_polys = []
+    if strip_routing == "4":
+        max_error = board.GetDesignSettings().m_MaxError
+        copper_layers = list(board.GetEnabledLayers().CuStack())
+        for uuid, pose in placement.items():
+            fp = by_uuid.get(uuid)
+            if fp is None:
+                continue
+            cur_pos = fp.GetPosition()
+            cur_side = "B" if fp.IsFlipped() else "F"
+            cur_rot = float(fp.GetOrientationDegrees()) % 360.0
+            new_rot = float(pose["rotation"]) % 360.0
+            rot_diff = min(abs(cur_rot - new_rot), 360.0 - abs(cur_rot - new_rot))
+            if (
+                abs(_mm(cur_pos.x) - float(pose["x"])) > 1e-4
+                or abs(_mm(cur_pos.y) - float(pose["y"])) > 1e-4
+                or rot_diff > 1e-3
+                or cur_side != pose["side"]
+            ):
+                moved_fps.append(fp)
+                for pad in fp.Pads():
+                    nc = pad.GetNetCode()
+                    lyrs = (
+                        copper_layers if pad.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH
+                        else [lyr for lyr in copper_layers if pad.IsOnLayer(lyr)]
+                    )
+                    for lyr in lyrs:
+                        poly = _item_poly(pad, lyr, max_error, 0)
+                        if poly.OutlineCount() > 0:
+                            old_pad_polys.append((lyr, nc, poly))
+
     moved = flipped = 0
     for uuid, pose in placement.items():
         fp = by_uuid.get(uuid)
@@ -939,11 +1184,15 @@ def place(board_path, placement_json, out_board, strip_routing, out_json, clean_
         if "locked" in pose:
             fp.SetLocked(bool(pose["locked"]))
         moved += 1
-    removed = list(board.GetTracks()) if strip_routing in ("1", "2", "3") else []
+    preserved_routing = None
+    if strip_routing == "4":
+        removed, preserved_routing = _eco_strip_routing(board, moved_fps, old_pad_polys)
+    else:
+        removed = list(board.GetTracks()) if strip_routing in ("1", "2", "3") else []
     unfilled = 0
     if strip_routing == "2":
         removed.extend(zone for zone in board.Zones() if not zone.GetIsRuleArea())
-    elif strip_routing == "3":
+    elif strip_routing in ("3", "4"):
         for zone in list(board.Zones()):
             if zone.GetIsRuleArea():
                 continue
@@ -958,7 +1207,9 @@ def place(board_path, placement_json, out_board, strip_routing, out_json, clean_
     pcbnew.SaveBoard(out_board, board)
     with open(out_json, "w", encoding="utf-8") as fh:  # not stdout: SWIG writes leak notices there
         json.dump({"placed": moved, "flipped": flipped, "missing": sorted(set(placement) - set(by_uuid)),
-                   "removed_routing": len(removed), "unfilled_zones": unfilled, "silkscreen": silk_report}, fh)
+                   "removed_routing": len(removed), "preserved_routing": preserved_routing,
+                   "moved_footprints": len(moved_fps) if strip_routing == "4" else None,
+                   "unfilled_zones": unfilled, "silkscreen": silk_report}, fh)
     del removed
 
 
@@ -1093,5 +1344,5 @@ def filled_hits(board_path, points_json, out_json):
 
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
-    {"prepare": prepare, "finish": finish, "sanitize": sanitize, "dump": dump, "place": place,
-     "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)
+    {"prepare": prepare, "finish": finish, "sanitize": sanitize, "heal_thermals": heal_thermals,
+     "dump": dump, "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)

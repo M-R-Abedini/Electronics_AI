@@ -570,5 +570,25 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
 
 - **نکتهٔ برجسته:** روی **هر ۵ برد از ۵ برد**، `drc_router_caused == 0`، `strict_violations == 0` و `s0_s5_seconds <= 300s` برقرار شد، و `neo6502kbd` و `royalblue54L_feather` برای اولین بار **`passed = True` با ۰/۰ خطای DRC** گرفتند. شواهد قابل راستی‌آزمایی: [step1_e2e_summary.json](benchmarks/step1_e2e_summary.json).
 
+### پسافاز `F9` · گزینهٔ ۱ (موتور `BGA Escape` + `Safe ECO`) و گزینهٔ ۲ (رفع عمومی `starved_thermal`) (2026-11-19)
+
+- **گزینهٔ ۱A — موتور قطعی `BGA Escape` در `S6a` (`route/bga_escape.py` + `route/s6a.py` + رفع باگ `copper.py` و `fanout.py`):**
+  - تشخیص خودکار پکیج‌های BGA صرفاً از هندسهٔ شبکهٔ پدهای SMD (`detect_bga`)، تولید dogbone چهارربعی متقارن با شاخص فضایی `STRtree` (زمان برنامه‌ریزی `0.39s` روی ۲۵۶+۲۴ توپ `cynthion`) و انتخاب **ویای حافظ کانال** (`pitch - via_diameter >= track_width + 2 × clearance`؛ ترجیح ویای قانونی `0.41 mm` به‌جای `0.4572 mm` روی گام `0.80 mm` برای بازماندن کانال `0.390 mm > 0.381 mm`).
+  - **دو باگ ریشه‌ای کشف‌شده در بازبینی حلقه‌ای:** (۱) `copper.py::pad_polygon` عبارت `pad.shape` با حروف کوچک (`"circle"`) چک می‌کرد در حالی که کی‌کد ۱۰ `"Circle"` برمی‌گرداند و همهٔ پدهای دایره‌ای را مربع حساب می‌کرد (`+0.085 mm` خطای گوشه)؛ (۲) `_drc_touching` در `s6a.py` هشدار پیش‌ازروت `via_dangling` را به‌عنوان خطای DRC هرس می‌کرد؛ (۳) کش‌کردن هندسهٔ ایستا و پیش‌فیلتر bbox در `fanout.py::_Site`.
+  - **شاهد صادقانه و کنترل‌شده روی `cynthion` (۶L، `IC1` ۲۵۶ توپ + `U10` ۲۴ توپ، بودجهٔ ۳۰۰s):**
+    - حالت کامل سیگنال+صفحه (`--bga-signals` / `include_signals=True`): **`154/206` فرار BGA** (`147` روی `IC1` و `7` روی `U10`، `165` ویا) با **صفر خطای DRC** (`0/0` DRC، `0` نیاز به پاک‌ساز، در برابر `199` خطای `track_width` در `fanout=True`). اما تحت بودجهٔ ۳۰۰s تک‌رشته‌ای Freerouting، افزودن ۸۹ پایانهٔ سیگنال داخلی بدون ترک خروجی تا لبهٔ BGA صف Pass #1 را شلوغ کرد (`43.02%` در برابر خط پایهٔ `55.75%`).
+    - حالت پیش‌فرض `S6a` (`escape_signals=False`، فقط توپ‌های دارای صفحهٔ داخلی با قید حضور درون چندضلعی زون): **`71` فرار صفحهٔ BGA** (`82` ویا) با **`0/0` DRC** و کاهش `unrouted_plane` از `60` به **`50`**؛ حالت کامل سیگنال+صفحه برای fanout آمادهٔ روت تعاملی یا بودجهٔ بالاتر با `--bga-signals` در دسترس است.
+- **گزینهٔ ۱B — حالت `Safe ECO` (`preserve_routing="outside_cluster"`) در `placer__place_cluster` (`kicad_pcbnew_helper.py` + `io/kicad.py` + `place/pipeline.py` + `mcp.py` + Skill `F8`):**
+  - پیش‌فرض `preserve_routing="none"` برای سازگاری کامل با تست‌های قبلی حفظ شد. در حالت `"outside_cluster"`، صرفاً ترک‌ها/ویاهای متصل به پدهای **قدیمی** قطعات جابه‌جاشده، متداخل با پدهای **جدید**، و شاخه‌های آویزان (`dangling stubs` / `orphan vias`) به‌صورت گرافی حذف می‌شوند و کل مس سالم بیرون کلاستر دست‌نخورده می‌ماند.
+  - **شاهد زنده روی `stickhub` (کلاستر `['R1', 'R2', 'C1']` از `1380` آیتم مسی):** **`1347/1380` (`97.6%`)** ترک و ویای بیرون کلاستر حفظ شد، فقط `33` آیتم نامعتبر حذف گردید و DRC کی‌کد **`0` خطای روتر و `0` خطای غیرروتر** داد.
+- **گزینهٔ ۲ — رفع عمومی و خودکار `starved_thermal` پس از روت (`kicad_pcbnew_helper.py::heal_thermals` + `route/check.py`):**
+  - تنها روی UUID دقیق پدهای گزارش‌شده با `starved_thermal` در DRC: پاس ۱ با چرخش ۴۵ درجهٔ پل‌های حرارتی (`SetThermalSpokeAngleDegrees(45.0)`) و تنظیم گپ قانونی (`SetThermalGap`) با حفظ thermal relief؛ و پاس ۲ تنها برای پدهایی که همچنان starved بمانند (`ZONE_CONNECTION_FULL`)، همراه با refill و حسابداری دقیق اتصال.
+  - **شاهد سرتاسری:**
+    - `esp32_c6_devkit_lipo` (اجرای کامل E2E `route_check`): از `7` پد `starved_thermal`، **۶ پد در پاس ۱** و ۱ پد در پاس ۲ حل شد ← **`starved_thermal: 7 → 0`**، **`drc: 0/0`**، پوشش **`89.22%`** و **`passed = True`**!
+    - `interf_u` (برد روت‌شدهٔ گام ۱): **`starved_thermal: 5 → 0`** (۲ پد پاس ۱، ۳ پد پاس ۲)، بدون تغییر در اتصال (`unrouted = 9` ثابت).
+    - `cynthion`: **`starved_thermal: 3 → 0`** در هر سه اجرا (`0/0` DRC).
+- **آزمون‌ها و شواهد:** `cargo test` (`۱۶/۱۶`)، `cargo clippy -- -D warnings` (۰)، `ruff check` (۰)، `test_no_em_dashes.py` (`۳/۳`)، `pytest tests/ -q` (**۸۶۹ پاس**)، `eda-agent/tests/placer/` (**۱۶۰ پاس، ۱۲ skip** شامل ۶ تست جدید `test_bga_eco_thermal.py`)، `smoke_stdio.py` و `smoke_suite_stdio.py --toolset full` (`535` ابزار)، و `pixi run doctor` (`GREEN`). شواهد سبک: [bga_eco_thermal_summary.json](benchmarks/bga_eco_thermal_summary.json).
+
+
 
 

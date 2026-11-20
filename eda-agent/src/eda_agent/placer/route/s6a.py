@@ -38,6 +38,7 @@ from ..macro import Instance, MTrack, MVia
 from ..macro_proof import apply_instance
 from ..toolchain import RUNTIME_DIR, sha256_file
 from . import drc
+from .bga_escape import plan_bga_escapes
 from .check import route_check
 from .copper import pad_layers
 from .fanout import (
@@ -126,9 +127,10 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict
 
 
 def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, taps: bool = True,
-         power_first: bool = False, retry_coarse: bool = False) -> dict:
+         escapes: bool = True, escape_signals: bool = False, power_first: bool = False,
+         retry_coarse: bool = False) -> dict:
     fixed: list[dict] = []
-    report: dict = {"pairs": [], "links": [], "taps": []}
+    report: dict = {"pairs": [], "links": [], "taps": [], "escapes": []}
     layers = [cl.canonical for cl in board.copper_layers]
     board_refs = {fp.ref for fp in board.footprints}
     # A tap is locked copper with a through via. It is made only for a net that owns an inner plane,
@@ -224,11 +226,30 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                     "no pin within reach on the cap's layer" if same_side
                     else f"no via site joins the two sides within {LINK_MAX_MM} mm"
                 )
+    escaped_pads: set[tuple[str, str]] = set()
+    if escapes:
+        routed_pair_nets = {
+            n for r in report["pairs"] if r.get("routed") for n in (r.get("pair") or ())
+        }
+        already_handled = {
+            (fp.ref, str(p.number))
+            for fp in board.footprints
+            for p in fp.pads
+            if (p.net and p.net in routed_pair_nets) or (p.net and (fp.ref, p.net) in linked)
+        }
+        esc = plan_bga_escapes(board, intent, fixed=fixed, already_handled=already_handled,
+                               include_signals=escape_signals)
+        fixed.extend(esc["copper"])
+        report["escapes"] = esc["rows"]
+        if esc["packages"]:
+            report["bga_packages"] = esc["packages"]
+        escaped_pads = {(r["ref"], r["pad"]) for r in esc["rows"] if r.get("routed")}
     tap_items: list[tuple[dict, dict, dict]] = []
     if taps:
         by_canon = {cl.name: cl.canonical for cl in board.copper_layers}
         users: dict[int, int] = {}  # id(via) -> pads on it
         tap_vias: list[dict] = []
+        tap_site_cache: dict = {}
         # ICs first, then decaps (so a decap can share its pin's via), then critical power/timing/ESD passives.
         order = [
             (ref, kind)
@@ -241,7 +262,8 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 continue
             fp = board.fp(ref)
             for pad in fp.pads:
-                if pad.kind != "smd" or pad.net not in pours or (ref, pad.net) in linked:
+                if (pad.kind != "smd" or pad.net not in pours or (ref, pad.net) in linked
+                        or (ref, str(pad.number)) in escaped_pads):
                     continue
                 here = pad_layers(fp, pad, layers)
                 targets = sorted({by_canon.get(n, n) for n in pours[pad.net]} - set(here))
@@ -252,7 +274,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 for layer in targets:
                     share = [v for v in tap_vias if users[id(v)] < MAX_PADS_PER_VIA]
                     got = plan_power_tap(board, fp, pad, layer, fixed=fixed, max_length_mm=TAP_MAX_MM,
-                                         share=share, share_max_mm=SHARE_MAX_MM)
+                                         share=share, share_max_mm=SHARE_MAX_MM, site_cache=tap_site_cache)
                     if got:
                         track, via = got
                         shared = id(via) in users
@@ -282,7 +304,8 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
 
 def settle_plane_links(report: dict, plane_links: list) -> None:
     """A decap opposite its IC pin on a plane net is connected when both pads tap the plane."""
-    taps = {(r["ref"], r["pad"]): r for r in report["taps"]}
+    taps = {(r["ref"], r["pad"]): r for r in report.get("escapes", [])}
+    taps.update({(r["ref"], r["pad"]): r for r in report["taps"]})
     for row, cap_pad, pin in plane_links:
         ends = {"cap pad": taps.get(cap_pad), "IC pin": taps.get(pin)}
         missing = [name for name, tap in ends.items() if not (tap and tap.get("routed"))]
@@ -338,7 +361,9 @@ def _drc_touching(rep: dict, copper: list[dict]) -> list[dict]:
     nets = {c["net"] for c in copper}
     return [
         v for v in rep.get("violations", [])
-        if nets & {drc.item_net(i.get("description", "")) for i in v.get("items", [])}
+        if v.get("severity", "error") == "error"
+        and v.get("type") != "via_dangling"
+        and nets & {drc.item_net(i.get("description", "")) for i in v.get("items", [])}
         and any(drc.is_routing_item(i.get("description", "")) for i in v.get("items", []))
     ]
 
@@ -357,6 +382,9 @@ def _drop_nets_from_s6a(copper: list[dict], report: dict, live_taps: list, bad_n
         if row.get("routed") and set(row.get("pair") or ()) & bad_nets:
             row.update(routed=False, failed="pruned: s6a DRC violation")
     for row in report.get("links", []):
+        if row.get("routed") and row.get("net") in bad_nets:
+            row.update(routed=False, failed="pruned: s6a DRC violation")
+    for row in report.get("escapes", []):
         if row.get("routed") and row.get("net") in bad_nets:
             row.update(routed=False, failed="pruned: s6a DRC violation")
     return kept_copper, kept_taps
@@ -400,6 +428,8 @@ def apply_to_board(
     pairs: bool = True,
     links: bool = True,
     taps: bool = True,
+    escapes: bool = True,
+    escape_signals: bool = False,
     power_first: bool = False,
     retry_coarse: bool = False,
     prune_drc: bool = True,
@@ -414,15 +444,15 @@ def apply_to_board(
     src = Path(board_path).resolve()
     out_root = Path(out_dir).resolve()
     board = read_board(src)
-    planned = plan(board, intent, pairs=pairs, links=links, taps=taps,
-                   power_first=power_first, retry_coarse=retry_coarse)
+    planned = plan(board, intent, pairs=pairs, links=links, taps=taps, escapes=escapes,
+                   escape_signals=escape_signals, power_first=power_first, retry_coarse=retry_coarse)
     copper, report = list(planned["copper"]), planned["report"]
     live_taps = list(planned["taps"])
     pruned_nets: list[str] = []
 
     def _counts() -> dict:
-        return {k: {"planned": len(report[k]), "routed": sum(bool(r.get("routed")) for r in report[k])}
-                for k in ("pairs", "links", "taps")}
+        return {k: {"planned": len(report.get(k, ())), "routed": sum(bool(r.get("routed")) for r in report.get(k, ()))}
+                for k in ("pairs", "links", "taps", "escapes")}
 
     if not copper:
         return {
@@ -512,7 +542,8 @@ def apply_to_board(
 
 
 def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_path: str | None = None,
-        pairs: bool = True, links: bool = True, taps: bool = True, c3: bool = False,
+        pairs: bool = True, links: bool = True, taps: bool = True, escapes: bool = True,
+        escape_signals: bool = False, c3: bool = False,
         router_timeout_s: int | None = None, baseline: str | Path | None = None,
         power_first: bool = False, retry_coarse: bool = False) -> dict:
     src = Path(board_path).resolve()
@@ -529,22 +560,22 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
             if router_timeout_s is not None:
                 config = replace(config, timeout_s=router_timeout_s)
             without = _reuse_baseline(baseline, bare, config)
-    planned = plan(board, intent, pairs=pairs, links=links, taps=taps,
-                   power_first=power_first, retry_coarse=retry_coarse)
+    planned = plan(board, intent, pairs=pairs, links=links, taps=taps, escapes=escapes,
+                   escape_signals=escape_signals, power_first=power_first, retry_coarse=retry_coarse)
     copper, report = planned["copper"], planned["report"]
     out = run_dir / "s6a" / src.name
     copper, live_taps = _write_and_verify_taps(src, out, copper, planned["taps"], report, planned["plane_links"])
     rep = drc.run(out, run_dir / "s6a" / "drc.json")
     touching = _drc_touching(rep, copper)
-    counts = {k: {"planned": len(report[k]), "routed": sum(bool(r.get("routed")) for r in report[k])}
-              for k in ("pairs", "links", "taps")}
+    counts = {k: {"planned": len(report.get(k, ())), "routed": sum(bool(r.get("routed")) for r in report.get(k, ()))}
+              for k in ("pairs", "links", "taps", "escapes")}
     result = {"board": str(src), "intent": intent_info, "s6a_board": str(out), "counts": counts,
               "copper": {"tracks": sum("points" in c for c in copper), "vias": sum("points" not in c for c in copper)},
               "drc_touching_s6a": [{"type": v["type"], "items": [i.get("description", "") for i in v.get("items", [])]}
                                    for v in touching],
               "report": report,
               "config": {"link_max_mm": LINK_MAX_MM, "tap_max_mm": TAP_MAX_MM, "pairs": pairs, "links": links,
-                         "taps": taps, "power_first": power_first, "retry_coarse": retry_coarse}}
+                         "taps": taps, "escapes": escapes, "power_first": power_first, "retry_coarse": retry_coarse}}
     if c3:
         if without is None:
             without = route_check(bare, out_dir=run_dir / "route_without", reference_board=src,
@@ -600,8 +631,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("board")
     ap.add_argument("--out")
     ap.add_argument("--intent", help="design_intent.json (default: drafted from the netlist)")
-    for name in ("pairs", "links", "taps"):
+    for name in ("pairs", "links", "taps", "escapes"):
         ap.add_argument(f"--no-{name}", action="store_true")
+    ap.add_argument("--bga-signals", action="store_true",
+                    help="also dogbone-escape inner BGA signal balls (not just plane/power balls)")
     ap.add_argument("--c3", action="store_true", help="route-check with and without the S6a copper (about 10 minutes)")
     ap.add_argument("--route-timeout", type=int)
     ap.add_argument("--baseline", help="route_without/run_report.json of an earlier --c3 run on the same board")
@@ -610,11 +643,13 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8")
     res = run(args.board, args.out, intent_path=args.intent, pairs=not args.no_pairs, links=not args.no_links,
-              taps=not args.no_taps, c3=args.c3, router_timeout_s=args.route_timeout, baseline=args.baseline,
-              power_first=args.power_first, retry_coarse=args.coarse_retry)
+              taps=not args.no_taps, escapes=not args.no_escapes, escape_signals=args.bga_signals,
+              c3=args.c3, router_timeout_s=args.route_timeout,
+              baseline=args.baseline, power_first=args.power_first, retry_coarse=args.coarse_retry)
     brief = {k: res[k] for k in ("counts", "copper", "s6a_board", "report_file")}
     brief["drc_touching_s6a"] = len(res["drc_touching_s6a"])
-    brief["failed"] = {k: [r for r in res["report"][k] if not r.get("routed")][:12] for k in ("pairs", "links", "taps")}
+    brief["failed"] = {k: [r for r in res["report"][k] if not r.get("routed")][:12]
+                       for k in ("pairs", "links", "taps", "escapes")}
     if "c3" in res:
         brief["c3"] = res["c3"]
     print(json.dumps(brief, indent=1, ensure_ascii=False))

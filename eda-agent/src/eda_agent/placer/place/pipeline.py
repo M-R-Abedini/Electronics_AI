@@ -685,11 +685,16 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
                 mode: str = "best", seed: int = 0, route: bool = True,
                 router_timeout_s: int | None = None, intent_path: str | Path | None = None,
                 floorplan: bool = False, schematic_path: str | Path | None = None,
-                cluster_refs: list[str] | None = None, s6a: bool = True) -> dict:
+                cluster_refs: list[str] | None = None, s6a: bool = True,
+                preserve_routing: str = "none") -> dict:
     """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""
     from ..intent.resolve import resolve
     from ..intent.resolve import side_policy as policy_of
 
+    if preserve_routing not in ("none", "outside_cluster"):
+        raise ValueError(f"unsupported preserve_routing mode: {preserve_routing!r}")
+    if preserve_routing == "outside_cluster" and cluster_refs is None:
+        raise ValueError("preserve_routing='outside_cluster' is only valid with cluster_refs")
     src = Path(board_path).resolve()
     reference = read_board(src)
     board, cold = reference, None
@@ -753,9 +758,23 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
         if info["movable"] == 0 and cold["reset_poses"]:
             raise RuntimeError("cold placement did not expose any reset footprints to the solver")
         info["cold_input"] = cold
-    out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb", strip_routing=True,
-                            strip_zones=cold is not None, unfill_zones=cluster_refs is not None,
-                            clean_silkscreen=True)
+    write_stats: dict = {}
+    eco_preserve = cluster_refs is not None and preserve_routing == "outside_cluster"
+    out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb",
+                            strip_routing=not eco_preserve,
+                            strip_zones=cold is not None,
+                            unfill_zones=cluster_refs is not None and not eco_preserve,
+                            preserve_outside_routing=eco_preserve,
+                            clean_silkscreen=True,
+                            result_out=write_stats)
+    if eco_preserve:
+        info["preserve_routing"] = {
+            "mode": preserve_routing,
+            "preserved_items": write_stats.get("preserved_routing"),
+            "removed_items": write_stats.get("removed_routing"),
+            "moved_footprints": write_stats.get("moved_footprints"),
+            "unfilled_zones": write_stats.get("unfilled_zones"),
+        }
     s6a_stage: dict | None = None
     route_input = out_board
     if route and s6a:
@@ -805,7 +824,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
         inputs={"board": board.source, "intent": intent_info},
         config={"side_policy": side_policy, "mode": mode, "seed": seed, "w_cross": problem.WEIGHT_SIGNAL * W_CROSS,
                 "sa_moves_per_part": SA_MOVES_PER_PART, "floorplan": floorplan, "cluster_refs": cluster_refs,
-                "s6a": s6a},
+                "s6a": s6a, "preserve_routing": preserve_routing},
         stages={"place": info, "s6a": s6a_summary,
                 "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
         metrics={**evaluation["metrics"], "pro_score": evaluation["pro_score"], "fanout_escape": info["floorplan"]["escape"],

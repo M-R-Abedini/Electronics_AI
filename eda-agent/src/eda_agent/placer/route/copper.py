@@ -15,8 +15,8 @@ def pad_polygon(fp: Footprint, pad: Pad, grow: float = 0.0) -> Polygon:
     cx, cy = fp.pad_world(pad)
     w, h = pad.size
     ang = fp.rotation + pad.rotation
-    if pad.shape in ("circle", "oval") and abs(w - h) < 1e-6:
-        return Point(cx, cy).buffer(w / 2 + grow, quad_segs=8)
+    if (pad.shape or "").lower() in ("circle", "oval") and abs(w - h) < 1e-6:
+        return Point(cx, cy).buffer(w / 2 + grow, quad_segs=16)
     corners = [transform(c, (cx, cy), ang) for c in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2))]
     return Polygon(corners).buffer(grow, join_style="mitre") if grow else Polygon(corners)
 

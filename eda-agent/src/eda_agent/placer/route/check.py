@@ -265,11 +265,25 @@ def _router_item_uuids(router_violations: list[dict]) -> list[str]:
     return sorted(uuids)
 
 
+def _starved_thermal_pad_uuids(other_violations: list[dict]) -> list[str]:
+    """Extract deterministic sorted pad UUIDs from new starved_thermal DRC violations."""
+    uuids: set[str] = set()
+    for v in other_violations:
+        if v.get("type") != "starved_thermal":
+            continue
+        for item in v.get("items", []):
+            uid = item.get("uuid")
+            desc = (item.get("description") or "").lower()
+            if uid and "pad" in desc:
+                uuids.add(str(uid))
+    return sorted(uuids)
+
+
 def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 config: RouterConfig | None = None, neck_width_um: float | None = None,
                 obstacle_keepouts: bool = True, reference_board: str | Path | None = None,
                 router_timeout_s: int | None = None, intent: dict | None = None,
-                sanitize_drc: bool = True) -> dict:
+                sanitize_drc: bool = True, heal_thermals: bool = True) -> dict:
     """Route-check ``board``.  ``reference_board`` is the original input whose DRC
     findings count as pre-existing (architecture 8.1.3); it defaults to ``board``
     itself, which is right only when ``board`` *is* the designer's file.  A
@@ -382,7 +396,40 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             sanitize_info["final_router_drc"] = attribution.counts()["router_caused"]
             if sanitize_info["final_router_drc"] == 0:
                 break
-        tick("sanitize_drc", t)
+        t = tick("sanitize_drc", t)
+
+    initial_starved = _starved_thermal_pad_uuids(attribution.new_other)
+    thermal_heal_info = {
+        "passes": 0,
+        "initial_starved": len(initial_starved),
+        "relief_modified": 0,
+        "solid_modified": 0,
+        "final_starved": len(initial_starved),
+    }
+    if heal_thermals and initial_starved:
+        for pass_idx, mode in enumerate(("relief", "solid"), start=1):
+            pad_uuids = _starved_thermal_pad_uuids(attribution.new_other)
+            if not pad_uuids:
+                break
+            spec_file = work / f"thermal_heal_{pass_idx}_{mode}.json"
+            heal_out = work / f"thermal_heal_{pass_idx}_{mode}_out.json"
+            spec_file.write_text(json.dumps({"mode": mode, "pad_uuids": pad_uuids}, indent=1), encoding="utf-8")
+            run_helper("heal_thermals", out_board, spec_file, out_board, heal_out)
+            healed = _load(heal_out)
+            if healed.get("modified_count", 0) == 0:
+                break
+            thermal_heal_info["passes"] = pass_idx
+            thermal_heal_info[f"{mode}_modified"] += int(healed["modified_count"])
+            finished["unrouted_tracks_only"] = healed["unrouted_tracks_only"]
+            finished["unrouted_final"] = healed["unrouted_final"]
+            finished["routing"] = healed["routing"]
+            finished["pads"] = healed["pads"]
+            result = drc.run(out_board, work / f"drc_thermal_{pass_idx}_{mode}.json")
+            attribution = drc.attribute(result, reference)
+            thermal_heal_info["final_starved"] = len(_starved_thermal_pad_uuids(attribution.new_other))
+            if thermal_heal_info["final_starved"] == 0:
+                break
+        t = tick("thermal_heal", t)
 
     unrouted_items = [u for u in result.get("unconnected_items", [])]
     failures = classify_unrouted(unrouted_items, finished, routed.stop_reason)
@@ -440,6 +487,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "freerouting": routed.summary(),
             "finish": {k: v for k, v in finished.items() if k != "pads"},
             "sanitize": sanitize_info,
+            "thermal_heal": thermal_heal_info,
             "drc": attribution.counts(),
         },
         metrics=metrics,

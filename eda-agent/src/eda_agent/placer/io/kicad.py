@@ -185,7 +185,8 @@ def read_board(path: str | Path) -> Board:
 # --------------------------------------------------------------------------
 def write_board(src: str | Path, board: Board, dst: str | Path, *, strip_routing: bool = False,
                 strip_zones: bool = False, unfill_zones: bool = False,
-                clean_silkscreen: bool = False) -> Path:
+                preserve_outside_routing: bool = False,
+                clean_silkscreen: bool = False, result_out: dict | None = None) -> Path:
     """Write ``board``'s placement into a new file ``dst`` (never ``src``) with its project sidecars."""
     src, dst = Path(src).resolve(), Path(dst).resolve()
     if src == dst:
@@ -198,9 +199,17 @@ def write_board(src: str | Path, board: Board, dst: str | Path, *, strip_routing
         placement = Path(tmp) / "placement.json"
         placement.write_text(json.dumps(board.placement()), encoding="utf-8")
         result_path = Path(tmp) / "result.json"
-        mode = "2" if strip_zones else "3" if unfill_zones else "1" if strip_routing else "0"
+        mode = (
+            "4" if preserve_outside_routing
+            else "2" if strip_zones
+            else "3" if unfill_zones
+            else "1" if strip_routing
+            else "0"
+        )
         run_helper("place", src, placement, dst, mode, result_path, "1" if clean_silkscreen else "0")
         result = json.loads(result_path.read_text(encoding="utf-8"))
+    if result_out is not None:
+        result_out.update(result)
     if result["missing"]:
         raise KiCadAdapterError(f"{len(result['missing'])} footprints of the placement are not on the board")
     return dst

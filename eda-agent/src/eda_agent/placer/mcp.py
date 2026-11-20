@@ -122,10 +122,13 @@ class PlacerService:
              ["board_path"], False),
             ("place_cluster",
              ("Optimize selected footprints in an existing KiCad board. Holds all other poses fixed and writes a new "
-              "placement-only board with tracks and stale copper zone fills cleared while preserving zone definitions "
-              "and rule areas. Returns placement legality, refill status, and a comparison gallery."),
+              "board with stale copper zone fills cleared while preserving zone definitions and rule areas. Default "
+              "preserve_routing='none' clears all tracks (placement-only); preserve_routing='outside_cluster' enables "
+              "Safe ECO mode, keeping healthy copper outside the moved cluster while surgically removing only tracks "
+              "and vias invalidated by moved pads or dangling stubs."),
              {"board_path": _STRING, "refs": {"type": "array", "items": _STRING, "minItems": 1, "uniqueItems": True},
-              "intent_path": _STRING, "seed": {"type": "integer", "minimum": 0, "default": 0}},
+              "intent_path": _STRING, "seed": {"type": "integer", "minimum": 0, "default": 0},
+              "preserve_routing": {"type": "string", "enum": ["none", "outside_cluster"], "default": "none"}},
              ["board_path", "refs"], False),
             ("gallery",
              ("Build one side-by-side HTML gallery from run folders of placer__score or placer__place_board "
@@ -261,14 +264,17 @@ class PlacerService:
             "gallery": rep["artifacts"]["gallery"],
         }
 
-    def place_cluster(self, board_path: str, refs: list[str], intent_path: str | None = None, seed: int = 0) -> dict:
+    def place_cluster(self, board_path: str, refs: list[str], intent_path: str | None = None, seed: int = 0,
+                      preserve_routing: str = "none") -> dict:
         from .place.pipeline import place_board
 
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         rep = place_board(board_path, out_dir=self.runs / f"{Path(board_path).stem}-cluster-{stamp}",
-                          seed=seed, route=False, intent_path=intent_path, floorplan=True, cluster_refs=refs)
+                          seed=seed, route=False, intent_path=intent_path, floorplan=True, cluster_refs=refs,
+                          preserve_routing=preserve_routing)
         return {"passed": rep["passed"], "gates": rep["gates"], "refs": refs,
                 "zones_require_refill": rep["stages"]["place"].get("zones_require_refill", False),
+                "preserve_routing": rep["stages"]["place"].get("preserve_routing"),
                 "placed_board": rep["artifacts"]["placed_board"], "gallery": rep["artifacts"]["gallery"],
                 "run_report": str(Path(rep["artifacts"]["run_dir"]) / "run_report.json")}
 
