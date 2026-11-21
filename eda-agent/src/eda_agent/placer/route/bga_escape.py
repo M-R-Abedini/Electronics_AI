@@ -650,6 +650,16 @@ def plan_bga_escapes(
         ncols, nrows = bga["ncols"], bga["nrows"]
         cx, cy = bga["cx"], bga["cy"]
 
+        # On fine-pitch HDI BGAs (pitch <= 0.65 mm with allow_microvias=True), inner-ring
+        # (ring >= 1) signal balls physically cannot escape on the surface layer and require
+        # microvia-in-pad escape automatically.
+        auto_hdi_signals = (
+            microvia != "off"
+            and board_allows_uvia
+            and (microvia == "on" or pitch <= MICROVIA_AUTO_PITCH_MM)
+        )
+        escape_sig_here = bool(include_signals or auto_hdi_signals)
+
         # Sort balls from outermost inner ring inward for deterministic, symmetric fanout.
         candidates: list[tuple[int, int, int, Pad]] = []
         for (ci, ri), pad in bga["grid"].items():
@@ -658,7 +668,7 @@ def plan_bga_escapes(
             if (fp.ref, str(pad.number)) in handled:
                 continue
             is_plane = pad.net in plane_nets
-            if not include_signals and not is_plane:
+            if not escape_sig_here and not is_plane:
                 continue
             ring = min(ci, ncols - 1 - ci, ri, nrows - 1 - ri)
             is_outer = ring == 0
@@ -689,7 +699,7 @@ def plan_bga_escapes(
                 and adj1 is not None
                 and (microvia == "on" or pitch <= MICROVIA_AUTO_PITCH_MM or not opts)
             )
-            target_plane = plane_polys.get(net) if (not include_signals) else None
+            target_plane = plane_polys.get(net) if (not escape_sig_here) else None
             net_plane_lyrs = plane_layers_by_net.get(net, set())
 
             placed_uvia: list[dict] | None = None
@@ -702,7 +712,7 @@ def plan_bga_escapes(
                         adj2 is not None
                         and (
                             (net in plane_nets and adj1 not in net_plane_lyrs and adj2 in net_plane_lyrs)
-                            or (include_signals and net not in plane_nets and ring >= 2)
+                            or (escape_sig_here and net not in plane_nets and ring >= 2)
                         )
                     )
                     can_l1_l2 = (
