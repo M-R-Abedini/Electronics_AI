@@ -39,8 +39,9 @@ def test_pro_pcb_designer_skill_frontmatter_and_reference_links():
     assert "description:" in frontmatter
 
     links = re.findall(r"\]\((references/[^)]+\.md)\)", text)
-    assert len(links) >= 5
+    assert len(links) >= 6
     assert "references/routing-silkscreen-and-visual-qa.md" in links
+    assert "references/schematic-review-eco-and-fab-release.md" in links
     for rel in links:
         target = SKILL_DIR / rel
         assert target.is_file(), f"broken reference link in SKILL.md: {rel}"
@@ -51,7 +52,8 @@ def test_skill_silkscreen_enums_and_mandatory_visual_qa_gate():
     skill_md = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     checklist_md = (SKILL_DIR / "references" / "review-and-signoff-checklist.md").read_text(encoding="utf-8")
     qa_md = (SKILL_DIR / "references" / "routing-silkscreen-and-visual-qa.md").read_text(encoding="utf-8")
-    combined = f"{skill_md}\n{checklist_md}\n{qa_md}"
+    fab_md = (SKILL_DIR / "references" / "schematic-review-eco-and-fab-release.md").read_text(encoding="utf-8")
+    combined = f"{skill_md}\n{checklist_md}\n{qa_md}\n{fab_md}"
 
     # Every live silkscreen_policy and fab_profile enum must stay documented in the skill.
     for pol in silkscreen.SILKSCREEN_POLICIES:
@@ -59,10 +61,11 @@ def test_skill_silkscreen_enums_and_mandatory_visual_qa_gate():
     for fab in silkscreen.FAB_PROFILES:
         assert f"`{fab}`" in qa_md, f"fab_profile `{fab}` missing from routing-silkscreen-and-visual-qa.md"
 
-    # Mandatory visual QA gate (P9) and IPC-7351 silkscreen sign-off must be enforced in both SKILL.md and checklist.
+    # Mandatory visual QA gate (P9), IPC-7351 silkscreen, and industrial pre-fab release guards.
     assert "P9" in skill_md and "include_images=true" in skill_md
     assert "P9" in checklist_md and "include_images=true" in checklist_md
     assert "F.Fab" in combined and "B.Fab" in combined and "15" in combined and "25 um" in combined
+    assert "--schematic-parity" in fab_md and "WAIVERS.md" in fab_md and "fiducials" in fab_md.lower()
 
 
 def test_skill_tool_names_and_intent_schema_enums_match_live_code():

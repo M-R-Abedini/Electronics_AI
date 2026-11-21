@@ -30,13 +30,14 @@ Act as a principal PCB hardware engineering team grounded in **Robert Feranec (F
 
 Execute these stages in strict order (full stage hierarchy in [Routing, Silkscreen & Visual QA](references/routing-silkscreen-and-visual-qa.md)). Never skip `inspect`, `intent_validate`, or the **Mandatory Visual Inspection (`P9`)**.
 
-### Stage 1 — Inspect & Establish Ground Truth (`placer__inspect`)
-1. Call `placer__inspect(board_path=..., mechanical_refs=...)` to read the Board IR (read-only).
-2. Extract and report concisely:
+### Stage 1 — Pre-Placement Schematic Gate & Ground Truth (`placer__inspect`)
+1. If starting from or revising a schematic, verify the **Pre-Placement Schematic Integrity Gate** first (see [Schematic Review, ECO & Fab Release](references/schematic-review-eco-and-fab-release.md)): `kicad-cli sch erc --severity-all` clean (`0` errors/warnings), zero duplicate references, zero un-netted footprint pads (watch KiCad 10 library pin renames like `5 -> SH`), regulator dividers verified from netlist (`Vref * (1 + Rtop/Rbot)`), and never invent IC pinouts.
+2. Call `placer__inspect(board_path=..., mechanical_refs=...)` to read the Board IR (read-only).
+3. Extract and report concisely:
    - Copper layer count, inferred layer roles (`signal` / `plane` / `mixed`), and **`stackup_policy`** (`locked` vs `needs_decision`).
    - Assembly sides currently used, fixed parts (locked, mechanical, overhanging, edge connectors), capacity warnings, baseline **`silkscreen`** DFM audit (`dfm_score`, `visible_ref_designators`, `reference_designators.errors`, height/stroke/pad-clearance issues, density classification), and all `unknowns` (missing stackup dielectric, derived courtyards, unconfirmed diff pairs).
    - Measured mechanical evidence for external connectors and mounting features.
-3. **Decision Gate 1 (Stop & Ask ONLY if truly blocking):**
+4. **Decision Gate 1 (Stop & Ask ONLY if truly blocking):**
    - If `stackup_policy == "needs_decision"` (no plane/pour on any layer and no user policy yet): present concrete stackup options with trade-offs (see [Hartley Return-Path & Stackup Reference](references/hartley-return-path-si-pi.md)) and ask the user before proposing pours. **Never silently invent planes.**
    - If starting a new/cold layout and assembly level (`top_only` Level 1 vs two-sided `expert`/Level 2/3) is unspecified: confirm with the user (default for new designs is Level 1 `top_only`; for existing boards/re-layout use `expert` unless asked otherwise; for Altium without proven flip, stay Level 1).
    - Confirm target `fab_profile` (`ipc_standard`, `jlcpcb`, `pcbway`, or `high_precision_lpi`) and `silkscreen_policy` (`auto`, `ipc_standard`, `dense`, `assembly_only`, or `off`) if the user specified a fab house or ultra-dense assembly-only preference; otherwise use `silkscreen_policy="auto"` and `fab_profile="ipc_standard"`.
@@ -76,7 +77,7 @@ Execute these stages in strict order (full stage hierarchy in [Routing, Silkscre
 4. For targeted single-component local improvements (e.g., rotating a connector-adjacent resistor or nudging an IC escape blocker), test hypotheses with `placer__refine(run=..., change=..., preview=true)` first, then equal-budget routing (`preview=false`), accepting only strict non-regressing wins—and **visually re-inspect the updated gallery images** after every accepted change.
 5. Apply the full [Review & Sign-Off Checklist](references/review-and-signoff-checklist.md) before presenting results to the user.
 
-### Stage 6 — Safe Transactional Apply & Instant Revert (`placer__apply` / `placer__revert`)
+### Stage 6 — Safe Transactional Apply, Instant Revert & Fabrication Release (`placer__apply` / `placer__revert`)
 1. Never apply automatically without explicit user approval of the reviewed run **and visual gallery renders**.
 2. Preview first with `placer__apply(run=..., dry_run=true)` to verify target path, artifact kind (`routed` vs `placed`), and SHA-256 freshness.
 3. Apply safely:
@@ -84,6 +85,7 @@ Execute these stages in strict order (full stage hierarchy in [Routing, Silkscre
    - **In-place update (only when explicitly requested by the user):** `placer__apply(run=..., adapter="kicad_file", in_place=true)` checks passing gates + live SHA-256, writes a verified backup, and swaps atomically.
    - **Altium targets:** `placer__apply(run=..., adapter="altium_plan")` enforces Assembly Level 1 (no side flip unless `allow_flip=true`) and emits deterministic `altium_apply_plan.json` + `altium_revert_plan.json`.
 4. Always report the returned `apply_id` so the user can roll back in `< 2 s` with `placer__revert(apply_id=...)` at any time.
+5. **Before Fabrication Ordering:** Run the **4-Track Independent Read-Only Design Review** (Power, SoC/DDR, Peripherals, Physical/DFM), verify `kicad-cli pcb drc --refill-zones --schematic-parity` (`0` errors, `0` unconnected, `0` parity), deliver the complete KiCad project + Gerber X2 / Excellon / grouped BOM / CPL / `F.Fab` assembly PDF / `WAIVERS.md` / explicit Fab Notes (impedance, finish, VIPPO/microvia filling if HDI, silkscreen cured-ink confirmation), and list physical checks still required per [Schematic Review, ECO & Fab Release](references/schematic-review-eco-and-fab-release.md).
 
 ---
 
@@ -93,6 +95,7 @@ Load the relevant reference on demand during the workflow:
 
 - [Feranec Floorplan Methodology](references/feranec-floorplan-methodology.md) — Block partitioning, signal flow, mechanical anchoring, decoupling/crystal/power/ESD layout physics, and visual review criteria.
 - [Hartley Return-Path & SI/PI Physics](references/hartley-return-path-si-pi.md) — Current return loops, stackup trade-offs, reference-plane continuity, return vias vs stitching capacitors, switching-converter isolation, and F6 Lint interpretation.
-- [Routing, Silkscreen & Visual QA](references/routing-silkscreen-and-visual-qa.md) — Complete placement-to-route-to-heal execution order (`S6a`, Freerouting, thermal/mask healing), full IPC-7351 Silkscreen & Assembly Legend (`F.Fab`/`B.Fab`) standard & policy matrix, and the Mandatory Vision-Driven QA Loop (`P9`).
+- [Routing, Silkscreen & Visual QA](references/routing-silkscreen-and-visual-qa.md) — Complete placement-to-route-to-heal execution order (`S6a`, HDI/microvia-in-pad guidance, Freerouting, thermal/mask healing), full IPC-7351 Silkscreen & Assembly Legend (`F.Fab`/`B.Fab`) standard & policy matrix, and the Mandatory Vision-Driven QA Loop (`P9`).
+- [Schematic Review, ECO & Fab Release](references/schematic-review-eco-and-fab-release.md) — Pre-placement schematic integrity & ERC checks, 4-track independent pre-fab design review, strict DRC repair cascade, plane-island recovery, safe ECO on routed boards, KiCad 10 tooling guardrails, and the manufacturer-ready fabrication release checklist.
 - [Intent Schema & `placer__*` Tool Contract](references/intent-and-tool-contract.md) — Exact `design_intent.json` schema v1, all 37 part roles, net classes, sources, and all 11 `placer__*` MCP tools.
 - [Review & Sign-Off Checklist](references/review-and-signoff-checklist.md) — Hard gates, Pro Score weights, C1/C2/C3 comparisons, failure triage, prohibited claims, and sign-off template.
