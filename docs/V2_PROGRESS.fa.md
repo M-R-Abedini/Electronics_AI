@@ -621,6 +621,23 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
 
 - **آزمون‌ها و شواهد:** ۴ تست جدید (`test_silkscreen_ipc7351.py`، پاس در KiCad و `3 passed, 1 skipped` در شبیه‌سازی CI بدون KiCad)، `eda-agent/tests/placer/` (**۱۶۲ پاس، ۱۲ skip**)، `pytest tests/` (**۸۶۹ پاس**)، `cargo test` (`۱۶/۱۶`)، `cargo clippy -- -D warnings` (۰)، `ruff check` (۰)، `test_no_em_dashes.py` (`۳/۳`)، `smoke_stdio.py` و `smoke_suite_stdio.py --toolset full` (`535` ابزار، `placer: 11`)، `pip wheel` + `build_plugin.py --smoke --check-reproducible` (`439` فایل) و `pixi run doctor` (`GREEN`). شواهد سبک: [silkscreen_ipc7351_summary.json](benchmarks/silkscreen_ipc7351_summary.json).
 
+### پسافاز `F9` · پشتیبانی کامل `Microvia-in-Pad` (`L1-L2` / `L2-L3` پلکانی) در `DSN` و `S6a` + مقاوم‌سازی `DSN/SES` (مقایسهٔ `mixelpixx/KiCAD-MCP-Server`) (2026-11-21)
+
+- **موتور `Microvia-in-Pad` در `S6a` و `DSN` (`ir.py`, `macro.py`, `copper.py`, `bga_escape.py`, `s6a.py`, `dsn.py`, `check.py`, `kicad_pcbnew_helper.py`, `pairs.py`):**
+  - **مدل لایه‌ای و گیت هزینهٔ HDI:** افزودن `microvia_diameter`/`microvia_drill` به `NetClass` (خوانش زنده از `GetuViaDiameter`/`GetuViaDrill` در KiCad 10)، افزودن `allow_microvias`/`min_microvia_diameter`/`min_microvia_drill`/`min_via_annular_width` به `Board.rules`، و افزودن `via_type`/`filled`/`capped` به `MVia` و `_add_copper` با پشتیبانی کامل `VIATYPE_MICROVIA` روی جفت لایه‌های `(F.Cu, In1.Cu)` و `(In1.Cu, In2.Cu)` و پرچم‌های `IPC-4761 Type VII` (`SetPrimaryDrillFilledFlag(True)` / `SetPrimaryDrillCappedFlag(True)` برای VIPPO لایهٔ بیرونی). بدون `allow_microvias=True` در پروژه، هیچ میکروویای ناخواسته‌ای تولید نمی‌شود (حفظ گیت هزینهٔ HDI).
+  - **تطابق لایه‌ای سوراخ‌ها (`via_layer_span` و `holes_separated`):** بررسی برخورد سوراخ به سوراخ با درنظرگرفتن بازهٔ لایهٔ هر ویا تا `L1-L2` با `In3-B.Cu` برخورد کاذب نداشته باشد اما `L1-L2` و `L2-L3` در یک مختصات مشترک (Stacked) مسدود شوند و صرفاً الگوی **پلکانی (`Staggered`)** تولید گردد.
+  - **موتور فرار BGA ریزگام (`bga_escape.py` + `s6a.py --microvia {auto,on,off}`):**
+    - لایهٔ ۱ (`Tier-1 VIPPO`): میکروویای `L1-L2` (`filled=True, capped=True`) در مرکز توپ BGA برای اتصال مستقیم به صفحهٔ مجاور `In1.Cu`.
+    - لایهٔ ۲ (`Tier-2 Staggered`): میکروویای `L1-L2` + ترک کوتاه روی `In1.Cu` + میکروویای پلکانی `L2-L3` (`filled=True, capped=False`, `VIATYPE_MICROVIA`) برای رسیدن به `In2.Cu` (حداقل فاصلهٔ پلکانی `>= max(diameter + clr, drill + hole_to_hole)`).
+  - **نگهبان ساختار `DSN` (`dsn.restrict_structure_vias` + `dsn.add_class_via_rule`):** پدستک‌های میکروویا (`Via[0-1]`/`Via[1-2]`) در `(library ...)` و سیم‌کشی قفل‌شدهٔ `(wiring ... (type fix))` حفظ می‌شوند اما از `(structure (via ...))` حذف می‌شوند تا Freerouting بیرون از `S6a` میکروویای پرهزینه اسپم نکند (همراه با `allow_router_microvias=True` و `add_class_via_rule` برای HDI اختیاری کلاس‌محور).
+- **سه بهبود واقعی برگرفته از ممیزی `mixelpixx/KiCAD-MCP-Server` (`kicad_pcbnew_helper.py`):**
+  1. **رفع باگ `aViaDrillDefault` در KiCad 10.0.8 (`_restore_via_drills`):** بازیابی دقیق قطر دریل ویاهای تازه‌واردشده از نام پدستک `Via[..]_<D>:<d>_um` در SES (جلوگیری از کوچک‌شدن حلقهٔ مسی یا تغییر دریل روی نت‌های کلاس سفارشی).
+  2. **پاک‌سازی پیش از ایمپورت SES (`_sanitize_ses_placement`):** حذف رکوردهای `(place ...)` بدون مرجع یکتا روی برد (مانند `REF**_1`) تا `ImportSpecctraSES` متوقف نشود.
+  3. **برش‌های داخلی `Edge.Cuts` (`_obstacles` نوع `edge_cutout`):** اکسپورت حفره‌های داخلی مرز برد با حاشیهٔ `m_CopperEdgeClearance` روی همهٔ لایه‌های مسی به عنوان keepout در DSN.
+  4. **رفع باگ `GetWidth(F_Cu)` در `_via_width_nm`:** خواندن قطر ویا روی `via.TopLayer()` به جای `F.Cu` ثابت تا میکروویاهای درونی `L2-L3` بدون خطا خوانده و بازتولید شوند.
+- **آزمون زنده روی KiCad 10.0.8 + Freerouting 2.5.0 (`test_microvia_and_ses_hardening.py`):** برد ۶ لایهٔ HDI با BGA گام `0.50 mm` و برش داخلی `Edge.Cuts`: تولید ۶ میکروویا (`4× L1-L2` + `2× L2-L3` پلکانی) با **۰ خطای DRC**، اکسپورت `6` مانع `edge_cutout`، حذف پدستک‌های غیرسرتاسری از `(structure (via ...))`، روت کامل با پوشش `100%` (`passed=True`)، بقای بیت‌به‌بیت تمام میکروویاها پس از SES، پاک‌سازی زندهٔ `REF**_1` و بازیابی زندهٔ دریل ویای کلاس سفارشی `VDD` (`0.20 → 0.30 mm`).
+
+
 
 
 

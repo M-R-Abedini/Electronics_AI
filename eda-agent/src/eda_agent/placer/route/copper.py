@@ -50,6 +50,20 @@ def outward(fp: Footprint, pad: Pad) -> tuple[float, float]:
     return ax / n, ay / n
 
 
+def via_layer_span(via: dict, ordered_layers: list[str]) -> set[str]:
+    """Return the exact set of copper layers crossed by ``via`` (through, micro, blind, or buried)."""
+    raw = list(via.get("layers") or ())
+    if not ordered_layers:
+        return set(raw)
+    if len(raw) >= 2 and raw[0] in ordered_layers and raw[-1] in ordered_layers:
+        a = ordered_layers.index(raw[0])
+        b = ordered_layers.index(raw[-1])
+        return set(ordered_layers[min(a, b): max(a, b) + 1])
+    if raw:
+        return set(raw)
+    return set(ordered_layers)
+
+
 def copper_separated(tracks: list[dict], vias: list[dict], other: list[dict], clearance: float) -> bool:
     def shape(item):
         if "points" in item:
@@ -65,18 +79,50 @@ def copper_separated(tracks: list[dict], vias: list[dict], other: list[dict], cl
     return True
 
 
-def existing_holes(board: Board, copper: list[dict]) -> list[tuple[float, float, float]]:
+def existing_holes(board: Board, copper: list[dict]) -> list[tuple[float, float, float, frozenset[str] | None]]:
     # Use the larger drill dimension as a conservative bound for slotted pads.
-    pads = [(x, y, max(pad.drill)) for fp in board.footprints for pad, (x, y) in fp.pads_world() if pad.drill]
-    return pads + [(v["x"], v["y"], v["drill"]) for v in copper if "drill" in v]
+    # None layer span means through-all-layers (PTH/NPTH pads and through vias).
+    ordered = [cl.canonical for cl in sorted(board.copper_layers, key=lambda c: c.index)]
+    full_span = frozenset(ordered) if ordered else None
+    pads: list[tuple[float, float, float, frozenset[str] | None]] = [
+        (x, y, max(pad.drill), full_span)
+        for fp in board.footprints
+        for pad, (x, y) in fp.pads_world()
+        if pad.drill
+    ]
+    vias: list[tuple[float, float, float, frozenset[str] | None]] = []
+    for v in copper:
+        if "drill" not in v:
+            continue
+        span = frozenset(via_layer_span(v, ordered)) if ordered and v.get("layers") else full_span
+        vias.append((v["x"], v["y"], v["drill"], span))
+    return pads + vias
 
 
-def holes_separated(vias: list[dict], holes: list[tuple[float, float, float]], clearance: float) -> bool:
+def _hole_layers(entry: tuple) -> frozenset[str] | None:
+    return entry[3] if len(entry) >= 4 else None
+
+
+def holes_separated(
+    vias: list[dict],
+    holes: list[tuple],
+    clearance: float,
+    ordered_layers: list[str] | None = None,
+) -> bool:
     existing = list(holes)
     for via in vias:
         x, y, drill = via["x"], via["y"], via["drill"]
-        if any(math.hypot(x - px, y - py) < (drill + pd) / 2 + clearance - 1e-6
-               for px, py, pd in existing):
-            return False
-        existing.append((x, y, drill))
+        v_span = (
+            frozenset(via_layer_span(via, ordered_layers))
+            if ordered_layers and via.get("layers")
+            else (frozenset(via["layers"]) if via.get("via_type", "through") != "through" and via.get("layers") else None)
+        )
+        for entry in existing:
+            px, py, pd = entry[0], entry[1], entry[2]
+            e_span = _hole_layers(entry)
+            if v_span is not None and e_span is not None and not (v_span & e_span):
+                continue
+            if math.hypot(x - px, y - py) < (drill + pd) / 2 + clearance - 1e-6:
+                return False
+        existing.append((x, y, drill, v_span))
     return True

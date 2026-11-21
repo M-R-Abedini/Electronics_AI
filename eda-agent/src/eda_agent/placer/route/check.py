@@ -302,7 +302,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 obstacle_keepouts: bool = True, reference_board: str | Path | None = None,
                 router_timeout_s: int | None = None, intent: dict | None = None,
                 sanitize_drc: bool = True, heal_thermals: bool = True,
-                heal_mask_bridges: bool = True) -> dict:
+                heal_mask_bridges: bool = True, allow_router_microvias: bool = False) -> dict:
     """Route-check ``board``.  ``reference_board`` is the original input whose DRC
     findings count as pre-existing (architecture 8.1.3); it defaults to ``board``
     itself, which is right only when ``board`` *is* the designer's file.  A
@@ -356,6 +356,11 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     intent_kps = intent_wire_keepouts(ir, intent) if obstacle_keepouts and intent else []
     text = dsn.add_wire_keepouts(text, macro_zone_keepouts + intent_kps)
     text = dsn.restore_wiring_precision(text, ir)
+    text, restricted_vias = dsn.restrict_structure_vias(
+        text,
+        layer_count=len(ir.copper_layers),
+        allow_blind_micro=allow_router_microvias,
+    )
     route_dsn = work / "route.dsn"
     route_dsn.write_text(dsn.add_keepouts(text, keepouts), encoding="utf-8", newline="\n")
     t = tick("prepare", t)
@@ -524,6 +529,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "prepare": {k: v for k, v in prepared.items() if k != "obstacles"},
             "layer_roles": [asdict(r) for r in ir.stackup.roles],
             "dsn_power_layers": power_layers(ir),
+            "dsn_restricted_vias": restricted_vias,
             "macro_zone_wire_keepouts": len(macro_zone_keepouts),
             "intent_wire_keepouts": len(intent_kps),
             "obstacle_keepouts": {"exported": len(keepouts), "by_kind": _by_kind(prepared["obstacles"]),

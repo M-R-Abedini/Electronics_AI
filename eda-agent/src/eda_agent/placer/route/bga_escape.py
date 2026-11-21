@@ -27,6 +27,7 @@ from .copper import (
     holes_separated,
     pad_layers,
     pad_polygon,
+    via_layer_span,
 )
 from .fanout import _obstacle_hits_nets
 
@@ -36,6 +37,8 @@ BGA_MIN_GRID = 4
 BGA_MIN_PITCH_MM = 0.35
 BGA_MAX_PITCH_MM = 1.50
 CLUSTER_TOL_MM = 0.08
+MICROVIA_AUTO_PITCH_MM = 0.65
+MICROVIA_MODES = ("auto", "on", "off")
 
 
 def _is_real_net(net: str | None) -> bool:
@@ -194,6 +197,46 @@ def _via_options(board: Board, net: str, pitch: float, pad_diam: float) -> list[
     return opts
 
 
+def _microvia_spec(board: Board, net: str, pitch: float, pad_diam: float) -> tuple[float, float, float, float] | None:
+    """Return legal (track_width, clearance, uvia_diameter, uvia_drill) for KiCad 10 microvia-in-pad.
+
+    Respects board-wide microvia minimums, netclass microvia overrides, and board annular ring
+    so generated L1-L2 / L2-L3 microvias pass KiCad 10 DRC with zero errors.
+    """
+    rules = board.netclass_of(net)
+    min_w = float(board.rules.get("min_track_width") or 0.0)
+    min_clr = float(board.rules.get("min_clearance") or 0.0)
+    min_ud = float(board.rules.get("min_microvia_diameter") or 0.0)
+    min_udr = float(board.rules.get("min_microvia_drill") or 0.0)
+    min_ann = float(board.rules.get("min_via_annular_width") or 0.0)
+
+    nc_w = max(rules.track_width, min_w) if min_w > 0 else rules.track_width
+    w = max(min_w, min(nc_w, max(min_w, 0.12))) if min_w > 0 else nc_w
+    clr = max(rules.clearance, min_clr)
+    nc_ud = float(rules.microvia_diameter or 0.0)
+    nc_udr = float(rules.microvia_drill or 0.0)
+
+    drill = max(nc_udr, min_udr, 0.10)
+    diam = max(nc_ud, min_ud, drill + 2.0 * min_ann, drill + 0.10)
+    # Microvia-in-pad must clear neighboring balls on the pad layer (with small rounding margin).
+    if pitch - 0.5 * (max(pad_diam, diam) + pad_diam) < clr - 0.005:
+        return None
+    return (round(w, 4), round(clr, 4), round(diam, 4), round(drill, 4))
+
+
+def _adjacent_escape_layers(pad_layer: str, ordered_layers: list[str]) -> tuple[str | None, str | None]:
+    """Return (adj1, adj2) inner escape layers stepping inward from ``pad_layer`` (F.Cu or B.Cu)."""
+    if len(ordered_layers) < 4 or pad_layer not in (ordered_layers[0], ordered_layers[-1]):
+        return (None, None)
+    if pad_layer == ordered_layers[0]:
+        adj1 = ordered_layers[1]
+        adj2 = ordered_layers[2] if len(ordered_layers) >= 6 else None
+        return (adj1, adj2)
+    adj1 = ordered_layers[-2]
+    adj2 = ordered_layers[-3] if len(ordered_layers) >= 6 else None
+    return (adj1, adj2)
+
+
 def _item_bbox(item: dict) -> tuple[float, float, float, float]:
     if "points" in item:
         pts = item["points"]
@@ -246,7 +289,7 @@ class _BgaContext:
         via_ko_polys = [g for _, flags, g in keepouts if flags.get("vias")]
         self.via_keepout = prep(unary_union(via_ko_polys)) if via_ko_polys else None
         self.track_keepout = {}
-        for lyr in (self.top_layer, self.bottom_layer):
+        for lyr in self.ordered_layers:
             polys = [g for lays, flags, g in keepouts if lyr in lays and flags.get("tracks")]
             self.track_keepout[lyr] = prep(unary_union(polys)) if polys else None
 
@@ -263,7 +306,7 @@ class _BgaContext:
                     self.obstacles_raw.append((item, copper_lyr, Polygon(ring), is_mask, grown))
         self.obs_tree = STRtree([o[2] for o in self.obstacles_raw]) if self.obstacles_raw else None
 
-        self.holes: list[tuple[float, float, float]] = list(existing_holes(board, fixed))
+        self.holes: list[tuple[float, float, float, frozenset[str] | None]] = list(existing_holes(board, fixed))
         self.copper: list[tuple[dict, tuple[float, float, float, float], str, float]] = []
         self.vias_by_net: dict[str, list[dict]] = {}
         for item in fixed:
@@ -273,21 +316,30 @@ class _BgaContext:
         net = item.get("net") or ""
         rules = self.board.netclass_of(net) if net else None
         clr = max(self.min_clr, rules.clearance) if rules else self.min_clr
-        # A through via crosses every copper layer when checking clearance.
-        stored = {**item, "layers": self.ordered_layers} if "points" not in item else item
-        self.copper.append((stored, _item_bbox(item), net, clr))
         if "points" not in item:
-            self.vias_by_net.setdefault(net, []).append(item)
+            span = sorted(via_layer_span(item, self.ordered_layers))
+            stored = {**item, "layers": span}
+            self.copper.append((stored, _item_bbox(item), net, clr))
+            self.vias_by_net.setdefault(net, []).append(stored)
             if add_hole:
-                self.holes.append((float(item["x"]), float(item["y"]), float(item["drill"])))
+                self.holes.append((float(item["x"]), float(item["y"]), float(item["drill"]), frozenset(span)))
+        else:
+            self.copper.append((item, _item_bbox(item), net, clr))
 
-    def _clears_obstacles(self, geom: Any, layer: str | None, net: str, clr: float) -> bool:
+    def _clears_obstacles(
+        self,
+        geom: Any,
+        layers: str | set[str] | frozenset[str] | None,
+        net: str,
+        clr: float,
+    ) -> bool:
         if self.obs_tree is None:
             return True
+        layer_set = {layers} if isinstance(layers, str) else layers
         query_box = geom.buffer(clr + 0.05)
         for idx in self.obs_tree.query(query_box):
             item, obs_lyr, poly, is_mask, grown = self.obstacles_raw[int(idx)]
-            if layer is not None and obs_lyr != layer:
+            if layer_set is not None and obs_lyr not in layer_set:
                 continue
             if _obstacle_hits_nets(self.board, item, {net}):
                 continue
@@ -298,6 +350,152 @@ class _BgaContext:
             elif geom.distance(poly) < req - 1e-6:
                 return False
         return True
+
+    def _validate_microvia(
+        self,
+        net: str,
+        via_xy: tuple[float, float],
+        span_layers: tuple[str, str],
+        clr: float,
+        diameter: float,
+        drill: float,
+        *,
+        allow_own_pad_at: tuple[float, float] | None = None,
+        extra_copper: list[dict] | None = None,
+        extra_holes: list[tuple[float, float, float, frozenset[str] | None]] | None = None,
+    ) -> dict | None:
+        if self.outline is None:
+            return None
+        vx, vy = round(via_xy[0], 4), round(via_xy[1], 4)
+        via_pt = Point(vx, vy)
+        via_disc = via_pt.buffer(diameter * 0.5)
+        if not self.outline.covers(via_disc.buffer(self.edge)):
+            return None
+        if self.via_keepout is not None and self.via_keepout.intersects(via_disc):
+            return None
+        span_set = frozenset(span_layers)
+        if self.pad_tree is not None:
+            pad_margin = 0.005
+            search_pad_clr = max(clr, self.max_pad_clr) + 0.02
+            for idx in self.pad_tree.query(via_disc.buffer(search_pad_clr)):
+                p_geom = self.pad_geoms[int(idx)]
+                p_lyrs, p_net, p_kind, p_clr = self.pad_meta[int(idx)]
+                if not (p_lyrs & span_set):
+                    continue
+                if allow_own_pad_at is not None and p_net == net and p_kind == "smd":
+                    c = p_geom.centroid
+                    if math.hypot(float(c.x) - allow_own_pad_at[0], float(c.y) - allow_own_pad_at[1]) <= 0.05:
+                        continue
+                if p_kind != "smd" and p_kind != "np_thru_hole" and p_net == net:
+                    continue
+                req = max(clr, p_clr) + pad_margin
+                if via_disc.distance(p_geom) < req:
+                    return None
+        if not self._clears_obstacles(via_disc, span_set, net, clr):
+            return None
+        for other_via in self.vias_by_net.get(net, ()):
+            if not (set(other_via.get("layers") or ()) & span_set):
+                continue
+            min_gap = (diameter + float(other_via["diameter"])) * 0.5 + clr
+            if math.dist((vx, vy), (float(other_via["x"]), float(other_via["y"]))) < min_gap - 1e-6:
+                return None
+        via = {
+            "x": vx,
+            "y": vy,
+            "diameter": diameter,
+            "drill": drill,
+            "net": net,
+            "via_type": "micro",
+            "layers": [span_layers[0], span_layers[1]],
+            "filled": True,
+            "capped": allow_own_pad_at is not None,
+        }
+        all_holes = self.holes + (extra_holes or [])
+        if not holes_separated([via], all_holes, self.hole_to_hole, ordered_layers=self.ordered_layers):
+            return None
+        span_via = {**via, "layers": list(span_set)}
+        v_box = _item_bbox(via)
+        for item, i_box, i_net, i_clr in self.copper:
+            if i_net == net:
+                continue
+            gap = max(clr, i_clr)
+            if not _bboxes_close(v_box, i_box, gap):
+                continue
+            if not copper_separated([], [span_via], [item], gap):
+                return None
+        if extra_copper:
+            for item in extra_copper:
+                if item.get("net") == net:
+                    continue
+                if not copper_separated([], [span_via], [item], clr):
+                    return None
+        return via
+
+    def validate_staggered_microvia(
+        self,
+        net: str,
+        pad_layer: str,
+        adj1_layer: str,
+        adj2_layer: str,
+        pad_xy: tuple[float, float],
+        stagger_xy: tuple[float, float],
+        width: float,
+        clr: float,
+        diameter: float,
+        drill: float,
+    ) -> list[dict] | None:
+        """Validate VIPPO L1-L2 at pad center + short adj1 track + staggered L2-L3 microvia."""
+        v1 = self._validate_microvia(
+            net, pad_xy, (pad_layer, adj1_layer), clr, diameter, drill,
+            allow_own_pad_at=pad_xy,
+        )
+        if v1 is None:
+            return None
+        vx1, vy1 = v1["x"], v1["y"]
+        vx2, vy2 = round(stagger_xy[0], 4), round(stagger_xy[1], 4)
+        # Strictly staggered (non-stacked): ensure laser drills on L1-L2 and L2-L3 stay cleanly separated.
+        min_stagger = max(diameter + clr, drill + self.hole_to_hole)
+        if math.hypot(vx2 - vx1, vy2 - vy1) < min_stagger - 1e-4:
+            return None
+        seg_pts = [(vx1, vy1), (vx2, vy2)]
+        line = LineString(seg_pts)
+        track_copper = line.buffer(width * 0.5)
+        if self.outline is None or not self.outline.covers(track_copper.buffer(self.edge)):
+            return None
+        tko = self.track_keepout.get(adj1_layer)
+        if tko is not None and tko.intersects(track_copper):
+            return None
+        if self.pad_tree is not None:
+            search_pad_clr = max(clr, self.max_pad_clr) + 0.02
+            for idx in self.pad_tree.query(track_copper.buffer(search_pad_clr)):
+                p_geom = self.pad_geoms[int(idx)]
+                p_lyrs, p_net, p_kind, p_clr = self.pad_meta[int(idx)]
+                if adj1_layer not in p_lyrs:
+                    continue
+                if p_net == net and p_kind != "np_thru_hole":
+                    continue
+                if track_copper.distance(p_geom) < max(clr, p_clr) + 0.005:
+                    return None
+        if not self._clears_obstacles(track_copper, adj1_layer, net, clr):
+            return None
+        track = {"layer": adj1_layer, "width": width, "net": net, "points": seg_pts}
+        t_box = _item_bbox(track)
+        for item, i_box, i_net, i_clr in self.copper:
+            if i_net == net:
+                continue
+            gap = max(clr, i_clr)
+            if not _bboxes_close(t_box, i_box, gap):
+                continue
+            if not copper_separated([track], [], [item], gap):
+                return None
+        v1_hole = (vx1, vy1, drill, frozenset((pad_layer, adj1_layer)))
+        v2 = self._validate_microvia(
+            net, (vx2, vy2), (adj1_layer, adj2_layer), clr, diameter, drill,
+            extra_holes=[v1_hole],
+        )
+        if v2 is None:
+            return None
+        return [v1, track, v2]
 
     def validate_dogbone(
         self,
@@ -374,7 +572,7 @@ class _BgaContext:
             "net": net,
             "layers": [self.top_layer, self.bottom_layer],
         }
-        if not holes_separated([via], self.holes, self.hole_to_hole):
+        if not holes_separated([via], self.holes, self.hole_to_hole, ordered_layers=self.ordered_layers):
             return None
 
         track = {"layer": pad_layer, "width": width, "net": net, "points": seg_pts}
@@ -399,28 +597,38 @@ def plan_bga_escapes(
     fixed: list[dict],
     already_handled: set[tuple[str, str]] | None = None,
     include_signals: bool = True,
+    microvia: str = "auto",
 ) -> dict[str, Any]:
-    """Generate DRC-safe quadrant dogbone escapes for BGA packages on >= 4-layer boards.
+    """Generate DRC-safe BGA escapes (quadrant dogbone + HDI microvia-in-pad) on >= 4-layer boards.
 
-    When ``include_signals=False``, escapes only BGA balls on inner-plane nets (power/GND),
-    which immediately complete into inner copper planes without inflating Freerouting's
-    single-threaded Pass #1 queue. When ``include_signals=True``, escapes all inner-ring
-    connected balls (signal + plane) plus unhandled outer plane balls, leaving outer-ring
-    signal balls for surface routing.
+    ``microvia`` policy:
+      - ``"off"``: classic quadrant dogbone through-vias only.
+      - ``"auto"`` (default): activates IPC-4761 Type VII Microvia-in-Pad (L1-L2 VIPPO and
+        staggered L2-L3 on >= 6-layer boards) ONLY when ``board.rules['allow_microvias']`` is
+        True and either pitch <= 0.65 mm or dogbone cannot fit a legal channel-preserving via.
+      - ``"on"``: prefers Microvia-in-Pad whenever ``board.rules['allow_microvias']`` is True
+        on >= 4-layer boards, falling back to dogbone if needed.
     """
+    if microvia not in MICROVIA_MODES:
+        raise ValueError(f"unsupported microvia mode {microvia!r}; expected one of {MICROVIA_MODES}")
     handled = set(already_handled or ())
     if len(board.copper_layers) < 4:
         return {"copper": [], "rows": [], "packages": []}
 
+    by_canon = {cl.name: cl.canonical for cl in board.copper_layers}
     planes = plane_zone_layers(board)
     plane_polys: dict[str, Any] = {}
+    plane_layers_by_net: dict[str, set[str]] = {}
     for z in board.zones:
         if z.get("net") and z.get("outline") and z.get("uuid") in planes:
             poly = Polygon(z["outline"][0], z["outline"][1:])
             if not poly.is_empty:
                 prev = plane_polys.get(z["net"])
                 plane_polys[z["net"]] = poly if prev is None else unary_union([prev, poly])
+            canon_lyrs = {by_canon.get(n, n) for n in planes[z["uuid"]]}
+            plane_layers_by_net.setdefault(z["net"], set()).update(canon_lyrs)
     plane_nets = set(plane_polys)
+    board_allows_uvia = bool(board.rules.get("allow_microvias", False))
 
     bgas: list[tuple[Footprint, dict[str, Any]]] = []
     for fp in sorted(board.footprints, key=lambda f: f.ref):
@@ -462,24 +670,94 @@ def plan_bga_escapes(
 
         pkg_planned = len(candidates)
         pkg_routed = 0
-        for _ring, _ri, _ci, pad in candidates:
+        pkg_microvia = 0
+        for ring, _ri, _ci, pad in candidates:
             net = pad.net
             pad_lyrs = pad_layers(fp, pad, ctx.ordered_layers)
             if len(pad_lyrs) != 1:
                 continue
             pad_layer = pad_lyrs[0]
+            pad_xy = fp.pad_world(pad)
+            offsets = _quadrant_offsets(pad.local[0], pad.local[1], cx, cy, px, py)
             opts = _via_options(board, net, pitch, pad_diam)
             row: dict[str, Any] = {"ref": fp.ref, "pad": str(pad.number), "net": net, "routed": False}
+
+            adj1, adj2 = _adjacent_escape_layers(pad_layer, ctx.ordered_layers)
+            want_uvia = (
+                microvia != "off"
+                and board_allows_uvia
+                and adj1 is not None
+                and (microvia == "on" or pitch <= MICROVIA_AUTO_PITCH_MM or not opts)
+            )
+            target_plane = plane_polys.get(net) if (not include_signals) else None
+            net_plane_lyrs = plane_layers_by_net.get(net, set())
+
+            placed_uvia: list[dict] | None = None
+            uvia_kind: str | None = None
+            if want_uvia:
+                uspec = _microvia_spec(board, net, pitch, pad_diam)
+                if uspec is not None:
+                    uw, uclr, ud, udr = uspec
+                    need_l2_l3 = (
+                        adj2 is not None
+                        and (
+                            (net in plane_nets and adj1 not in net_plane_lyrs and adj2 in net_plane_lyrs)
+                            or (include_signals and net not in plane_nets and ring >= 2)
+                        )
+                    )
+                    can_l1_l2 = (
+                        (net not in plane_nets)
+                        or (adj1 in net_plane_lyrs)
+                    )
+                    if need_l2_l3 and adj2 is not None:
+                        for dx, dy in offsets:
+                            stag_xy = transform((pad.local[0] + dx, pad.local[1] + dy), (fp.x, fp.y), fp.rotation)
+                            if target_plane is not None and not target_plane.covers(Point(round(stag_xy[0], 4), round(stag_xy[1], 4))):
+                                continue
+                            got_u = ctx.validate_staggered_microvia(
+                                net, pad_layer, adj1, adj2, pad_xy, stag_xy, uw, uclr, ud, udr,
+                            )
+                            if got_u is not None:
+                                placed_uvia = got_u
+                                uvia_kind = "microvia_l1_l2_l3_staggered"
+                                break
+                    elif can_l1_l2 and (target_plane is None or target_plane.covers(Point(round(pad_xy[0], 4), round(pad_xy[1], 4)))):
+                        v1 = ctx._validate_microvia(
+                            net, pad_xy, (pad_layer, adj1), uclr, ud, udr,
+                            allow_own_pad_at=pad_xy,
+                        )
+                        if v1 is not None:
+                            placed_uvia = [v1]
+                            uvia_kind = "microvia_in_pad_l1_l2"
+
+            if placed_uvia is not None:
+                for item in placed_uvia:
+                    ctx.register_copper(item, add_hole=("points" not in item))
+                new_copper.extend(placed_uvia)
+                handled.add((fp.ref, str(pad.number)))
+                pkg_routed += 1
+                pkg_microvia += 1
+                vias_u = [c for c in placed_uvia if "points" not in c]
+                tracks_u = [c for c in placed_uvia if "points" in c]
+                row.update(
+                    routed=True,
+                    kind=uvia_kind,
+                    via_type="micro",
+                    via_count=len(vias_u),
+                    via_diameter_mm=vias_u[0]["diameter"],
+                    via_drill_mm=vias_u[0]["drill"],
+                    layers=[v["layers"] for v in vias_u],
+                    length_mm=round(sum(math.dist(t["points"][0], t["points"][1]) for t in tracks_u), 3),
+                )
+                rows.append(row)
+                continue
+
             if not opts:
                 row["failed"] = "pitch_requires_microvia_or_vip"
                 rows.append(row)
                 continue
 
-            pad_xy = fp.pad_world(pad)
-            offsets = _quadrant_offsets(pad.local[0], pad.local[1], cx, cy, px, py)
-
             placed_pair: tuple[dict, dict] | None = None
-            target_plane = plane_polys.get(net) if (not include_signals) else None
             for width, clr, vd, vdr in opts:
                 for dx, dy in offsets:
                     via_xy = transform((pad.local[0] + dx, pad.local[1] + dy), (fp.x, fp.y), fp.rotation)
@@ -501,6 +779,8 @@ def plan_bga_escapes(
                 pkg_routed += 1
                 row.update(
                     routed=True,
+                    kind="dogbone_through",
+                    via_type="through",
                     via_diameter_mm=via["diameter"],
                     via_drill_mm=via["drill"],
                     length_mm=round(math.dist(track["points"][0], track["points"][1]), 3),
@@ -515,6 +795,7 @@ def plan_bga_escapes(
             "pitch_mm": round(pitch, 3),
             "planned": pkg_planned,
             "routed": pkg_routed,
+            "microvia_routed": pkg_microvia,
         })
 
     return {"copper": new_copper, "rows": rows, "packages": packages}
