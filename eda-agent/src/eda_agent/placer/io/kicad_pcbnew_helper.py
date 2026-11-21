@@ -23,7 +23,10 @@ that reference is what broke the previous helper.
 import hashlib
 import json
 import math
+import os
+import re
 import sys
+import tempfile
 from uuid import NAMESPACE_URL, uuid5
 
 import pcbnew
@@ -228,6 +231,43 @@ def _obstacles(board):
                     "net": None,
                     "overlapping_pads": sorted(blocked),
                 })
+
+    # Interior Edge.Cuts holes/cutouts enlarged by copper_edge_clearance: KiCad's DSN exporter
+    # emits raw cutout shapes without edge clearance, so Freerouting can route inside edge clearance.
+    edge_clr = int(getattr(ds, "m_CopperEdgeClearance", 0))
+    if edge_clr > 0:
+        outline_poly = pcbnew.SHAPE_POLY_SET()
+        if board.GetBoardPolygonOutlines(outline_poly, False):
+            for oi in range(outline_poly.OutlineCount()):
+                for hi in range(outline_poly.HoleCount(oi)):
+                    hole_chain = outline_poly.Hole(oi, hi)
+                    if hole_chain.PointCount() < 3:
+                        continue
+                    hp = pcbnew.SHAPE_POLY_SET()
+                    hp.AddOutline(hole_chain)
+                    hp.Inflate(edge_clr, 16, pcbnew.CORNER_STRATEGY_ROUND_ALL_CORNERS)
+                    rings = _poly_points(hp)
+                    if not rings:
+                        continue
+                    for cu_lyr in copper_layers:
+                        blocked = [
+                            other.GetParentFootprint().GetReference() + "-" + other.GetNumber()
+                            for other in pads
+                            if other.IsOnLayer(cu_lyr)
+                            and _overlaps(hp, _item_poly(other, cu_lyr, max_error))
+                        ]
+                        out.append({
+                            "uuid": f"edge_cutout_{oi}_{hi}_{int(cu_lyr)}",
+                            "kind": "edge_cutout",
+                            "source": "board:Edge.Cuts",
+                            "class": "EDGE_CUTOUT",
+                            "layer": "Edge.Cuts",
+                            "copper": board.GetLayerName(cu_lyr),
+                            "grown_mm": _mm(edge_clr),
+                            "outlines": rings,
+                            "net": None,
+                            "overlapping_pads": sorted(blocked),
+                        })
     return out
 
 
@@ -331,15 +371,109 @@ def _pad_rows(board):
     return rows
 
 
+_VIA_TYPE_NAMES = {
+    pcbnew.VIATYPE_MICROVIA: "micro",
+    pcbnew.VIATYPE_BLIND: "blind",
+    pcbnew.VIATYPE_BURIED: "buried",
+    pcbnew.VIATYPE_THROUGH: "through",
+}
+_VIA_TYPE_BY_NAME = {v: k for k, v in _VIA_TYPE_NAMES.items()}
+_SES_VIA_PADSTACK_RE = re.compile(
+    r'\(padstack\s+"?(Via\[[^\]]*\]_(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)_um)"?'
+)
+
+
+def _via_width_nm(via):
+    try:
+        return int(via.GetWidth(via.TopLayer()))
+    except TypeError:
+        return int(via.GetWidth())
+
+
 def _signature(item):
     cls = item.GetClass()
     if cls == "PCB_VIA":
         p = item.GetPosition()
-        return (cls, p.x, p.y, item.GetWidth(pcbnew.F_Cu), item.GetDrillValue(), item.GetNetname())
+        return (
+            cls,
+            p.x,
+            p.y,
+            _via_width_nm(item),
+            int(item.GetDrillValue()),
+            item.GetNetname(),
+            int(item.GetViaType()),
+            int(item.TopLayer()),
+            int(item.BottomLayer()),
+        )
     mid = (item.GetMid().x, item.GetMid().y) if cls == "PCB_ARC" else None
     a, b = item.GetStart(), item.GetEnd()
     ends = tuple(sorted(((a.x, a.y), (b.x, b.y))))
     return (cls, item.GetLayer(), ends, mid, item.GetWidth(), item.GetNetname())
+
+
+def _sanitize_ses_placement(ses_text, board):
+    """Drop SES (place <ref> ...) entries whose ref does not exist uniquely on board.
+
+    Prevents KiCad's ImportSpecctraSES from aborting the whole import when DSN export
+    renamed duplicate REF** footprints to REF**_1 / REF**_2.
+    """
+    ref_counts = {}
+    for fp in board.GetFootprints():
+        ref = fp.GetReference()
+        ref_counts[ref] = ref_counts.get(ref, 0) + 1
+    unique_refs = {ref for ref, cnt in ref_counts.items() if cnt == 1}
+
+    p_idx = ses_text.find("(placement")
+    if p_idx < 0:
+        return ses_text, []
+    r_idx = ses_text.find("(routes", p_idx)
+    if r_idx < 0:
+        return ses_text, []
+    block = ses_text[p_idx:r_idx]
+    skipped = []
+
+    def _keep_or_drop(m):
+        raw_ref = m.group(1)
+        ref = raw_ref[1:-1] if len(raw_ref) >= 2 and raw_ref[0] == '"' and raw_ref[-1] == '"' else raw_ref
+        if ref in unique_refs:
+            return m.group(0)
+        skipped.append(ref)
+        return ""
+
+    cleaned = re.sub(r'\(place\s+("[^"]+"|[^\s()]+)[^()]*\)', _keep_or_drop, block)
+    if not skipped:
+        return ses_text, []
+    return ses_text[:p_idx] + cleaned + ses_text[r_idx:], sorted(set(skipped))
+
+
+def _restore_via_drills(board, ses_text, before_ids):
+    """Restore exact via drills from SES Via[..]_<D>:<d>_um padstack names on newly imported vias.
+
+    Works around KiCad 10.0.8 specctra_import.cpp clearing a drill that equals Default's drill
+    so it resolves through the net's own class (shrinking annular ring on custom-class nets).
+    """
+    drills = {}
+    for _name, dia, drill in _SES_VIA_PADSTACK_RE.findall(ses_text or ""):
+        d_nm = round(float(dia) * 1000.0)
+        h_nm = round(float(drill) * 1000.0)
+        if d_nm in drills and drills[d_nm] != h_nm:
+            drills[d_nm] = None
+        else:
+            drills[d_nm] = h_nm
+    if not drills:
+        return {"count": 0, "changes": {}}
+    changes = {}
+    for t in board.GetTracks():
+        if t.GetClass() != "PCB_VIA" or t.m_Uuid.AsString() in before_ids:
+            continue
+        dia = _via_width_nm(t)
+        want = drills.get(dia)
+        have = int(t.GetDrillValue())
+        if want and want != have and want < dia:
+            t.SetDrill(int(want))
+            key = f"{dia / 1e6:g}/{have / 1e6:g} -> {dia / 1e6:g}/{want / 1e6:g} mm"
+            changes[key] = changes.get(key, 0) + 1
+    return {"count": sum(changes.values()), "changes": changes}
 
 
 def _reconcile_fixed(board, fixed):
@@ -372,10 +506,26 @@ def finish(board_path, ses_path, out_board, out_json):
         board.Remove(item)
     copper = [z for z in copper if not (hasattr(z, "IsTeardropArea") and z.IsTeardropArea())]
     denominator = _unconnected(board)
-    # ImportSpecctraSES deletes every track on the board, so the fixed copper stays out
-    # (and alive in ``fixed``) until the import is done, then replaces its session copy.
-    imported = bool(pcbnew.ImportSpecctraSES(board, ses_path))
+    with open(ses_path, encoding="utf-8", errors="replace") as fh:
+        ses_text = fh.read()
+    clean_ses, placement_skipped = _sanitize_ses_placement(ses_text, board)
+    import_path = ses_path
+    tmp_ses = None
+    if placement_skipped:
+        fd, tmp_ses = tempfile.mkstemp(prefix="eai_ses_", suffix=".ses")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(clean_ses)
+        import_path = tmp_ses
+    before_via_ids = {t.m_Uuid.AsString() for t in fixed if t.GetClass() == "PCB_VIA"}
+    try:
+        # ImportSpecctraSES deletes every track on the board, so the fixed copper stays out
+        # (and alive in ``fixed``) until the import is done, then replaces its session copy.
+        imported = bool(pcbnew.ImportSpecctraSES(board, import_path))
+    finally:
+        if tmp_ses and os.path.exists(tmp_ses):
+            os.unlink(tmp_ses)
     fixed_report = _reconcile_fixed(board, fixed)
+    drills_restored = _restore_via_drills(board, clean_ses, before_via_ids)
     unrouted_tracks_only = _unconnected(board)
     stats = _routing_stats(board)
     pads = _pad_rows(board)
@@ -387,6 +537,8 @@ def finish(board_path, ses_path, out_board, out_json):
     report = {
         "imported": imported,
         "stale_teardrops_dropped": len(stale),
+        "ses_placement_skipped": placement_skipped,
+        "via_drills_restored": drills_restored,
         "fixed": fixed_report,
         "denominator": denominator,
         "unrouted_tracks_only": unrouted_tracks_only,
@@ -764,18 +916,49 @@ def _netclasses(board):
                 "via_drill": _mm(nc.GetViaDrill()),
                 "diff_pair_width": _mm(nc.GetDiffPairWidth()) if nc.HasDiffPairWidth() else None,
                 "diff_pair_gap": _mm(nc.GetDiffPairGap()) if nc.HasDiffPairGap() else None,
+                "microvia_diameter": (
+                    _mm(nc.GetuViaDiameter())
+                    if hasattr(nc, "GetuViaDiameter")
+                    else (_mm(nc.GetMicroViaDiameter()) if hasattr(nc, "GetMicroViaDiameter") else None)
+                ),
+                "microvia_drill": (
+                    _mm(nc.GetuViaDrill())
+                    if hasattr(nc, "GetuViaDrill")
+                    else (_mm(nc.GetMicroViaDrill()) if hasattr(nc, "GetMicroViaDrill") else None)
+                ),
             }
         nets.append({"name": name, "class": cname})
     return sorted(classes.values(), key=lambda c: c["name"]), nets
 
 
+def _project_rules(board):
+    fname = board.GetFileName() if hasattr(board, "GetFileName") else ""
+    if not fname:
+        return {}
+    pro_path = os.path.splitext(fname)[0] + ".kicad_pro"
+    if not os.path.isfile(pro_path):
+        return {}
+    try:
+        with open(pro_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return ((data.get("board") or {}).get("design_settings") or {}).get("rules") or {}
+    except (OSError, ValueError):
+        return {}
+
+
 def _rules(board):
     ds = board.GetDesignSettings()
+    pro_r = _project_rules(board)
     return {
         "min_track_width": _mm(ds.m_TrackMinWidth),
         "min_clearance": _mm(ds.m_MinClearance),
         "min_via_diameter": _mm(ds.m_ViasMinSize),
         "min_through_drill": _mm(ds.m_MinThroughDrill),
+        "min_via_annular_width": _mm(int(getattr(ds, "m_ViasMinAnnularWidth", 0))),
+        "allow_microvias": bool(pro_r.get("allow_microvias", False)),
+        "allow_blind_buried_vias": bool(pro_r.get("allow_blind_buried_vias", False)),
+        "min_microvia_diameter": _mm(int(getattr(ds, "m_MicroViasMinSize", 0))),
+        "min_microvia_drill": _mm(int(getattr(ds, "m_MicroViasMinDrill", 0))),
         "hole_clearance": _mm(ds.m_HoleClearance),
         "copper_edge_clearance": _mm(ds.m_CopperEdgeClearance),
         "hole_to_hole": _mm(ds.m_HoleToHoleMin),
@@ -836,8 +1019,9 @@ def _routing_geometry(board):
         if cls == "PCB_VIA":
             p = t.GetPosition()
             top, bottom = t.TopLayer(), t.BottomLayer()
-            vias.append({"x": _mm(p.x), "y": _mm(p.y), "diameter": _mm(t.GetWidth(pcbnew.F_Cu)),
+            vias.append({"x": _mm(p.x), "y": _mm(p.y), "diameter": _mm(_via_width_nm(t)),
                          "drill": _mm(t.GetDrillValue()), "net": t.GetNetname(), "locked": bool(t.IsLocked()),
+                         "via_type": _VIA_TYPE_NAMES.get(t.GetViaType(), "through"),
                          "layers": [pcbnew.BOARD.GetStandardLayerName(top), pcbnew.BOARD.GetStandardLayerName(bottom)]})
             continue
         pts = [t.GetStart(), t.GetMid(), t.GetEnd()] if cls == "PCB_ARC" else [t.GetStart(), t.GetEnd()]
@@ -1819,11 +2003,16 @@ def _add_copper(board, spec, lock, seed):
         added["tracks"] += 1
     for v in spec.get("vias", []):
         via = pcbnew.PCB_VIA(board)
-        via.SetViaType(pcbnew.VIATYPE_THROUGH)
+        vtype = _VIA_TYPE_BY_NAME.get(v.get("via_type", "through"), pcbnew.VIATYPE_THROUGH)
+        via.SetViaType(vtype)
         via.SetPosition(_vec((v["x"], v["y"])))
         via.SetLayerPair(board.GetLayerID(v["layers"][0]), board.GetLayerID(v["layers"][1]))
         via.SetWidth(pcbnew.FromMM(float(v["diameter"])))
         via.SetDrill(pcbnew.FromMM(float(v["drill"])))
+        if v.get("filled") and hasattr(via, "SetPrimaryDrillFilledFlag"):
+            via.SetPrimaryDrillFilledFlag(True)
+        if v.get("capped") and hasattr(via, "SetPrimaryDrillCappedFlag"):
+            via.SetPrimaryDrillCappedFlag(True)
         via.SetNet(board.FindNet(v["net"]))
         via.SetLocked(lock)
         identify(via, "vias", added["vias"])

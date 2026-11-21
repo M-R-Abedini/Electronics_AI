@@ -127,8 +127,8 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict
 
 
 def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, taps: bool = True,
-         escapes: bool = True, escape_signals: bool = False, power_first: bool = False,
-         retry_coarse: bool = False) -> dict:
+         escapes: bool = True, escape_signals: bool = False, microvia: str = "auto",
+         power_first: bool = False, retry_coarse: bool = False) -> dict:
     fixed: list[dict] = []
     report: dict = {"pairs": [], "links": [], "taps": [], "escapes": []}
     layers = [cl.canonical for cl in board.copper_layers]
@@ -238,7 +238,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
             if (p.net and p.net in routed_pair_nets) or (p.net and (fp.ref, p.net) in linked)
         }
         esc = plan_bga_escapes(board, intent, fixed=fixed, already_handled=already_handled,
-                               include_signals=escape_signals)
+                               include_signals=escape_signals, microvia=microvia)
         fixed.extend(esc["copper"])
         report["escapes"] = esc["rows"]
         if esc["packages"]:
@@ -320,8 +320,21 @@ def settle_plane_links(report: dict, plane_links: list) -> None:
 def _instance(copper: list[dict]) -> Instance:
     tracks = [MTrack(t["layer"], t["width"], t["net"], [tuple(p) for p in t["points"]])
               for t in _segments([c for c in copper if "points" in c])]
-    vias = [MVia(v["x"], v["y"], v["diameter"], v["drill"], v["net"], tuple(v["layers"])) for v in copper
-            if "points" not in v]
+    vias = [
+        MVia(
+            v["x"],
+            v["y"],
+            v["diameter"],
+            v["drill"],
+            v["net"],
+            tuple(v["layers"]),
+            via_type=v.get("via_type", "through"),
+            filled=bool(v.get("filled", False)),
+            capped=bool(v.get("capped", False)),
+        )
+        for v in copper
+        if "points" not in v
+    ]
     return Instance({}, tracks, vias, [], [], False)
 
 
@@ -430,6 +443,7 @@ def apply_to_board(
     taps: bool = True,
     escapes: bool = True,
     escape_signals: bool = False,
+    microvia: str = "auto",
     power_first: bool = False,
     retry_coarse: bool = False,
     prune_drc: bool = True,
@@ -445,7 +459,8 @@ def apply_to_board(
     out_root = Path(out_dir).resolve()
     board = read_board(src)
     planned = plan(board, intent, pairs=pairs, links=links, taps=taps, escapes=escapes,
-                   escape_signals=escape_signals, power_first=power_first, retry_coarse=retry_coarse)
+                   escape_signals=escape_signals, microvia=microvia,
+                   power_first=power_first, retry_coarse=retry_coarse)
     copper, report = list(planned["copper"]), planned["report"]
     live_taps = list(planned["taps"])
     pruned_nets: list[str] = []
@@ -543,7 +558,7 @@ def apply_to_board(
 
 def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_path: str | None = None,
         pairs: bool = True, links: bool = True, taps: bool = True, escapes: bool = True,
-        escape_signals: bool = False, c3: bool = False,
+        escape_signals: bool = False, microvia: str = "auto", c3: bool = False,
         router_timeout_s: int | None = None, baseline: str | Path | None = None,
         power_first: bool = False, retry_coarse: bool = False) -> dict:
     src = Path(board_path).resolve()
@@ -561,7 +576,8 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
                 config = replace(config, timeout_s=router_timeout_s)
             without = _reuse_baseline(baseline, bare, config)
     planned = plan(board, intent, pairs=pairs, links=links, taps=taps, escapes=escapes,
-                   escape_signals=escape_signals, power_first=power_first, retry_coarse=retry_coarse)
+                   escape_signals=escape_signals, microvia=microvia,
+                   power_first=power_first, retry_coarse=retry_coarse)
     copper, report = planned["copper"], planned["report"]
     out = run_dir / "s6a" / src.name
     copper, live_taps = _write_and_verify_taps(src, out, copper, planned["taps"], report, planned["plane_links"])
@@ -575,7 +591,8 @@ def run(board_path: str | Path, out_dir: str | Path | None = None, *, intent_pat
                                    for v in touching],
               "report": report,
               "config": {"link_max_mm": LINK_MAX_MM, "tap_max_mm": TAP_MAX_MM, "pairs": pairs, "links": links,
-                         "taps": taps, "escapes": escapes, "power_first": power_first, "retry_coarse": retry_coarse}}
+                         "taps": taps, "escapes": escapes, "microvia": microvia,
+                         "power_first": power_first, "retry_coarse": retry_coarse}}
     if c3:
         if without is None:
             without = route_check(bare, out_dir=run_dir / "route_without", reference_board=src,
@@ -635,6 +652,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.add_argument(f"--no-{name}", action="store_true")
     ap.add_argument("--bga-signals", action="store_true",
                     help="also dogbone-escape inner BGA signal balls (not just plane/power balls)")
+    ap.add_argument("--microvia", choices=("auto", "on", "off"), default="auto",
+                    help="microvia-in-pad policy for fine-pitch BGAs (requires board allow_microvias)")
     ap.add_argument("--c3", action="store_true", help="route-check with and without the S6a copper (about 10 minutes)")
     ap.add_argument("--route-timeout", type=int)
     ap.add_argument("--baseline", help="route_without/run_report.json of an earlier --c3 run on the same board")
@@ -644,7 +663,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     res = run(args.board, args.out, intent_path=args.intent, pairs=not args.no_pairs, links=not args.no_links,
               taps=not args.no_taps, escapes=not args.no_escapes, escape_signals=args.bga_signals,
-              c3=args.c3, router_timeout_s=args.route_timeout,
+              microvia=args.microvia, c3=args.c3, router_timeout_s=args.route_timeout,
               baseline=args.baseline, power_first=args.power_first, retry_coarse=args.coarse_retry)
     brief = {k: res[k] for k in ("counts", "copper", "s6a_board", "report_file")}
     brief["drc_touching_s6a"] = len(res["drc_touching_s6a"])

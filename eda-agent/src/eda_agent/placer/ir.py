@@ -135,6 +135,8 @@ class NetClass:
     via_drill: float
     diff_pair_width: float | None = None
     diff_pair_gap: float | None = None
+    microvia_diameter: float | None = None
+    microvia_drill: float | None = None
 
 
 @dataclass

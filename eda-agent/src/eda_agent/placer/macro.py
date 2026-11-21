@@ -69,6 +69,9 @@ class MVia:
     drill: float
     net: str
     layers: tuple[str, str]
+    via_type: str = "through"  # through | micro | blind | buried
+    filled: bool = False
+    capped: bool = False
 
 
 @dataclass
@@ -190,7 +193,8 @@ def instantiate(macro: Macro, t: Transform) -> Instance:
     for v in macro.vias:
         x, y = to_world((v.x, v.y), t, mirror)
         a, b = lay(v.layers[0]), lay(v.layers[1])
-        vias.append(MVia(x, y, v.diameter, v.drill, v.net, (a, b)))
+        vias.append(MVia(x, y, v.diameter, v.drill, v.net, (a, b),
+                         via_type=v.via_type, filled=v.filled, capped=v.capped))
     zones = [MZone(z.net, [lay(name) for name in z.layers], [[to_world(q, t, mirror) for q in ring] for ring in z.outline],
                    z.priority, z.name, z.pad_connection) for z in macro.zones]
     ports = []
@@ -348,7 +352,10 @@ def extract(board: Board, refs: list[str], *, template: str = "extracted", margi
     m_tracks = [MTrack(tracks[i]["layer"], tracks[i]["width"], tracks[i]["net"],
                        [to_local(tuple(q), frame, False) for q in tracks[i]["points"]]) for i in sorted(kept_t)]
     m_vias = [MVia(*to_local((vias[i]["x"], vias[i]["y"]), frame, False), vias[i]["diameter"], vias[i]["drill"],
-                   vias[i]["net"], tuple(vias[i]["layers"])) for i in sorted(kept_v)]
+                   vias[i]["net"], tuple(vias[i]["layers"]),
+                   via_type=vias[i].get("via_type", "through"),
+                   filled=bool(vias[i].get("filled", False)),
+                   capped=bool(vias[i].get("capped", False))) for i in sorted(kept_v)]
     ports = []
     for net in sorted(outgoing):
         candidates = exit_pads.get(net)

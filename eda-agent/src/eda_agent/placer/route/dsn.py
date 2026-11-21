@@ -182,3 +182,112 @@ def restore_wiring_precision(dsn: str, board: Board) -> str:
     wiring = _WIRE_FIX.sub(fix_wire, wiring)
     wiring = _VIA_FIX.sub(fix_via, wiring)
     return dsn[:idx] + wiring
+
+
+_STRUCT_VIA = re.compile(r"(\(via\s+)([^)]+)(\))")
+_VIA_SPAN_TOKEN = re.compile(r'("Via\[(\d+)-(\d+)\][^"]*"|Via\[(\d+)-(\d+)\][^\s()]+)')
+
+
+def _sexp_end(text: str, start: int) -> int:
+    """Return index right after the closing paren of the s-expression starting at ``start``."""
+    depth = 0
+    in_quote = False
+    pos = start
+    n = len(text)
+    while pos < n:
+        ch = text[pos]
+        if ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return pos + 1
+        pos += 1
+    return -1
+
+
+def restrict_structure_vias(dsn: str, *, layer_count: int, allow_blind_micro: bool = False) -> tuple[str, list[str]]:
+    """Keep micro/blind via padstacks in ``(library ...)`` for locked ``(type fix)`` S6a wiring,
+    but remove non-through padstacks from ``(structure (via ...))`` unless ``allow_blind_micro=True``.
+
+    Prevents Freerouting from placing costly blind/microvias outside deterministic S6a BGA escapes
+    while preserving 100% valid Specctra DSN references for S6a locked microvias.
+    """
+    if allow_blind_micro or layer_count < 2:
+        return dsn, []
+    struct_start = dsn.find("(structure")
+    if struct_start < 0:
+        return dsn, []
+    struct_end = _sexp_end(dsn, struct_start)
+    if struct_end < 0:
+        return dsn, []
+    header = dsn[struct_start:struct_end]
+    m = _STRUCT_VIA.search(header)
+    if m is None:
+        return dsn, []
+    tokens = re.findall(r'"[^"]+"|[^\s()]+', m.group(2))
+    through_tokens: list[str] = []
+    removed: list[str] = []
+    last_idx = layer_count - 1
+    for tok in tokens:
+        sm = _VIA_SPAN_TOKEN.fullmatch(tok)
+        if sm:
+            lo = int(sm.group(2) if sm.group(2) is not None else sm.group(4))
+            hi = int(sm.group(3) if sm.group(3) is not None else sm.group(5))
+            if min(lo, hi) == 0 and max(lo, hi) == last_idx:
+                through_tokens.append(tok)
+            else:
+                removed.append(_unquote(tok))
+        else:
+            through_tokens.append(tok)
+    if not removed or not through_tokens:
+        return dsn, []
+    new_line = m.group(1) + " ".join(through_tokens) + m.group(3)
+    new_header = header[:m.start()] + new_line + header[m.end():]
+    return dsn[:struct_start] + new_header + dsn[struct_end:], removed
+
+
+def add_class_via_rule(dsn: str, class_name: str, via_names: list[str]) -> str:
+    """Attach an explicit ``(circuit (use_via ...))`` list to one DSN net class (opt-in HDI routing)."""
+    if not via_names:
+        return dsn
+    net_start = dsn.find("(network")
+    wiring_start = dsn.find("(wiring", net_start) if net_start >= 0 else -1
+    if net_start < 0:
+        return dsn
+    end = wiring_start if wiring_start > net_start else len(dsn)
+    net_block = dsn[net_start:end]
+    pat = re.compile(r"\(class\s+" + re.escape(_token(class_name)) + r"(?=[\s)])")
+    cm = pat.search(net_block)
+    if cm is None:
+        return dsn
+    # Find matching closing paren for this (class ...) s-expression
+    depth = 0
+    pos = cm.start()
+    close_idx = -1
+    in_quote = False
+    while pos < len(net_block):
+        ch = net_block[pos]
+        if ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    close_idx = pos
+                    break
+        pos += 1
+    if close_idx < 0:
+        return dsn
+    cls_body = net_block[cm.start():close_idx]
+    if "(use_via" in cls_body:
+        return dsn
+    via_clause = " ".join(_quote(v) for v in via_names)
+    insert = f"\n      (circuit (use_via {via_clause}))\n    "
+    updated = net_block[:close_idx] + insert + net_block[close_idx:]
+    return dsn[:net_start] + updated + dsn[end:]

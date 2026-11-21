@@ -681,9 +681,10 @@ def _cells_to_copper(win: Window, path, layers, net: str, rule: PairRule) -> tup
     return tracks, vias
 
 
-def _block_drills(win: Window, mask: np.ndarray, holes: list[tuple[float, float, float]],
+def _block_drills(win: Window, mask: np.ndarray, holes: list[tuple],
                   diameter: float, clearance: float) -> None:
-    for x, y, drill in holes:
+    for h in holes:
+        x, y, drill = h[0], h[1], h[2]
         radius = (diameter + drill) / 2 + clearance
         i0, j0 = win.cell(x - radius, y - radius)
         i1, j1 = win.cell(x + radius, y + radius)
