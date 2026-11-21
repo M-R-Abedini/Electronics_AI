@@ -118,6 +118,12 @@ class PlacerService:
              {"board_path": _STRING, "side_policy": {"type": "string", "enum": ["expert", "top_only"]},
               "seed": {"type": "integer", "minimum": 0, "default": 0}, "route": {"type": "boolean", "default": True},
               "s6a": {"type": "boolean", "default": True},
+              "silkscreen_policy": {"type": "string",
+                                    "enum": ["auto", "ipc_standard", "dense", "assembly_only", "off"],
+                                    "default": "auto"},
+              "fab_profile": {"type": "string",
+                              "enum": ["ipc_standard", "jlcpcb", "pcbway", "high_precision_lpi"],
+                              "default": "ipc_standard"},
               "intent_path": _STRING, "schematic_path": _STRING, "floorplan": {"type": "boolean", "default": False}},
              ["board_path"], False),
             ("place_cluster",
@@ -128,7 +134,13 @@ class PlacerService:
               "and vias invalidated by moved pads or dangling stubs."),
              {"board_path": _STRING, "refs": {"type": "array", "items": _STRING, "minItems": 1, "uniqueItems": True},
               "intent_path": _STRING, "seed": {"type": "integer", "minimum": 0, "default": 0},
-              "preserve_routing": {"type": "string", "enum": ["none", "outside_cluster"], "default": "none"}},
+              "preserve_routing": {"type": "string", "enum": ["none", "outside_cluster"], "default": "none"},
+              "silkscreen_policy": {"type": "string",
+                                    "enum": ["auto", "ipc_standard", "dense", "assembly_only", "off"],
+                                    "default": "auto"},
+              "fab_profile": {"type": "string",
+                              "enum": ["ipc_standard", "jlcpcb", "pcbway", "high_precision_lpi"],
+                              "default": "ipc_standard"}},
              ["board_path", "refs"], False),
             ("gallery",
              ("Build one side-by-side HTML gallery from run folders of placer__score or placer__place_board "
@@ -186,6 +198,7 @@ class PlacerService:
     # ------------------------------------------------------------------ tools
     def inspect(self, board_path: str, intent_path: str | None = None,
                 mechanical_refs: list[str] | None = None) -> dict:
+        from . import silkscreen as silk_mod
         from .intent.resolve import resolve
         from .place.mechanical import evidence
 
@@ -193,6 +206,7 @@ class PlacerService:
         summary = _inspect_summary(board)
         intent, _ = resolve(board, intent_path)
         summary["mechanical"] = evidence(board, intent, set(mechanical_refs) if mechanical_refs is not None else None)
+        summary["silkscreen"] = silk_mod.audit_board(board)
         return summary
 
     def intent_draft(self, board_path: str, out_path: str | None = None) -> dict:
@@ -224,16 +238,19 @@ class PlacerService:
 
     def place_board(self, board_path: str, side_policy: str | None = None, seed: int = 0, route: bool = True,
                     intent_path: str | None = None, floorplan: bool = False, schematic_path: str | None = None,
-                    s6a: bool = True) -> dict:
+                    s6a: bool = True, silkscreen_policy: str = "auto",
+                    fab_profile: str = "ipc_standard") -> dict:
         from .place.pipeline import place_board
 
         board_name = Path(board_path).stem
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         rep = place_board(board_path, out_dir=self.runs / f"{board_name}-place-{stamp}", side_policy=side_policy,
                           seed=seed, route=route, intent_path=intent_path, floorplan=floorplan,
-                          schematic_path=schematic_path, s6a=s6a)
+                          schematic_path=schematic_path, s6a=s6a, silkscreen_policy=silkscreen_policy,
+                          fab_profile=fab_profile)
         info = rep["stages"]["place"]
         s6a_info = rep["stages"].get("s6a")
+        silk_info = info.get("silkscreen")
         pf = rep["metrics"].get("pathfinder")
         lint = rep["metrics"].get("lint")
         return {
@@ -245,6 +262,10 @@ class PlacerService:
             "mechanical_anchors": info["mechanical_anchors"],
             "cold_input": info.get("cold_input"),
             "floorplan": {k: v for k, v in info["floorplan"].items() if k != "escape"},
+            "silkscreen": ({k: silk_info.get(k) for k in ("policy", "effective_mode", "fab_profile", "moved",
+                                                          "condensed_used", "dense_sized", "offloaded_to_fab",
+                                                          "leader_lines_added", "unresolved", "audit")}
+                           if silk_info else None),
             "s6a": ({k: s6a_info.get(k) for k in ("applied", "reason", "counts", "copper", "pruned_nets", "tap_fill_after_ses")}
                     if s6a_info else None),
             "metrics": {"hpwl_signal_mm": rep["metrics"]["hpwl"]["signal_mm"],
@@ -265,16 +286,19 @@ class PlacerService:
         }
 
     def place_cluster(self, board_path: str, refs: list[str], intent_path: str | None = None, seed: int = 0,
-                      preserve_routing: str = "none") -> dict:
+                      preserve_routing: str = "none", silkscreen_policy: str = "auto",
+                      fab_profile: str = "ipc_standard") -> dict:
         from .place.pipeline import place_board
 
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         rep = place_board(board_path, out_dir=self.runs / f"{Path(board_path).stem}-cluster-{stamp}",
                           seed=seed, route=False, intent_path=intent_path, floorplan=True, cluster_refs=refs,
-                          preserve_routing=preserve_routing)
+                          preserve_routing=preserve_routing, silkscreen_policy=silkscreen_policy,
+                          fab_profile=fab_profile)
         return {"passed": rep["passed"], "gates": rep["gates"], "refs": refs,
                 "zones_require_refill": rep["stages"]["place"].get("zones_require_refill", False),
                 "preserve_routing": rep["stages"]["place"].get("preserve_routing"),
+                "silkscreen": rep["stages"]["place"].get("silkscreen"),
                 "placed_board": rep["artifacts"]["placed_board"], "gallery": rep["artifacts"]["gallery"],
                 "run_report": str(Path(rep["artifacts"]["run_dir"]) / "run_report.json")}
 
@@ -325,6 +349,7 @@ class PlacerService:
         )
 
     def score(self, board_path: str, route: bool = True, intent_path: str | None = None) -> dict:
+        from . import silkscreen as silk_mod
         from .intent.resolve import resolve
 
         board = read_board(board_path)
@@ -373,6 +398,7 @@ class PlacerService:
                         "critical_loops": evaluation["metrics"]["critical_loops"],
                         "regularity": evaluation["metrics"]["regularity"]},
             "pro_score": evaluation["pro_score"],
+            "silkscreen": silk_mod.audit_board(routed_board if routed_board is not None else board),
             "route": ({k: routed["metrics"][k] for k in ("coverage", "unrouted", "vias", "track_length_mm",
                                                          "router_stop", "seconds_total")}
                       | {"unrouted_causes": [{"net": f["net"], "cause": f["cause"]} for f in routed["failures"]]}

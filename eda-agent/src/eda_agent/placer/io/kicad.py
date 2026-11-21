@@ -135,6 +135,7 @@ def board_from_dump(data: dict, stackup: Stackup, name: str) -> Board:
         routing_items=data["routing_items"],
         routing=data["routing"],
         teardrops=data["teardrops"],
+        silkscreen_texts=data.get("silkscreen_texts", []),
     )
     board.stackup.board_thickness_mm = data["rules"].get("board_thickness")
     return derive(board)
@@ -186,7 +187,8 @@ def read_board(path: str | Path) -> Board:
 def write_board(src: str | Path, board: Board, dst: str | Path, *, strip_routing: bool = False,
                 strip_zones: bool = False, unfill_zones: bool = False,
                 preserve_outside_routing: bool = False,
-                clean_silkscreen: bool = False, result_out: dict | None = None) -> Path:
+                clean_silkscreen: bool = False, silkscreen_config: dict | None = None,
+                result_out: dict | None = None) -> Path:
     """Write ``board``'s placement into a new file ``dst`` (never ``src``) with its project sidecars."""
     src, dst = Path(src).resolve(), Path(dst).resolve()
     if src == dst:
@@ -206,7 +208,15 @@ def write_board(src: str | Path, board: Board, dst: str | Path, *, strip_routing
             else "1" if strip_routing
             else "0"
         )
-        run_helper("place", src, placement, dst, mode, result_path, "1" if clean_silkscreen else "0")
+        silk_arg = "0"
+        if silkscreen_config is not None:
+            if silkscreen_config.get("policy") != "off":
+                silk_cfg_path = Path(tmp) / "silkscreen_config.json"
+                silk_cfg_path.write_text(json.dumps(silkscreen_config), encoding="utf-8")
+                silk_arg = str(silk_cfg_path)
+        elif clean_silkscreen:
+            silk_arg = "1"
+        run_helper("place", src, placement, dst, mode, result_path, silk_arg)
         result = json.loads(result_path.read_text(encoding="utf-8"))
     if result_out is not None:
         result_out.update(result)

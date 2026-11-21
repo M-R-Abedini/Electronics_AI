@@ -603,6 +603,24 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
   - **اصلاح تشخیص `detect_bga` روی ماژول LGA (`royalblue54L_feather`):** بنچمارک A/B نشان داد قطعهٔ `U1` (`BM15x-LGA-45`) با پدهای مستطیلی کشیده `(0.4 × 0.5 mm)` به‌اشتباه BGA تشخیص داده شده بود (`71.88% → 65.62%`). با افزودن قید هندسی تقارن پد توپ (`abs(w - h) <= 0.12 * max(w, h)` روی حداقل ۸۵٪ پدها)، دقت و بازیابی تشخیص BGA روی هر ۱۷ برد کورپوس به **۱۰۰٪** رسید (`royalblue54L_feather: []`؛ `urti_mainboard`، `cynthion` و `vme_wren`: ۱۰۰٪ دقیق).
 - شواهد سبک: [bga_validation_ab_summary.json](benchmarks/bga_validation_ab_summary.json).
 
+### پسافاز `F9` · موتور استاندارد `IPC-7351` سیلک‌اسکرین (Top/Bottom Overlay) و راهنمای مونتاژ (`F.Fab`/`B.Fab`) (2026-11-21)
+
+- **طراحی و پیاده‌سازی کامل موتور سیلک‌اسکرین (`eda-agent/src/eda_agent/placer/silkscreen.py` + `io/kicad_pcbnew_helper.py` + `io/kicad.py` + `ir.py` + `place/pipeline.py` + `place/__main__.py` + `mcp.py` + Skill `F8`):**
+  - **استاندارد ابعادی IPC-7351 و پروفایل سازنده (`FAB_PROFILES`):** پشتیبانی از `ipc_standard` (پیشنهادی `1.00–1.27 mm`، کف برد شلوغ `0.80 mm`، استروک `0.15–0.18 mm`، نسبت ضخامت به ارتفاع `1:6..1:8` و کف سخت `>= 1:10`)، `jlcpcb`، `pcbway` و `high_precision_lpi` (استروک تا `0.12 mm` در برد شلوغ) با تفکیک صریح عرض استروک قابل‌کنترل در CAD از ضخامت جوهر خشک‌شدهٔ فرایند چاپ (`15–25 um`، حداقل `10 um`) و یادآوری بررسی قابلیت سازنده پیش از تولید.
+  - **نردبان تصمیم خوانایی (اول Condensed بعد کاهش ارتفاع):** پیش از کاهش ارتفاع از `1.00 mm` به `0.80 mm`، ابتدا عرض فشرده (`0.78 × 1.00 mm`) آزموده می‌شود؛ فاصلهٔ ایمن حداقل `0.20 mm` از پد/ماسک، جلوگیری از افتادن نام قطعه زیر بدنهٔ قطعه (`under_body`)، حفظ برچسب‌های کاربری پورت‌ها (`Value` مانند `USB1..USB7` روی `StickHub` بدون جابه‌جایی به زیر بدنه)، و کشیدن **خط راهنمای بدون خطای DRC (`Leader Line`)** برای قطعات بحرانی جابه‌جاشده.
+  - **سیاست‌های انتخاب‌پذیر (`SILKSCREEN_POLICIES`):** `auto` (تشخیص خودکار تراکم برد)، `ipc_standard`، `dense` (اولویت قطعات بحرانی و انتقال خودکار پسیوهای غیربحرانی به لایهٔ مونتاژ `F.Fab`/`B.Fab`)، `assembly_only` (انتقال تمیز کل Reference Designatorها به `F.Fab`/`B.Fab` همراه با حفظ نشانگرهای قطبیت و برچسب‌های کاربری)، و `off`.
+  - **ممیزی زنده (`audit_board` / `audit_texts`):** گزارش امتیاز DFM سیلک‌اسکرین، بازهٔ ارتفاع/استروک/نسبت، شمارش مستقل خطاهای `Reference Designator`، تخلف فاصله از پد، متن زیر بدنه و تداخل در `placer__inspect`، `placer__score`، `placer__place_board` و `placer__place_cluster` (تعداد ابزارهای زندهٔ `placer` روی `11` ثابت ماند).
+- **نتایج اندازه‌گیری‌شده روی ۴ برد واقعی `dev`/`validation` × ۳ سیاست (`12/12` اجرا با `drc_new_non_routing = 0`):**
+
+| برد (مجموعه) | تراکم | ورودی (`score` / `ref_errs` / `pad_bad`) | `auto` (`score` / `ref_errs` / `cond` / `off_fab` / `DRC`) | `dense` (`ref_errs` / `off_fab` / `DRC`) | `assembly_only` (`ref_errs` / `off_fab` / `DRC`) |
+|---|---|---:|---:|---:|---:|
+| `pic_programmer` (`dev` ۲L) | `standard` | `93.42` / `6` / `10` | **`99.32`** / `1` / `0` / `0` / **`0`** | `1` / `28` / **`0`** | **`0`** / `63` / **`0`** |
+| `stickhub` (`dev` ۲L) | `dense` (`93%`) | `27.55` / `107` / `45` | **`76.86`** / **`0`** / `4` / `18` / **`0`** | **`0`** / `28` / **`0`** | **`0`** / `32` (حفظ `USB1..7`) / **`0`** |
+| `royalblue54L_feather` (`dev` ۸L) | `dense` (`refs=0`) | `94.44` / `0` / `12` | **`94.44`** / **`0`** / `0` / `0` / **`0`** | **`0`** / `0` / **`0`** | **`0`** / `0` / **`0`** |
+| `openair_max` (`validation` ۴L) | `dense` (`200 ref`) | `45.33` / `252` / `59` | **`92.30`** / **`0`** / `5` / `8` / **`0`** | **`0`** / `151` / **`0`** | **`0`** / `206` / **`0`** |
+
+- **آزمون‌ها و شواهد:** ۴ تست جدید (`test_silkscreen_ipc7351.py`، پاس در KiCad و `3 passed, 1 skipped` در شبیه‌سازی CI بدون KiCad)، `eda-agent/tests/placer/` (**۱۶۲ پاس، ۱۲ skip**)، `pytest tests/` (**۸۶۹ پاس**)، `cargo test` (`۱۶/۱۶`)، `cargo clippy -- -D warnings` (۰)، `ruff check` (۰)، `test_no_em_dashes.py` (`۳/۳`)، `smoke_stdio.py` و `smoke_suite_stdio.py --toolset full` (`535` ابزار، `placer: 11`)، `pip wheel` + `build_plugin.py --smoke --check-reproducible` (`439` فایل) و `pixi run doctor` (`GREEN`). شواهد سبک: [silkscreen_ipc7351_summary.json](benchmarks/silkscreen_ipc7351_summary.json).
+
 
 
 

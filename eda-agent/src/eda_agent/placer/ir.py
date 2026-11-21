@@ -230,6 +230,7 @@ class Board:
     drc_severities: dict[str, str] = field(default_factory=dict)  # project overrides, e.g. ignore
     schematic_branches: dict[str, list[list[list[str]]]] = field(default_factory=dict)
     placement_anchors: dict[str, str] | None = None  # Explicit anchors for a cold placement input.
+    silkscreen_texts: list[dict] = field(default_factory=list)  # Extracted overlay/fab texts for DFM audit.
 
     def __post_init__(self) -> None:
         self.reindex()
@@ -285,6 +286,7 @@ class Board:
         data = asdict(self)
         data.pop("_index", None)
         data.pop("_uuid", None)
+        data.pop("silkscreen_texts", None)
         return {"schema": SCHEMA, "schema_version": SCHEMA_VERSION, **data}
 
 
