@@ -41,19 +41,25 @@ A professional layout is solved **outside-in and critical-first**:
    - **Level 2 (active top, passives/decaps bottom):** Ideal for dense BGA/QFN designs where decoupling capacitors sit directly under power balls/pins on the bottom side.
    - **Level 3 (full two-sided):** Used when mechanical/form-factor constraints require ICs on both sides. Always verify zero through-hole-to-opposite-pad collisions and no tall parts obstructing opposite-side thermal vias.
 
-6. **DFA Regularity, Banking & Silkscreen Craftsmanship:**
+6. **DFA Regularity, Banking & IPC-7351 Silkscreen Craftsmanship:**
    - Group repeated passives (pull-up rows, LED + current-limit resistors, series termination banks) into aligned rows/columns on consistent 90-degree orientations with uniform polarity direction (all diode cathodes / polarized cap `+` marks aligned along one axis where practical).
-   - Keep reference designators (`F.Silkscreen`/`B.Silkscreen`) readable (`0°` or `90°`), strictly inside board outline, off exposed copper pads (`0 silk_over_copper`), and clear of silkscreen outlines (`0 silk_overlap`).
+   - Enforce **IPC-7351 Silkscreen (Top/Bottom Overlay)** standards (full policy/fab matrix in [Routing, Silkscreen & Visual QA](routing-silkscreen-and-visual-qa.md)):
+     - Recommended height `1.00–1.27 mm` (`0.80 mm` dense-board practical floor), stroke `0.15–0.18 mm` (`0.12 mm` only on `high_precision_lpi`), stroke-to-height ratio `1:6..1:8` (never below `1:10`), and `>= 0.20 mm` clearance from pads and solder-mask openings (`0 silk_over_copper`, `0 silk_overlap`).
+     - Prefer **Condensed character width (`0.78x`) at constant height** before shrinking text height.
+     - Keep Reference Designators at `0°` or `90°`, strictly inside board outline, and **outside component bodies (`under_body == 0`)** so labels remain readable after SMT assembly.
+     - On dense boards, prioritize critical parts (ICs, connectors, polarized parts, crystals, switches, jumpers, test points, polarity marks), draw DRC-clean **Leader Lines** for displaced critical references, and offload crowded non-critical passives cleanly onto **`F.Fab`/`B.Fab`** assembly layers (or use `assembly_only` for ultra-dense HDI designs).
+     - **Preserve user-facing port labels (`Value` fields such as `USB1..USB7`, header pinouts, board markings):** never move them underneath connector bodies or strip them in `dense`/`assembly_only`.
+     - Remember CAD controls stroke width (`mm`), whereas cured ink thickness (`15–25 um`, min `10 um`) depends on the fab printing process—confirm printable limits with the target PCB manufacturer before release.
    - Keep movable pads clear of free-standing solder-mask openings (`mask_aperture` logos/windows) to guarantee `0 solder_mask_bridge`.
 
 ---
 
-## 2. Visual Gallery Inspection Checklist (Feranec Eye-Test)
+## 2. Mandatory Visual Gallery Inspection Checklist (Feranec Eye-Test — Law P9)
 
-When inspecting `placer__gallery(..., include_images=true)` top and bottom renders:
+Always call `placer__gallery(runs=[...], include_images=true)` and inspect **BOTH Top AND Bottom rendered PNGs** (plus `placer__diagnose(run=..., include_images=true)` zoomed crops when needed). Never sign off from numeric metrics alone:
 1. **Macro Silhouette:** Are external connectors on the correct edges with unobstructed cable entry? Are functional blocks visibly cohesive rather than exploded across the board?
-2. **Ratsnest Topology:** Are buses flowing cleanly in parallel bundles rather than forming tangled "rat nests" across the center of the board?
+2. **Ratsnest & Copper Topology:** Are buses flowing cleanly in parallel bundles rather than forming tangled "rat nests" across the center of the board?
 3. **Decap & Crystal Tightness:** Are decoupling caps clustered directly around their ICs' supply pins? Is every crystal hugged tightly by its load caps right beside its MCU/PHY?
 4. **Power Stages:** Do switching converters form compact triangles (`Cin` - `IC` - `L` - `Cout`) away from analog/RF inputs?
 5. **Thermal & Mechanical Hazards:** Any high-power regulators stacked back-to-back? Any overhanging electrolytics or connectors colliding with board notches or mounting-hole screw heads?
-6. **Silkscreen & Assembly Cleanliness:** Are passives neatly banked, uniformly oriented, and free of unreadable overlapping text?
+6. **Silkscreen, Port Labels & Assembly Cleanliness:** Are passives neatly banked and uniformly oriented? Are visible Reference Designators crisp (`0.80–1.27 mm`), outside component bodies, unambiguous (with clean Leader Lines where displaced), and free of pad/text overlaps? Are user port labels (`USB1..USB7`, pinout legends) and polarity marks (`+`, `-`, pin-1 dots) intact in their intended visible locations? If ANY visual defect appears, fix and re-inspect the updated render before sign-off.
