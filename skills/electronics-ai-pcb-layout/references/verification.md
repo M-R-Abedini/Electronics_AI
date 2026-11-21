@@ -56,11 +56,19 @@ action. Unsupported coverage, stale evidence and missing inputs are not solver
 failures that merit repeated optimization. Report the dependent blocker and
 continue an independent authorized scope when possible.
 
-Keep visual and electrical coverage separate. `eda__pcb_render_svg` currently
-omits region/pour and full component-body outline coverage. It can help inspect
+Keep visual and electrical coverage separate. Visual inspection of rendered
+board views is mandatory before sign-off for supported label legibility,
+polarity orientation, component spacing and obvious mechanical crowding—never
+rely on scalar placement scores alone. `eda__pcb_render_svg` currently omits
+region/pour and full component-body outline coverage. It can help inspect
 supported labels, orientation and spacing, but cannot prove absence of a plane,
-return path, short or clearance violation. A fresh native DRC additionally needs
-its actual report scope and exceptions; cached violations are a separate result.
+return path, short or clearance violation. Check Top/Bottom Overlay silkscreen
+dimensions against IPC-7351 guidance (`1.0–1.27 mm` recommended, `0.80 mm`
+dense floor, `0.15–0.18 mm` stroke, ratio `>= 1:10`, `>= 0.20 mm` pad
+clearance, outside bodies, user port labels preserved, and pre-fab check of
+cured ink thickness `15–25 um` / fab printable limits). A fresh native DRC
+additionally needs its actual report scope and exceptions; cached violations
+are a separate result.
 
 For manufacturing release report connectivity, unrouted exceptions, DRC, stackup
 and fabrication/assembly checks independently. Simulation or hardware testing

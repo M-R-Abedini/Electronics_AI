@@ -73,9 +73,17 @@ Respect authorization already given for the scope; preview does not inherently
 require another human confirmation. See [verification](references/verification.md).
 
 Use copper evidence and supported native checks for electrical conclusions;
-use rendered images for supported visual review. A screenshot or a caller's
-`stage_result=ok` does not establish an electrical gate. Revalidate dependent
-evidence after moving parts, changing rules, stackup, intent or pours. Deliver
-the selected plan, alternatives/trade-offs, measured versus estimated findings,
-verification performed and exact unresolved requirements. Do not claim routed,
-DRC-clean or manufacturing-ready from placement or a generated SES alone.
+use rendered images for mandatory visual review before sign-off (inspect
+labels, polarity marks, orientation, spacing and mechanical crowding—never
+declare a layout visually clean from scalar metrics alone). A screenshot or a
+caller's `stage_result=ok` does not establish an electrical gate. Check
+Top/Bottom Overlay (silkscreen) legibility against IPC-7351 guidance
+(`1.0–1.27 mm` recommended height, `0.80 mm` dense floor, `0.15–0.18 mm`
+stroke, ratio `>= 1:10`, condensed width before shrinking height, `>= 0.20 mm`
+pad clearance, outside component bodies, assembly-layer offloading for crowded
+passives, and fab verification of cured ink thickness `15–25 um`). Revalidate
+dependent evidence after moving parts, changing rules, stackup, intent or
+pours. Deliver the selected plan, alternatives/trade-offs, measured versus
+estimated findings, visual observations, verification performed and exact
+unresolved requirements. Do not claim routed, DRC-clean or manufacturing-ready
+from placement or a generated SES alone.

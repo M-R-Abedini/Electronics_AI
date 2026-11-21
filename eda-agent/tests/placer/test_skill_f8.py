@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 
+from eda_agent.placer import silkscreen
 from eda_agent.placer.eval.score import evaluate
 from eda_agent.placer.intent import infer, model, validate
 from eda_agent.placer.ir import (
@@ -38,11 +39,30 @@ def test_pro_pcb_designer_skill_frontmatter_and_reference_links():
     assert "description:" in frontmatter
 
     links = re.findall(r"\]\((references/[^)]+\.md)\)", text)
-    assert len(links) >= 4
+    assert len(links) >= 5
+    assert "references/routing-silkscreen-and-visual-qa.md" in links
     for rel in links:
         target = SKILL_DIR / rel
         assert target.is_file(), f"broken reference link in SKILL.md: {rel}"
         assert len(target.read_text(encoding="utf-8").strip()) > 500
+
+
+def test_skill_silkscreen_enums_and_mandatory_visual_qa_gate():
+    skill_md = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    checklist_md = (SKILL_DIR / "references" / "review-and-signoff-checklist.md").read_text(encoding="utf-8")
+    qa_md = (SKILL_DIR / "references" / "routing-silkscreen-and-visual-qa.md").read_text(encoding="utf-8")
+    combined = f"{skill_md}\n{checklist_md}\n{qa_md}"
+
+    # Every live silkscreen_policy and fab_profile enum must stay documented in the skill.
+    for pol in silkscreen.SILKSCREEN_POLICIES:
+        assert f"`{pol}`" in qa_md, f"silkscreen_policy `{pol}` missing from routing-silkscreen-and-visual-qa.md"
+    for fab in silkscreen.FAB_PROFILES:
+        assert f"`{fab}`" in qa_md, f"fab_profile `{fab}` missing from routing-silkscreen-and-visual-qa.md"
+
+    # Mandatory visual QA gate (P9) and IPC-7351 silkscreen sign-off must be enforced in both SKILL.md and checklist.
+    assert "P9" in skill_md and "include_images=true" in skill_md
+    assert "P9" in checklist_md and "include_images=true" in checklist_md
+    assert "F.Fab" in combined and "B.Fab" in combined and "15" in combined and "25 um" in combined
 
 
 def test_skill_tool_names_and_intent_schema_enums_match_live_code():

@@ -17,6 +17,8 @@ Verify every hard gate directly from `run_report.json` / tool output:
 | **KiCad DRC (Non-Routing)** | `drc_new_non_routing == 0` | New placement/silkscreen/mask error not present on untouched reference board. **Block apply.** |
 | **F6 Electrical Lint** | `lint.critical_errors == 0` (when `has_copper == true`) | Fast/critical signal split-plane crossing, track under crystal, `FB` near `SW` or under inductor, or severe decap loop (`> 12 mm`). **Resolve before sign-off.** |
 | **Fixed Copper Integrity** | Macro & `S6a` copper preserved bit-for-bit after Freerouting | Check `reconcile_fixed.missing_from_session == 0`. |
+| **IPC-7351 Silkscreen & Assembly Legend** | `silkscreen.audit.reference_designators.errors == 0` and `under_body == 0` (unless `silkscreen_policy="off"`) | Reference designators violate IPC height (`>= 0.80 mm`), stroke (`>= 0.15 mm` / `0.12 mm` LPI), ratio (`>= 1:10`), pad clearance (`>= 0.20 mm`), or sit hidden beneath a component body. Re-run with `auto` / `dense` / `assembly_only` and confirm fab ink limits (`15–25 um`). |
+| **Mandatory Visual Inspection (`P9`)** | Rendered **Top AND Bottom** PNGs visually inspected via `placer__gallery(runs=[...], include_images=true)` (plus `placer__diagnose(run=..., include_images=true)` crops if issues exist) | Metrics alone cannot catch port labels (`Value` fields) dragged under connectors, ambiguous legends, awkward rotations, or mechanical overhang hazards. **Never sign off or propose `placer__apply` without viewing the images.** |
 
 ---
 
@@ -62,17 +64,19 @@ Always label which comparison is being reported:
 
 1. **NEVER** output raw `(x, y)` coordinates or tell the user to manually type coordinates from your prose.
 2. **NEVER** claim "DRC-clean", "100% routed", or "production-ready" without quoting the actual `run_report.json` gate results (`drc_router_caused`, `drc_new_non_routing`, `unrouted`, `lint.critical_errors`, `router_stop`).
-3. **NEVER** silently overwrite the user's source `.kicad_pcb` or `.PcbDoc`—always preview (`dry_run=true`) and require user confirmation before `placer__apply(..., in_place=true)`.
-4. **NEVER** invent datasheet limits, stackup `epsilon_r`, impedance values, or `power_w` numbers from memory (P5).
-5. **NEVER** hide `unknowns`, `capacity_warnings`, `inconclusive` router timeouts, or unverified impedance/3D-height gaps from the final engineering summary.
+3. **NEVER** sign off a layout or propose `placer__apply` from scalar metrics alone without visually inspecting rendered **Top AND Bottom** PCB images via `placer__gallery(runs=[...], include_images=true)` (`P9`), and **NEVER** excuse a visual defect (such as hidden port labels or ambiguous silkscreen) because `DRC == 0`.
+4. **NEVER** silently overwrite the user's source `.kicad_pcb` or `.PcbDoc`—always preview (`dry_run=true`) and require user confirmation before `placer__apply(..., in_place=true)`.
+5. **NEVER** invent datasheet limits, stackup `epsilon_r`, impedance values, fab ink thickness, or `power_w` numbers from memory (P5).
+6. **NEVER** hide `unknowns`, `capacity_warnings`, `inconclusive` router timeouts, or unverified impedance/3D-height/fab-silkscreen gaps from the final engineering summary.
 
 ---
 
 ## 6. Sign-Off Report Template (Deliver Concisely in the User's Language)
 
 For every completed placement/routing task, present:
-1. **Board & Policy Summary:** Layer count, stackup policy, assembly side policy, `intent_sha256`, fixed anchors, and any remaining `unknowns`.
-2. **Hard Gates Table:** Legality (`strict_violations`), runtime (`s0_s5_seconds`), routing coverage / `unrouted` / `router_stop`, KiCad DRC (`router_caused` / `new_non_routing`), and F6 Electrical Lint (`critical_errors` / `warnings` / score).
+1. **Board & Policy Summary:** Layer count, stackup policy, assembly side policy, `silkscreen_policy` & `fab_profile`, `intent_sha256`, fixed anchors, and any remaining `unknowns`.
+2. **Hard Gates Table:** Legality (`strict_violations`), runtime (`s0_s5_seconds`), routing coverage / `unrouted` / `router_stop`, KiCad DRC (`router_caused` / `new_non_routing`), F6 Electrical Lint (`critical_errors` / `warnings` / score), Silkscreen (`reference_designators.errors`, `under_body`), and Mandatory Visual QA status (`Top + Bottom` inspected).
 3. **Key Engineering Metrics:** `Pro Score` (with component breakdown), `decap_median_mm` / `p90_mm`, `crossings`, `PathFinder` overflow, and comparison vs baseline/expert (when available under P2).
-4. **Visual & Lint Findings:** Concrete findings from `placer__gallery(include_images=true)` and `placer__diagnose` with artifact links (`placed_board`, `routed_board`, `gallery.html`, `run_report.json`).
-5. **Safe Apply Offer:** Explicit `placer__apply` options (recommended sibling copy vs `in_place=true` with `< 2 s` `placer__revert`).
+4. **Silkscreen & Assembly Legend Summary (IPC-7351):** `dfm_score`, height/stroke/ratio bounds, Condensed count, Leader Lines added, references offloaded to `F.Fab`/`B.Fab`, confirmation that user port labels (`Value` fields) & polarity marks were preserved, and the pre-fab reminder to verify printable height/stroke and cured ink thickness (`15–25 um`, min `10 um`) with the target PCB manufacturer.
+5. **Visual & Lint Findings (Show the User):** Concrete findings from `placer__gallery(runs=[...], include_images=true)` (Top & Bottom) and `placer__diagnose(run=..., include_images=true)` with artifact links (`placed_board`, `routed_board`, `gallery.html`, `run_report.json`) so the user can visually inspect the board before approving apply.
+6. **Safe Apply Offer:** Explicit `placer__apply` options (recommended sibling copy vs `in_place=true` with `< 2 s` `placer__revert`).
