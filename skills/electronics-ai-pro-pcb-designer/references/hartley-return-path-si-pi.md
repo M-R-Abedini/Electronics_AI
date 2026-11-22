@@ -28,11 +28,17 @@ Never silently change a board's layer count or invent planes. When `placer__insp
   - `gnd_fill_fraction`, `largest_island_fraction` (target `>= 0.85`, warns `< 0.75`), and `island_count` (pieces `>= 1.0 mm^2`).
   - Narrow perpendicular crossings (`~0.4–0.6 mm`) are physically unavoidable on 2-layer boards; wider return gaps (`> max(1.0 mm, 4 * width)`) on fast nets are flagged as `two_layer_return_gap` warnings.
 
-### 4-Layer Boards (Two Proven Stackups — Always Present Trade-Offs Honestly)
+### 4-Layer Boards (Three Proven Stackups — Choose From Real Geometry, Never Hardcode One)
 | Stackup | Layer Allocation | Electromagnetic Advantage | Routing Trade-Off |
 |---|---|---|---|
 | **Option A (Hartley Dual-GND)** | `L1: SIG+PWR` / `L2: Solid GND` / `L3: Solid GND` / `L4: SIG+PWR` | Every `L1 <-> L4` signal transition stays referenced to **GND <-> GND**: a single adjacent GND return via (`<= 1.5 mm`) closes the return path cleanly at all frequencies. Excellent EMI shielding. | Power rails share `L1`/`L4` routing space with signals (requires disciplined power floorplanning and short local power pours). |
 | **Option B (Classic Split Reference)** | `L1: SIG` / `L2: Solid GND` / `L3: Solid PWR` / `L4: SIG` | Dedicated low-impedance internal power plane frees outer layers for dense signal routing (common on dense 4-layer MCU/bus boards). | `L1 <-> L4` transitions change reference from **GND to PWR**: high-frequency return current must jump across the thick core via a **stitching capacitor (`<= 3.0 mm`)** connecting `GND` and `PWR`. Fast signals should stay on `L1` (referenced to `L2 GND`) whenever possible. |
+| **Option C (4L HDI BGA Escape + Solid GND Shield)** | `L1: SIG+PWR` / `L2: Signal (L1-L2 Microvia Escape)` / `L3: Solid GND` / `L4: SIG+PWR` | Keeps `L2 (In1.Cu)` open for `L1-L2` microvia-in-pad fanout of `<= 0.65 mm` WLCSP/BGAs on `F.Cu`, while `L3 (In2.Cu)` provides an unbroken Solid `GND` reference plane & shield between `L1/L2` digital signals and `L4` analog/optical/sensor circuits. `S6a` taps connect SMD `GND` pads vertically to `L3`, eliminating messy point-to-point `GND` traces. | `L1` signals are slightly farther from `L3 GND` than from `L2`; keep high-speed/sensitive traces tight, minimize `L2` routing directly under noisy switching nodes, and stitch `GND` vias near layer transitions. |
+
+### GND Routing Strategy: Dedicated Plane + `S6a` Taps + Final Refill (Never Point-to-Point `GND` Traces on `>= 4L`)
+- **Do NOT** route `GND` as long point-to-point traces on `>= 4L` boards—it clogs routing channels and degrades return-path inductance.
+- **Do NOT** route signals across all layers first and then pour `GND` only into leftover scraps—that creates slotted/fragmented reference planes (`reference_split_crossing`).
+- **DO** define the dedicated `Solid GND` plane zone **before** calling `placer__place_board(..., route=true)` (using `stackup.guidance` from `placer__inspect`), let `S6a` drop short vertical `GND` tap vias from SMD pads to the plane, let `Freerouting` route only non-plane signals/power cleanly, and let post-route `ZONE_FILLER` refill the plane and close all `GND` connections with zero clutter.
 
 ### 6+ Layer Boards
 - Pair every signal layer closely with at least one unbroken solid `GND` plane across a thin prepreg (`<= 0.1–0.2 mm`).

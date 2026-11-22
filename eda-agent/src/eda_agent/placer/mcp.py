@@ -34,6 +34,80 @@ from .toolchain import RUNTIME_DIR
 _STRING = {"type": "string"}
 
 
+def _stackup_guidance(board: Board) -> dict:
+    """Physics-based, non-hardcoded stackup & GND-plane guidance for connected AI agents."""
+    from .route.bga_escape import MICROVIA_AUTO_PITCH_MM, detect_bga
+
+    n_layers = len(board.copper_layers)
+    layer_names = [cl.canonical for cl in sorted(board.copper_layers, key=lambda c: c.index)]
+    fine_bgas = []
+    for fp in sorted(board.footprints, key=lambda f: f.ref):
+        bga = detect_bga(fp)
+        if bga is not None and min(bga["pitch_x"], bga["pitch_y"]) <= MICROVIA_AUTO_PITCH_MM:
+            fine_bgas.append({
+                "ref": fp.ref,
+                "side": fp.side,
+                "pitch_mm": round(min(bga["pitch_x"], bga["pitch_y"]), 3),
+                "balls": len(bga["grid"]),
+            })
+    has_plane = any(r.role in ("plane", "mixed") for r in board.stackup.roles)
+    if has_plane:
+        return {
+            "gnd_routing_mode": "plane_taps_and_refill",
+            "fine_pitch_bgas": fine_bgas,
+            "note": (
+                "Active plane/pour detected: S6a SMD GND/power taps and post-route zone refill "
+                "are enabled, and dedicated inner plane nets are excluded from point-to-point trace routing."
+            ),
+            "options": [],
+        }
+    options: list[dict[str, str]] = []
+    if n_layers == 2:
+        options.append({
+            "id": "2l_bottom_gnd_pour",
+            "layers": "F.Cu=SIG+PWR / B.Cu=Maximum-Continuity GND Pour",
+            "when_to_use": "Standard 2-layer board: route signals on F.Cu with short B.Cu jumpers, then pour & stitch GND on B.Cu.",
+        })
+    elif n_layers == 4:
+        if fine_bgas:
+            options.append({
+                "id": "4l_hdi_bga_escape",
+                "layers": "F.Cu=SIG+PWR / In1.Cu=Signal (L1-L2 Microvia Escape) / In2.Cu=Solid GND Plane / B.Cu=SIG+PWR",
+                "when_to_use": (
+                    "Recommended for 4L boards with fine-pitch HDI BGAs (<= 0.65 mm) on F.Cu: keeps In1.Cu open for "
+                    "L1-L2 microvia-in-pad escape while In2.Cu provides an unbroken Solid GND reference & shield plane."
+                ),
+            })
+        options.append({
+            "id": "4l_hartley_dual_gnd",
+            "layers": "F.Cu=SIG+PWR / In1.Cu=Solid GND / In2.Cu=Solid GND / B.Cu=SIG+PWR",
+            "when_to_use": "Hartley dual-GND stackup: best EMI/return-path continuity (L1<->L4 stays GND<->GND with 1 adjacent return via).",
+        })
+        options.append({
+            "id": "4l_classic_split",
+            "layers": "F.Cu=SIG / In1.Cu=Solid GND / In2.Cu=Solid PWR / B.Cu=SIG",
+            "when_to_use": "Dense 4L MCU/bus boards needing a dedicated internal power plane (add GND-PWR stitching caps <= 3 mm near L1<->L4 fast vias).",
+        })
+    else:
+        options.append({
+            "id": f"{n_layers}l_paired_gnd_planes",
+            "layers": f"Pair every signal layer across thin prepreg with an unbroken Solid GND plane ({', '.join(layer_names)})",
+            "when_to_use": "6L+ high-density / RF / BGA boards: dedicate inner GND planes before routing so S6a taps & DSN plane exclusion activate.",
+        })
+    return {
+        "gnd_routing_mode": "point_to_point_traces_warning",
+        "fine_pitch_bgas": fine_bgas,
+        "note": (
+            "No GND/power plane zone exists on this board yet (stackup_policy == 'needs_decision'). "
+            "If you route now without adding a Solid GND plane zone first, S6a plane taps will stay 0/0 "
+            "and the autorouter will route GND as cluttered point-to-point traces. "
+            "Choose the best stackup option below (confirming with the user if ambiguous), add the GND plane zone "
+            "before calling placer__place_board(..., route=true), and verify S6a taps + post-route zone refill."
+        ),
+        "options": options,
+    }
+
+
 def _inspect_summary(board: Board) -> dict:
     by_class: dict[str, int] = {}
     for net in board.nets:
@@ -51,7 +125,8 @@ def _inspect_summary(board: Board) -> dict:
                     "board_thickness_mm": board.stackup.board_thickness_mm,
                     "layers": [asdict(layer) for layer in board.stackup.layers if layer.type in ("copper", "core",
                                                                                                   "prepreg")],
-                    "roles": [asdict(r) for r in board.stackup.roles]},
+                    "roles": [asdict(r) for r in board.stackup.roles],
+                    "guidance": _stackup_guidance(board)},
         "rules": board.rules,
         "netclasses": [asdict(c) for c in board.netclasses],
         "nets": {"count": len(board.nets), "by_class": dict(sorted(by_class.items()))},
