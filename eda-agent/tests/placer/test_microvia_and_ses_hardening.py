@@ -564,7 +564,17 @@ def test_auto_hdi_signals_escapes_inner_ring_on_fine_pitch_bga():
     """On a fine-pitch HDI BGA (pitch <= 0.65 mm, allow_microvias=True), inner-ring signal
     balls physically cannot escape on F.Cu and must auto-receive microvia-in-pad even when
     include_signals=False (default in S6a)."""
-    from eda_agent.placer.ir import Board, CopperLayer, Courtyard, Footprint, Net, NetClass, Outline, Pad, derive
+    from eda_agent.placer.ir import (
+        Board,
+        CopperLayer,
+        Courtyard,
+        Footprint,
+        Net,
+        NetClass,
+        Outline,
+        Pad,
+        derive,
+    )
     from eda_agent.placer.route.bga_escape import plan_bga_escapes
 
     pads = []
@@ -609,7 +619,17 @@ def test_auto_hdi_signals_escapes_inner_ring_on_fine_pitch_bga():
 def test_inspect_summary_stackup_guidance_for_hdi_bga_and_plane():
     """placer__inspect must emit non-hardcoded stackup.guidance warning when zones==0 and
     recommend 4l_hdi_bga_escape when a fine-pitch BGA (<= 0.65 mm) is present on a 4L board."""
-    from eda_agent.placer.ir import Board, CopperLayer, Courtyard, Footprint, Net, NetClass, Outline, Pad, derive
+    from eda_agent.placer.ir import (
+        Board,
+        CopperLayer,
+        Courtyard,
+        Footprint,
+        Net,
+        NetClass,
+        Outline,
+        Pad,
+        derive,
+    )
     from eda_agent.placer.mcp import _inspect_summary
 
     pads = [
@@ -645,7 +665,17 @@ def test_4l_hdi_bga_stacked_microvia_to_l3_gnd_plane_and_drc_signoff():
     """On a 4L HDI board with In1.Cu=signal and In2.Cu=GND plane, an inner-ring GND ball
     must escape to In2.Cu via stacked L1-L2 + L2-L3 microvia-in-pad; and _drc_signoff must
     set fab_ready=False whenever drc_unconnected > 0."""
-    from eda_agent.placer.ir import Board, CopperLayer, Courtyard, Footprint, Net, NetClass, Outline, Pad, derive
+    from eda_agent.placer.ir import (
+        Board,
+        CopperLayer,
+        Courtyard,
+        Footprint,
+        Net,
+        NetClass,
+        Outline,
+        Pad,
+        derive,
+    )
     from eda_agent.placer.mcp import _drc_signoff
     from eda_agent.placer.route.bga_escape import plan_bga_escapes
 

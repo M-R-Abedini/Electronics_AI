@@ -283,6 +283,46 @@ def _restrict_layers(board, zone, names):
     zone.SetLayerSet(wanted)
 
 
+def _clamp_illegal_netclass_vias(board):
+    """Clamp netclass through-via drill/diameter on the temporary DSN-export board copy when
+    the project's own netclass violates board min_through_hole_diameter or min_via_diameter.
+
+    Prevents KiCad ExportSpecctraDSN from handing Freerouting an un-manufacturable default via
+    padstack (e.g. 0.40 mm drill when board min_through_hole_diameter is 0.508 mm).
+    """
+    ds = board.GetDesignSettings()
+    min_drill = int(getattr(ds, "m_MinThroughDrill", 0))
+    min_dia = int(getattr(ds, "m_ViasMinSize", 0))
+    min_ann = int(getattr(ds, "m_ViasMinAnnularWidth", 0))
+    if min_drill <= 0 and min_dia <= 0:
+        return {}
+    ns = getattr(ds, "m_NetSettings", None)
+    if ns is None:
+        return {}
+    clamped = {}
+    classes = list(ns.GetNetClasses().values()) if hasattr(ns, "GetNetClasses") else []
+    if hasattr(ns, "GetDefaultNetclass"):
+        classes.insert(0, ns.GetDefaultNetclass())
+    seen = set()
+    for nc in classes:
+        name = nc.GetName()
+        if name in seen:
+            continue
+        seen.add(name)
+        old_d = int(nc.GetViaDiameter())
+        old_h = int(nc.GetViaDrill())
+        new_h = max(old_h, min_drill) if old_h > 0 else min_drill
+        new_d = max(old_d, min_dia, new_h + 2 * min_ann) if new_h > 0 else max(old_d, min_dia)
+        if new_h != old_h or new_d != old_d:
+            nc.SetViaDrill(int(new_h))
+            nc.SetViaDiameter(int(new_d))
+            clamped[name] = {
+                "from_mm": [round(old_d / 1e6, 4), round(old_h / 1e6, 4)],
+                "to_mm": [round(new_d / 1e6, 4), round(new_h / 1e6, 4)],
+            }
+    return clamped
+
+
 def prepare(board_path, keep_json, out_board, out_dsn, out_json):
     board = pcbnew.LoadBoard(board_path)
     with open(keep_json, encoding="utf-8") as fh:
@@ -302,6 +342,7 @@ def prepare(board_path, keep_json, out_board, out_dsn, out_json):
         _restrict_layers(board, zone, keep[zone.m_Uuid.AsString()])
         board.Add(zone)
     board.BuildConnectivity()
+    clamped_vias = _clamp_illegal_netclass_vias(board)
     obstacles = _obstacles(board)
     pcbnew.SaveBoard(out_board, board)
     exported = bool(pcbnew.ExportSpecctraDSN(board, out_dsn))
@@ -315,6 +356,7 @@ def prepare(board_path, keep_json, out_board, out_dsn, out_json):
         "zones": zone_rows,
         "plane_zones_kept": len(planes),
         "obstacles": obstacles,
+        "netclass_vias_clamped": clamped_vias,
         "min_track_width_mm": _min_track_rule(board),
         "dsn_exported": exported,
     }
@@ -550,6 +592,19 @@ def finish(board_path, ses_path, out_board, out_json):
     with open(out_json, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=1)
     del tracks, zones, copper, stale
+
+
+def lock_routing(board_path, out_board, out_json):
+    """Lock all surviving tracks and vias on a copy so a guarded re-route pass preserves clean copper."""
+    board = pcbnew.LoadBoard(board_path)
+    locked = 0
+    for t in board.GetTracks():
+        if not t.IsLocked():
+            t.SetLocked(True)
+            locked += 1
+    pcbnew.SaveBoard(out_board, board)
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump({"newly_locked": locked, "total_items": len(list(board.GetTracks()))}, fh, indent=1)
 
 
 def sanitize(board_path, remove_json, out_board, out_json):
@@ -2111,6 +2166,6 @@ def filled_hits(board_path, points_json, out_json):
 
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
-    {"prepare": prepare, "finish": finish, "sanitize": sanitize, "heal_thermals": heal_thermals,
-     "heal_mask_bridges": heal_mask_bridges, "dump": dump, "place": place,
-     "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)
+    {"prepare": prepare, "finish": finish, "sanitize": sanitize, "lock_routing": lock_routing,
+     "heal_thermals": heal_thermals, "heal_mask_bridges": heal_mask_bridges, "dump": dump,
+     "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)
