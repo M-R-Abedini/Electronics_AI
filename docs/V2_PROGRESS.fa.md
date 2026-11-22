@@ -637,6 +637,29 @@ Video با بودجهٔ مشترک پس از ۵۸۵٫۴۷ ثانیه و پیش �
   4. **رفع باگ `GetWidth(F_Cu)` در `_via_width_nm`:** خواندن قطر ویا روی `via.TopLayer()` به جای `F.Cu` ثابت تا میکروویاهای درونی `L2-L3` بدون خطا خوانده و بازتولید شوند.
 - **آزمون زنده روی KiCad 10.0.8 + Freerouting 2.5.0 (`test_microvia_and_ses_hardening.py`):** برد ۶ لایهٔ HDI با BGA گام `0.50 mm` و برش داخلی `Edge.Cuts`: تولید ۶ میکروویا (`4× L1-L2` + `2× L2-L3` پلکانی) با **۰ خطای DRC**، اکسپورت `6` مانع `edge_cutout`، حذف پدستک‌های غیرسرتاسری از `(structure (via ...))`، روت کامل با پوشش `100%` (`passed=True`)، بقای بیت‌به‌بیت تمام میکروویاها پس از SES، پاک‌سازی زندهٔ `REF**_1` و بازیابی زندهٔ دریل ویای کلاس سفارشی `VDD` (`0.20 → 0.30 mm`).
 
+### پسافاز `F9` · ارتقای ۴ فازی کیفیت چیدمان، موازی‌سازی `py.detach` در Rust، اصلاح گیت‌ها و مقاوم‌سازی روتینگ (2026-11-22)
+
+- **فاز ۱ — اصلاح گیت‌ها، رده‌بندی صادقانهٔ `classify_unrouted` و اصلاح ریشه‌ای `drill_out_of_range` (`check.py`, `kicad_pcbnew_helper.py`):**
+  - رفع تناقض `time_budget_s` (`max(TIME_BUDGET_S, cfg.timeout_s + TIME_BUDGET_OVERHEAD_S + reroute_budget_s)`) و سقف `499` خطای `kicad-cli` در گیت `unrouted_listed` همراه با پرچم `unrouted_report_truncated`.
+  - اصلاح `classify_unrouted`: تفکیک نت‌های کاملاً دست‌نخورده (`unattempted`: صفر پد متصل و صفر ویا) از `escape_blocked` و `via_blocked` همراه با فیلدهای `attached_pads`, `total_pads`, `opposite_sides`.
+  - افزودن `_clamp_illegal_netclass_vias` در `prepare` (`ds.m_NetSettings`): روی بردهایی که کلاس نت پروژه (`Default`) دریل ویای غیرقانونی کوچک‌تر از `min_through_hole_diameter` دارد (مانند `openair_max`: `0.40 < 0.508 mm`)، روی کپی موقت DSN به مقدار قانونی کلمپ می‌شود.
+  - **شاهد زنده روی `openair_max` (120s):** `Default` از `[0.8, 0.4]` به `[0.8, 0.508] mm` کلمپ شد ← **`initial_router_drc: 44/111 → 0`**، **`sanitize_removed_vias: 44 → 0`**، پوشش از `66.53%` (`164` روت‌نشده) به **`75.31%` (`121` روت‌نشده، `+8.78%`، `-43` اتصال باز)**، زمان کل `266.86s → 165.31s` و **`passed = True`, `drc = 0/0`**!
+  - *(تصمیم داده‌محور: `edge_clearance_wire_keepouts` به‌صورت A/B آزمایش و به‌دلیل تولید ۱۲۴–۶۳۲ چندضلعی keepout و افت `11–13%` پوشش در `RoyalBlue`/`openair_max` حذف شد.)*
+- **فاز ۲ — بودجهٔ ۱۰۰٪ کامل چیدمان + موازی‌سازی چندنخی `ThreadPoolExecutor` با آزادسازی GIL در Rust (`crates/placer-core/src/lib.rs`, `pipeline.py`, `congestion.py`):**
+  - افزودن `py.detach(...)` در `legalize`, `anneal`, `grid_astar`, `pathfinder_estimate` هستهٔ Rust `placer-core` برای موازی‌سازی واقعی چندهسته‌ای بدون ریسک `spawn` ویندوز و بدون سربار pickle/حافظه؛ حذف تقسیم بودجه (`divisor = 1` برای تمام بردهای `< 175` قطعهٔ متحرک و `divisor = 4` برای بردهای خیلی بزرگ `>= 175` قطعه) و ادغام نتایج به ترتیب ثابت کاندیداها (حفظ ۱۰۰٪ قطعیت `P7`).
+  - افزودن `capacity_scale` به `congestion.estimate` و فعال‌سازی تورم ملایم پیش‌اشباع (`peak_utilization >= 0.85`) در `_refine_congestion` با حفظ کامل گاردهای قانونی/دکوپلینگ/تقاطع.
+  - **شاهد زنده A/B روی کد فعلی (`div=5` در برابر `div=1` + `py.detach`):**
+    - قطعیت `P7` روی `stickhub`: `par1 == par2 == seq` (**۱۰۰٪ بیت‌به‌بیت یکسان**، ۵ کارگر).
+    - سرعت چندهسته‌ای Rust: `openair_max` **`654.5s → 210.2s` (`3.11×`)**، `video` **`1955.5s → 516.4s` (`3.79×`)**.
+    - جهش کیفیت چیدمان (`Pro Score`): `pic_programmer` **`79.26 → 81.31 (+2.05)`** (تقاطع `29 → 14`)، `stickhub` **`69.82 → 74.29 (+4.47)`** (`critical_loops: 67.78 → 85.13`، `decap p90: 6.82 → 5.37 mm`)، `royalblue54L_feather` **`77.78 → 77.99 (+0.21)`** (تقاطع `334 → 196`، `decap p90: 3.40 → 2.27 mm`)، `ecc83` **`96.67`** (`0` تقاطع).
+- **فاز ۳ — کش `baseline` در `refine.py` + روت مجدد تک‌پاس با keepout موضعی پس از `sanitize` (`refine.py`, `check.py`, `kicad_pcbnew_helper.py`):**
+  - کش قطعی `baseline` با کلید SHA-256 روی `(board, reference, sidecars, timeout, toolchain)` + اجرای موازی ۲کارگره در اولین فراخوانی + گارد `min_improvement`.
+  - دستور `lock_routing` و روت مجدد تک‌پاس (`reroute_after_sanitize`) با keepout موضعی pad-safe روی مختصات DRC حذف‌شده (با پذیرش صرفاً در صورت `router_caused == 0` و کاهش واقعی `unrouted` و هزینهٔ `0 s` روی بردهای تمیز).
+- **فاز ۴ — کالیبراسیون آفلاین عدد نویز + داوری داده‌محور `Top-2` (`docs/benchmarks/phase1_to_4_quality_summary.json`):**
+  - **عدد نویز واقعی `StickHub` (۳ جایگشت بی‌اثر ترتیب `(net ...)` در DSN همگی `converged`):** `unrouted = 5, 8, 4` ← بازهٔ نویز **`4` اتصال (`±2` اتصال / `±0.88%` پوشش)**.
+  - **آزمون A/B `Top-2` با بودجهٔ کامل روی `StickHub`:** برندهٔ `Pro Score` (`baseline`: `pro=71.88`, `unrouted=41`, پوشش `81.86%`, `0/0` DRC) کاملاً بر نفر دوم (`blocks`: `pro=68.35`, `unrouted=75`, پوشش `66.81%`, `0/31` DRC) غلبه کرد ⇐ **`route_top_k = 1` حفظ شد** و سربار ۲–۴× جاوا تحمیل نشد.
+
+
 
 
 

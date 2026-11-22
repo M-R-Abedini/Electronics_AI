@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -40,6 +42,9 @@ LEGALIZE_RETRIES = 2
 MAX_CORRIDOR_TRIALS = 24
 MAX_INFLATION_ROUNDS = 3
 INFLATION_TIME_GUARD_S = 220.0
+NEAR_SATURATION_UTIL = 0.85  # trigger mild cell inflation on hotspots >= 85% utilization even when overflow == 0
+PARALLEL_MIN_MOVABLE = 15  # skip Windows process-spawn overhead on tiny boards
+PARALLEL_MAX_WORKERS = 5  # run up to 5 floorplan variants in 1 parallel wave on multi-core CPUs
 
 
 def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None,
@@ -366,8 +371,28 @@ def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None
     return placed, info
 
 
+def _run_floorplan_candidate(args: tuple) -> tuple[str, object, dict]:
+    """Worker for parallel P7-deterministic floorplan candidate evaluation (GIL released in Rust)."""
+    name, board, side_policy, mode, seed, intent, use_blocks, reserve, rigid_blocks, budget_divisor = args
+    placed, info = _solve(
+        board.copy(),
+        side_policy=side_policy,
+        mode=mode,
+        seed=seed,
+        intent=intent,
+        floorplan=use_blocks,
+        reserve=reserve,
+        rigid_blocks=rigid_blocks,
+        budget_divisor=budget_divisor,
+    )
+    return name, placed, info
+
+
+_ORIGINAL_SOLVE = _solve
+
+
 def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int = 0,
-          intent: dict | None = None, floorplan: bool = False) -> tuple:
+          intent: dict | None = None, floorplan: bool = False, parallel: bool = True) -> tuple:
     """Place the board, comparing independent floorplan candidates when requested."""
     t0 = time.monotonic()
     original = board
@@ -388,8 +413,14 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             modes.append(("rigid", True, False))
         if selected:
             modes.extend([("reserve", False, True), ("combined", True, True)])
-    divisor = len(modes) + 1
-    budget = {"budget_divisor": divisor} if divisor > 1 else {}
+    fixed_guess = problem.fixed_parts(board)
+    movable_est = sum(1 for fp in board.footprints if fp.ref not in fixed_guess and not fp.locked)
+    # Full 100% S3/S5 iteration budget for all normal/medium boards (< 175 movable parts);
+    # for very large (>= 175 movable) multi-variant boards (e.g. video, openair_max), use divisor=4
+    # (25% deeper than legacy //5) so S0-S5 stays safely within the 300s architecture budget.
+    divisor = 4 if (len(modes) >= 3 and movable_est >= 175) else 1
+    budget = {"budget_divisor": divisor}
+
     def blocked_exits(escape_audit):
         return {(r["ref"], r["pin"], r["net"]) for r in escape_audit.get("blocked", [])}
 
@@ -413,8 +444,41 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             ref_report["output_metrics"] = _floorplan_metrics(cand, intent)
         return cand, cand_audit, ref_report
 
-    placed, info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                         floorplan=False, **budget)
+    specs = [("baseline", False, False, False)] + [
+        (name, use_blocks, reserve, name == "rigid") for name, use_blocks, reserve in modes
+    ]
+    workers = 1
+    use_pool = (
+        parallel
+        and len(specs) > 1
+        and movable_est >= PARALLEL_MIN_MOVABLE
+        and _solve is _ORIGINAL_SOLVE
+        and (os.cpu_count() or 1) > 1
+    )
+    solved_by_name: dict[str, tuple] = {}
+    if use_pool:
+        workers = min(len(specs), os.cpu_count() or 1, PARALLEL_MAX_WORKERS)
+        payloads = [
+            (name, board, side_policy, mode, seed, intent, use_blocks, reserve, is_rigid, divisor)
+            for name, use_blocks, reserve, is_rigid in specs
+        ]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for name, cand_b, cand_i in pool.map(_run_floorplan_candidate, payloads):
+                solved_by_name[name] = (cand_b, cand_i)
+    if not solved_by_name:
+        for name, use_blocks, reserve, is_rigid in specs:
+            if name == "baseline":
+                solved_by_name[name] = _solve(
+                    board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                    floorplan=False, **budget,
+                )
+            else:
+                solved_by_name[name] = _solve(
+                    board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                    floorplan=use_blocks, reserve=reserve, rigid_blocks=is_rigid, **budget,
+                )
+
+    placed, info = solved_by_name["baseline"]
     variant = "baseline"
     audit = measure(placed)
     comparisons = {}
@@ -424,9 +488,8 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         baseline, baseline_info = placed, info
         base_metrics = _floorplan_metrics(baseline, intent)
         rank = _floorplan_rank(baseline_info, base_metrics, audit)
-        for name, use_blocks, reserve in modes:
-            other, other_info = _solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
-                                       floorplan=use_blocks, reserve=reserve, rigid_blocks=name == "rigid", **budget)
+        for name, _use_blocks, _reserve in modes:
+            other, other_info = solved_by_name[name]
             other_audit = measure(other)
             other_refinement = None
             if not (name == "rigid" and not other_info.get("rigid_macros")):
@@ -496,6 +559,7 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
                          "reserved_pad_count": sum(map(len, selected.values())) if reservations_used else 0,
                          "selected_variant": variant, "quality_guard": comparisons.get(variant),
                          "comparisons": comparisons, "escape": audit, "iteration_budget_divisor": divisor,
+                         "parallel_workers": workers,
                          "decap_refinement": tail_refinement, "congestion_refinement": congestion_refinement,
                          "passive_alignment": passive_alignment}
     for row in anchors:
@@ -513,7 +577,7 @@ def _legality_key(info: dict) -> tuple:
 
 def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, variant: str,
                        reservations_used: bool, seed: int, measure, t0: float) -> tuple:
-    """F5 guarded Cell Inflation loop (up to 3 rounds) driven by Rust PathFinder overflow."""
+    """F5 guarded Cell Inflation loop (up to 3 rounds) driven by Rust PathFinder overflow or near-saturation."""
     cur_pf = congestion.estimate(placed)
     report: dict = {
         "available": bool(cur_pf.get("available")),
@@ -521,7 +585,9 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
         "rounds": [],
         "accepted_rounds": 0,
     }
-    if (not cur_pf.get("available") or cur_pf.get("total_overflow", 0.0) <= 1e-6
+    has_overflow = cur_pf.get("total_overflow", 0.0) > 1e-6
+    near_sat = cur_pf.get("peak_utilization", 0.0) >= NEAR_SATURATION_UTIL
+    if (not cur_pf.get("available") or (not has_overflow and not near_sat)
             or time.monotonic() - t0 >= INFLATION_TIME_GUARD_S):
         report["final"] = report["initial"]
         return placed, audit, report
@@ -533,9 +599,19 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
     cur_metrics = _floorplan_metrics(cur_placed, intent) if intent else {"crossings": crossings(cur_placed)["count"]}
 
     for round_idx in range(MAX_INFLATION_ROUNDS):
-        if cur_pf.get("total_overflow", 0.0) <= 1e-6 or time.monotonic() - t0 >= INFLATION_TIME_GUARD_S:
+        cur_overflow = cur_pf.get("total_overflow", 0.0) > 1e-6
+        cur_near_sat = cur_pf.get("peak_utilization", 0.0) >= NEAR_SATURATION_UTIL
+        if (not cur_overflow and not cur_near_sat) or time.monotonic() - t0 >= INFLATION_TIME_GUARD_S:
             break
-        infl = congestion.part_inflations(cur_placed, cur_pf, fixed_set, scale_mm=0.2 * (round_idx + 1))
+        if cur_overflow:
+            infl = congestion.part_inflations(cur_placed, cur_pf, fixed_set, scale_mm=0.2 * (round_idx + 1))
+            mode_tag = "overflow"
+        else:
+            probe_pf = congestion.estimate(cur_placed, capacity_scale=NEAR_SATURATION_UTIL)
+            infl = congestion.part_inflations(
+                cur_placed, probe_pf, fixed_set, max_inflate_mm=0.25, scale_mm=0.12 * (round_idx + 1)
+            )
+            mode_tag = "near_saturation"
         if not infl:
             break
         inf_pb = problem.build(
@@ -604,11 +680,17 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
                     continue
         cand_pf = congestion.estimate(cand)
         cand_metrics = _floorplan_metrics(cand, intent) if intent else {"crossings": crossings(cand)["count"]}
-        improved = (
-            cand_pf["total_overflow"] < cur_pf["total_overflow"] - 1e-3
-            or (cand_pf["total_overflow"] <= cur_pf["total_overflow"] + 1e-6
-                and cand_pf["routability_cost"] < cur_pf["routability_cost"] * 0.99)
-        )
+        if cur_overflow:
+            improved = (
+                cand_pf["total_overflow"] < cur_pf["total_overflow"] - 1e-3
+                or (cand_pf["total_overflow"] <= cur_pf["total_overflow"] + 1e-6
+                    and cand_pf["routability_cost"] < cur_pf["routability_cost"] * 0.99)
+            )
+        else:
+            improved = cand_pf["total_overflow"] <= 1e-6 and (
+                cand_pf["peak_utilization"] < cur_pf["peak_utilization"] - 0.02
+                or cand_pf["routability_cost"] < cur_pf["routability_cost"] * 0.99
+            )
         big_relief = cur_pf["total_overflow"] > 1e-6 and cand_pf["total_overflow"] <= cur_pf["total_overflow"] * 0.75
         xing_tol = max(0, int(0.01 * cur_metrics["crossings"])) if big_relief else 0
         no_regress = cand_metrics["crossings"] <= cur_metrics["crossings"] + xing_tol
@@ -620,9 +702,12 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
             )
         entry = {
             "round": round_idx + 1,
+            "mode": mode_tag,
             "inflated_parts": len(infl),
             "overflow_before": cur_pf["total_overflow"],
             "overflow_after": cand_pf["total_overflow"],
+            "peak_util_before": cur_pf["peak_utilization"],
+            "peak_util_after": cand_pf["peak_utilization"],
             "rcost_before": cur_pf["routability_cost"],
             "rcost_after": cand_pf["routability_cost"],
             "accepted": bool(improved and no_regress),

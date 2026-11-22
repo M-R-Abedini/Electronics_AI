@@ -1,0 +1,118 @@
+{
+  "date": "2026-11-22",
+  "summary": "Empirical A/B benchmarks for Phases 1-4: gate & taxonomy fixes, illegal netclass via drill clamping, GIL-releasing Rust placer_core + full-budget parallel placement, refine baseline caching, and offline routing noise / Top-2 placement A/B.",
+  "phase1_openair_max_via_drill_clamp": {
+    "before_clamp": {
+      "passed": true,
+      "coverage": 0.6653,
+      "unrouted": 164,
+      "initial_router_drc": 44,
+      "sanitize_removed_vias": 44,
+      "seconds_total": 266.86
+    },
+    "after_clamp": {
+      "passed": true,
+      "coverage": 0.7531,
+      "unrouted": 121,
+      "delta_coverage": 0.0878,
+      "delta_unrouted": -43,
+      "netclass_vias_clamped": {"Default": {"from_mm": [0.8, 0.4], "to_mm": [0.8, 0.508]}},
+      "initial_router_drc": 0,
+      "sanitize_removed_vias": 0,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0,
+      "seconds_total": 165.31
+    }
+  },
+  "phase2_full_budget_parallel_ab": {
+    "p7_determinism": {
+      "board": "stickhub",
+      "parallel_run1_equals_run2": true,
+      "parallel_equals_sequential": true,
+      "workers": 5
+    },
+    "boards": [
+      {
+        "board": "pic_programmer",
+        "div5_pro": 79.26,
+        "div1_pro": 81.31,
+        "delta_pro": 2.05,
+        "div5_crossings": 29,
+        "div1_crossings": 14,
+        "seconds_parallel": 19.05,
+        "strict_violations": 0
+      },
+      {
+        "board": "stickhub",
+        "div5_pro": 69.82,
+        "div1_pro": 74.29,
+        "delta_pro": 4.47,
+        "div5_critical_loops": 67.78,
+        "div1_critical_loops": 85.13,
+        "div5_decap_p90_mm": 6.822,
+        "div1_decap_p90_mm": 5.367,
+        "seconds_parallel": 76.2,
+        "strict_violations": 0
+      },
+      {
+        "board": "royalblue54L_feather",
+        "div5_pro": 77.78,
+        "div1_pro": 77.99,
+        "delta_pro": 0.21,
+        "div5_crossings": 334,
+        "div1_crossings": 196,
+        "div5_decap_p90_mm": 3.402,
+        "div1_decap_p90_mm": 2.269,
+        "seconds_parallel": 83.72,
+        "strict_violations": 0
+      },
+      {
+        "board": "ecc83",
+        "div1_pro": 96.67,
+        "div1_crossings": 0,
+        "seconds_parallel": 6.36,
+        "strict_violations": 0
+      }
+    ],
+    "multicore_speedup_py_detach": {
+      "openair_max_seq_s": 654.52,
+      "openair_max_par_s": 210.22,
+      "openair_max_speedup": 3.11,
+      "video_seq_s": 1955.48,
+      "video_par_div1_s": 516.44,
+      "video_speedup": 3.79
+    }
+  },
+  "phase4_noise_floor_stickhub": {
+    "denominator": 226,
+    "method": "semantically_identical_dsn_network_net_order_permutations",
+    "runs": [
+      {"perm": "original", "unrouted": 5, "stop": "converged", "passes": 18, "seconds": 93.08},
+      {"perm": "reverse", "unrouted": 8, "stop": "converged", "passes": 19, "seconds": 111.7},
+      {"perm": "rotate_half", "unrouted": 4, "stop": "converged", "passes": 22, "seconds": 115.09}
+    ],
+    "min_unrouted": 4,
+    "max_unrouted": 8,
+    "spread_unrouted": 4,
+    "half_spread_coverage_pct": 0.88
+  },
+  "phase4_top2_routing_ab_stickhub": {
+    "winner_baseline": {
+      "pro_no_route": 71.88,
+      "pro_with_route": 65.53,
+      "unrouted": 41,
+      "coverage": 0.8186,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 0
+    },
+    "runner_up_blocks": {
+      "pro_no_route": 68.35,
+      "pro_with_route": 56.74,
+      "unrouted": 75,
+      "coverage": 0.6681,
+      "drc_router_caused": 0,
+      "drc_new_non_routing": 31
+    },
+    "decision": "keep_route_top_k_1_default; full-budget Pro Score winner already dominates runner-up by +15.05% coverage and 0 vs 31 DRC."
+  }
+}

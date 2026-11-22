@@ -83,8 +83,12 @@ def _grid_spec(board: Board, pitch: float) -> tuple[float, float, float, int, in
     return x0, y0, cell, nx, ny
 
 
-def estimate(board: Board, *, iterations: int = 8) -> dict:
-    """Run Rust PathFinder global routing on ``board`` and return overflow + hotspots."""
+def estimate(board: Board, *, iterations: int = 8, capacity_scale: float = 1.0) -> dict:
+    """Run Rust PathFinder global routing on ``board`` and return overflow + hotspots.
+
+    ``capacity_scale`` (< 1.0) probes near-saturation regions (e.g. 0.85 highlights cells above
+    85% edge utilization) without changing the default routing-congestion score.
+    """
     pitch = _track_pitch(board)
     spec = _grid_spec(board, pitch)
     if spec is None:
@@ -98,7 +102,8 @@ def estimate(board: Board, *, iterations: int = 8) -> dict:
 
     x0, y0, cell, nx, ny = spec
     sig_layers = _effective_signal_layers(board)
-    base_cap = max(1.0, sig_layers * (cell / pitch) * CAPACITY_EFFICIENCY)
+    scale = max(0.25, min(1.0, float(capacity_scale)))
+    base_cap = max(1.0, sig_layers * (cell / pitch) * CAPACITY_EFFICIENCY * scale)
 
     outline = legality.board_polygon(board)
     outline_prep = prep(outline) if outline is not None else None

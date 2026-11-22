@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,11 +16,59 @@ from .intent.resolve import resolve
 from .io.kicad import read_board, write_board
 from .place import escape, problem
 from .route import drc
-from .route.check import RouteCheckError, route_check
-from .toolchain import sha256_file
+from .route.check import PROJECT_SIDECARS, RouteCheckError, route_check
+from .toolchain import ToolchainError, sha256_file
 
 
-def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180, preview: bool = False) -> dict:
+def _baseline_cache_key(board_path: Path, reference: Path, route_timeout_s: int) -> str:
+    payload: dict = {
+        "board_sha256": sha256_file(board_path),
+        "reference_sha256": sha256_file(reference),
+        "route_timeout_s": int(route_timeout_s),
+        "sidecars": {},
+        "tools": {},
+    }
+    for suffix in PROJECT_SIDECARS:
+        side = board_path.with_suffix(suffix)
+        if side.is_file():
+            payload["sidecars"][suffix] = sha256_file(side)
+    try:
+        tools = run_report.tools()
+        payload["tools"] = {
+            "kicad": (tools.get("kicad") or {}).get("version"),
+            "java": (tools.get("java") or {}).get("version"),
+            "freerouting": (tools.get("freerouting") or {}).get("sha256"),
+        }
+    except (ToolchainError, OSError):
+        pass
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _load_cached_baseline(cache_file: Path) -> dict | None:
+    if not cache_file.is_file():
+        return None
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(data, dict) and all(k in data for k in ("metrics", "drc", "gates")):
+        return data
+    return None
+
+
+def _save_cached_baseline(cache_file: Path, report_data: dict) -> None:
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(report_data, indent=1, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(cache_file)
+    except OSError:
+        pass
+
+
+def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180,
+           preview: bool = False, cache_baseline: bool = True, min_improvement: int = 1) -> dict:
     report_path = Path(run).resolve()
     if report_path.is_dir():
         report_path /= "run_report.json"
@@ -130,21 +180,37 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
             return {**delta, "status": "rejected", "reason": "New solder mask bridges before routing",
                     "new_mask_bridge_count": len(added), "new_mask_bridges": added[:12],
                     "drc_reports": [str(mask_before), str(mask_after)], **comparison}
+    cache_file = out_root.resolve() / ".refine_baseline_cache" / f"{_baseline_cache_key(original, reference, route_timeout_s)}.json"
+    cached_a = _load_cached_baseline(cache_file) if cache_baseline else None
+    baseline_cached = cached_a is not None
     try:
-        a, b = (route_check(path, out_dir=work / name, reference_board=reference, router_timeout_s=route_timeout_s)
-                for path, name in ((original, "route_before"), (candidate, "route_after")))
+        if cached_a is not None:
+            a = cached_a
+            b = route_check(candidate, out_dir=work / "route_after", reference_board=reference,
+                            router_timeout_s=route_timeout_s)
+        else:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fut_a = pool.submit(route_check, original, out_dir=work / "route_before",
+                                    reference_board=reference, router_timeout_s=route_timeout_s)
+                fut_b = pool.submit(route_check, candidate, out_dir=work / "route_after",
+                                    reference_board=reference, router_timeout_s=route_timeout_s)
+                a, b = fut_a.result(), fut_b.result()
+            if cache_baseline:
+                _save_cached_baseline(cache_file, a)
     except RouteCheckError as exc:
         return {**delta, "status": "inconclusive", "reason": str(exc), "trial_dir": str(work)}
     before_route, after_route = a["metrics"], b["metrics"]
     if sha256_file(src) != original_hash:
         raise RuntimeError("Baseline board changed while refinement was running")
+    before_report_ref = str(cache_file) if baseline_cached else str(work / "route_before" / "run_report.json")
     comparison.update(baseline=before_route["unrouted"], candidate=after_route["unrouted"],
+                      baseline_cached=baseline_cached,
                       baseline_coverage=before_route["coverage"], candidate_coverage=after_route["coverage"],
                       baseline_settled=before_route["settled"], candidate_settled=after_route["settled"],
                       baseline_drc={key: len(a["drc"][key]) for key in ("router_caused", "new_non_routing")},
                       candidate_drc={key: len(b["drc"][key]) for key in ("router_caused", "new_non_routing")},
                       router_timeout_s=route_timeout_s,
-                      reports=[str(work / name / "run_report.json") for name in ("route_before", "route_after")])
+                      reports=[before_report_ref, str(work / "route_after" / "run_report.json")])
     if comparison["candidate_drc"]["router_caused"] or comparison["candidate_drc"]["new_non_routing"]:
         return {**delta, "status": "rejected", "reason": "Candidate failed native DRC", **comparison}
     if not before_route["settled"] or not after_route["settled"]:
@@ -156,7 +222,7 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     if (after_route["unrouted_signal"] > before_route["unrouted_signal"]
             or after_route["unrouted_plane"] > before_route["unrouted_plane"] or not b["passed"]):
         return {**delta, "status": "rejected", "reason": "Route constraints or DRC failed", **comparison}
-    if after_route["unrouted"] >= before_route["unrouted"]:
+    if before_route["unrouted"] - after_route["unrouted"] < max(1, int(min_improvement)):
         return {**delta, "status": "rejected", "reason": "No reduction in open connections", **comparison}
     old_score = score.evaluate(before, before_route, protected, intent)["pro_score"]["score"]
     new_evaluation = score.evaluate(after, after_route, protected, intent)

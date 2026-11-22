@@ -271,7 +271,7 @@ def test_floorplan_can_select_reservations_without_blocks(monkeypatch):
     calls = []
 
     def solve_variant(board, *, floorplan, reserve=False, **kwargs):
-        assert kwargs["budget_divisor"] == 4
+        assert kwargs["budget_divisor"] == 1
         calls.append((floorplan, reserve))
         placed = board.copy()
         placed.name = {(False, False): "baseline", (True, False): "blocks",

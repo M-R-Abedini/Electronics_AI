@@ -187,13 +187,15 @@ impl PlacementProblem {
 
     /// S4. `first` lists parts to place before the rest (a retry for parts that found no room).
     #[pyo3(signature = (step=0.25, max_radius=50.0, first=Vec::new()))]
-    fn legalize(&mut self, step: f64, max_radius: f64, first: Vec<usize>) -> Vec<usize> {
-        sa::legalize(&mut self.inner, step, max_radius, &first)
+    fn legalize(&mut self, py: Python<'_>, step: f64, max_radius: f64, first: Vec<usize>) -> Vec<usize> {
+        py.detach(|| sa::legalize(&mut self.inner, step, max_radius, &first))
     }
 
     #[pyo3(signature = (iterations, seed, r0, r1, t0=0.0, swap=true))]
+    #[allow(clippy::too_many_arguments)]
     fn anneal(
         &mut self,
+        py: Python<'_>,
         iterations: usize,
         seed: u64,
         r0: f64,
@@ -201,7 +203,7 @@ impl PlacementProblem {
         t0: f64,
         swap: bool,
     ) -> HashMap<String, f64> {
-        let s = sa::anneal(&mut self.inner, iterations, seed, r0, r1, t0, swap);
+        let s = py.detach(|| sa::anneal(&mut self.inner, iterations, seed, r0, r1, t0, swap));
         HashMap::from([
             ("iterations".to_string(), s.iterations as f64),
             ("accepted".to_string(), s.accepted as f64),
@@ -231,15 +233,16 @@ impl PlacementProblem {
 #[pyfunction]
 #[pyo3(signature = (nx, ny, nl, blocked, via_ok, starts, goals, via_cost, turn45, turn90, max_expansions=20_000_000))]
 #[allow(clippy::too_many_arguments)]
-fn grid_astar(nx: usize, ny: usize, nl: usize, blocked: &[u8], via_ok: &[u8], starts: Vec<(usize, usize, usize)>,
-              goals: Vec<(usize, usize, usize)>, via_cost: f64, turn45: f64, turn90: f64, max_expansions: usize)
+fn grid_astar(py: Python<'_>, nx: usize, ny: usize, nl: usize, blocked: &[u8], via_ok: &[u8],
+              starts: Vec<(usize, usize, usize)>, goals: Vec<(usize, usize, usize)>,
+              via_cost: f64, turn45: f64, turn90: f64, max_expansions: usize)
               -> PyResult<Option<Vec<(usize, usize, usize)>>> {
     if blocked.len() != nx * ny * nl || via_ok.len() != nx * ny {
         return Err(pyo3::exceptions::PyValueError::new_err("grid sizes do not match nx, ny, nl"));
     }
     let grid = grid_route::Grid { nx, ny, nl, blocked, via_ok };
     let costs = grid_route::Costs { via: via_cost, turn45, turn90 };
-    Ok(grid_route::astar(&grid, &starts, &goals, &costs, max_expansions))
+    Ok(py.detach(|| grid_route::astar(&grid, &starts, &goals, &costs, max_expansions)))
 }
 
 /// Coarse-grid PathFinder congestion estimator (plan F5).
@@ -258,17 +261,19 @@ fn pathfinder_estimate<'py>(
     present_fac: f64,
     present_mult: f64,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-    let res = pathfinder::estimate(
-        nx,
-        ny,
-        &cap_h,
-        &cap_v,
-        &nets,
-        iterations,
-        history_inc,
-        present_fac,
-        present_mult,
-    )
+    let res = py.detach(|| {
+        pathfinder::estimate(
+            nx,
+            ny,
+            &cap_h,
+            &cap_v,
+            &nets,
+            iterations,
+            history_inc,
+            present_fac,
+            present_mult,
+        )
+    })
     .map_err(pyo3::exceptions::PyValueError::new_err)?;
     let dict = pyo3::types::PyDict::new(py);
     dict.set_item("total_overflow", res.total_overflow)?;
