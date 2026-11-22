@@ -558,3 +558,153 @@ def test_kicad10_e2e_microvia_l1_l2_l3_drc_dsn_freerouting_ses_and_hardening(tmp
     ]
     assert vdd_thru, "expected injected VDD through-via in imported board"
     assert vdd_thru[0]["drill"] == pytest.approx(0.30, abs=1e-4)
+
+
+def test_auto_hdi_signals_escapes_inner_ring_on_fine_pitch_bga():
+    """On a fine-pitch HDI BGA (pitch <= 0.65 mm, allow_microvias=True), inner-ring signal
+    balls physically cannot escape on F.Cu and must auto-receive microvia-in-pad even when
+    include_signals=False (default in S6a)."""
+    from eda_agent.placer.ir import Board, CopperLayer, Courtyard, Footprint, Net, NetClass, Outline, Pad, derive
+    from eda_agent.placer.route.bga_escape import plan_bga_escapes
+
+    pads = []
+    nets = []
+    # 5x5 0.40 mm pitch WLCSP with signal nets on inner ring (ring >= 1) and outer ring (ring == 0)
+    for r in range(5):
+        for c in range(5):
+            name = f"SIG_{r}_{c}"
+            pads.append(Pad(
+                f"{chr(65 + r)}{c + 1}", name,
+                ((c - 2) * 0.4, (r - 2) * 0.4), (0.22, 0.22),
+                shape="Circle", kind="smd", layers=("F.Cu",),
+            ))
+            nets.append(Net(name, "Default", 2))
+    u1 = Footprint(
+        "U1", "WLCSP25", "Lib:WLCSP25", 10.0, 10.0, 0.0, "F", locked=True, pads=pads,
+        courtyard=Courtyard("file", [[(-1.2, -1.2), (1.2, -1.2), (1.2, 1.2), (-1.2, 1.2)]]),
+        uuid="u-U1",
+    )
+    board = derive(Board(
+        name="hdi_auto_sig", footprints=[u1],
+        outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0,
+        copper_layers=[
+            CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("In1.Cu", "In1.Cu", 1),
+            CopperLayer("In2.Cu", "In2.Cu", 2), CopperLayer("B.Cu", "B.Cu", 3),
+        ],
+        netclasses=[NetClass("Default", 0.09, 0.09, 0.20, 0.10, microvia_diameter=0.20, microvia_drill=0.10)],
+        nets=nets,
+        rules={
+            "min_clearance": 0.09, "min_track_width": 0.09, "copper_edge_clearance": 0.15,
+            "min_via_annular_width": 0.05, "hole_to_hole": 0.15,
+            "min_microvia_diameter": 0.20, "min_microvia_drill": 0.10, "allow_microvias": True,
+        },
+    ))
+    res = plan_bga_escapes(board, {"parts": {}}, fixed=[], include_signals=False, microvia="auto")
+    # 3x3 = 9 inner balls must be escaped with microvia_in_pad_l1_l2; 16 outer signal balls stay on F.Cu
+    assert len(res["rows"]) == 9
+    assert all(row["routed"] and row["kind"] == "microvia_in_pad_l1_l2" for row in res["rows"])
+
+
+def test_inspect_summary_stackup_guidance_for_hdi_bga_and_plane():
+    """placer__inspect must emit non-hardcoded stackup.guidance warning when zones==0 and
+    recommend 4l_hdi_bga_escape when a fine-pitch BGA (<= 0.65 mm) is present on a 4L board."""
+    from eda_agent.placer.ir import Board, CopperLayer, Courtyard, Footprint, Net, NetClass, Outline, Pad, derive
+    from eda_agent.placer.mcp import _inspect_summary
+
+    pads = [
+        Pad(f"{chr(65 + r)}{c + 1}", f"N_{r}_{c}", ((c - 2) * 0.4, (r - 2) * 0.4), (0.22, 0.22),
+            shape="Circle", kind="smd", layers=("F.Cu",))
+        for r in range(5) for c in range(5)
+    ]
+    u1 = Footprint(
+        "U1", "WLCSP25", "Lib:WLCSP25", 10.0, 10.0, 0.0, "F", locked=True, pads=pads,
+        courtyard=Courtyard("file", [[(-1.2, -1.2), (1.2, -1.2), (1.2, 1.2), (-1.2, 1.2)]]),
+        uuid="u-U1",
+    )
+    board = derive(Board(
+        name="hdi_4l_no_plane", footprints=[u1],
+        outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0,
+        copper_layers=[
+            CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("In1.Cu", "In1.Cu", 1),
+            CopperLayer("In2.Cu", "In2.Cu", 2), CopperLayer("B.Cu", "B.Cu", 3),
+        ],
+        netclasses=[NetClass("Default", 0.09, 0.09, 0.20, 0.10)],
+        nets=[Net("GND", "Default", 2)],
+    ))
+    summary = _inspect_summary(board)
+    guidance = summary["stackup"]["guidance"]
+    assert summary["stackup"]["policy"] == "needs_decision"
+    assert guidance["gnd_routing_mode"] == "point_to_point_traces_warning"
+    assert guidance["fine_pitch_bgas"][0]["ref"] == "U1"
+    assert guidance["options"][0]["id"] == "4l_hdi_bga_escape"
+
+
+def test_4l_hdi_bga_stacked_microvia_to_l3_gnd_plane_and_drc_signoff():
+    """On a 4L HDI board with In1.Cu=signal and In2.Cu=GND plane, an inner-ring GND ball
+    must escape to In2.Cu via stacked L1-L2 + L2-L3 microvia-in-pad; and _drc_signoff must
+    set fab_ready=False whenever drc_unconnected > 0."""
+    from eda_agent.placer.ir import Board, CopperLayer, Courtyard, Footprint, Net, NetClass, Outline, Pad, derive
+    from eda_agent.placer.mcp import _drc_signoff
+    from eda_agent.placer.route.bga_escape import plan_bga_escapes
+
+    pads = []
+    nets = [Net("GND", "Default", 3)]
+    for r in range(5):
+        for c in range(5):
+            net = "GND" if (r, c) in ((0, 0), (2, 2), (4, 4)) else f"SIG_{r}_{c}"
+            pads.append(Pad(
+                f"{chr(65 + r)}{c + 1}", net,
+                ((c - 2) * 0.4, (r - 2) * 0.4), (0.22, 0.22),
+                shape="Circle", kind="smd", layers=("F.Cu",),
+            ))
+            if net != "GND":
+                nets.append(Net(net, "Default", 2))
+    u1 = Footprint(
+        "U1", "WLCSP25", "Lib:WLCSP25", 10.0, 10.0, 0.0, "F", locked=True, pads=pads,
+        courtyard=Courtyard("file", [[(-1.2, -1.2), (1.2, -1.2), (1.2, 1.2), (-1.2, 1.2)]]),
+        uuid="u-U1",
+    )
+    gnd_zone = {
+        "uuid": "z-gnd-in2", "net": "GND", "layers": ["In2.Cu"], "priority": 0,
+        "outline": [[(0.5, 0.5), (19.5, 0.5), (19.5, 19.5), (0.5, 19.5)]],
+        "filled": True, "filled_area_mm2": {"In2.Cu": 360.0},
+    }
+    board = derive(Board(
+        name="hdi_4l_l3_gnd", footprints=[u1],
+        outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0,
+        copper_layers=[
+            CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("In1.Cu", "In1.Cu", 1),
+            CopperLayer("In2.Cu", "In2.Cu", 2), CopperLayer("B.Cu", "B.Cu", 3),
+        ],
+        netclasses=[NetClass("Default", 0.09, 0.09, 0.20, 0.10, microvia_diameter=0.20, microvia_drill=0.10)],
+        nets=nets, zones=[gnd_zone],
+        zone_fill_by_layer_mm2={"In2.Cu": {"GND": 360.0}},
+        rules={
+            "min_clearance": 0.09, "min_track_width": 0.09, "copper_edge_clearance": 0.15,
+            "min_via_annular_width": 0.05, "hole_to_hole": 0.12,
+            "min_microvia_diameter": 0.20, "min_microvia_drill": 0.10, "allow_microvias": True,
+        },
+    ))
+    res = plan_bga_escapes(board, {"parts": {}}, fixed=[], include_signals=False, microvia="auto")
+    c3 = next(r for r in res["rows"] if r["pad"] == "C3")
+    assert c3["routed"] is True
+    assert c3["kind"] in ("microvia_l1_l2_l3_stacked", "microvia_l1_l2_l3_staggered")
+    assert ["In1.Cu", "In2.Cu"] in c3["layers"]
+
+    # Verify _drc_signoff refuses fab_ready=True when unconnected > 0
+    rep_unconn = {
+        "gates": [{"name": "legality_violations", "value": 0}, {"name": "drc_router_caused", "value": 0},
+                  {"name": "drc_new_non_routing", "value": 0}],
+        "metrics": {"route": {"unrouted": 4}},
+        "failures": [{"net": "1V8"}, {"net": "GND"}],
+    }
+    s_bad = _drc_signoff(rep_unconn)
+    assert s_bad["fab_ready"] is False and s_bad["drc_unconnected"] == 4
+    rep_clean = {**rep_unconn, "metrics": {"route": {"unrouted": 0}}, "failures": []}
+    assert _drc_signoff(rep_clean)["fab_ready"] is True
+
+
+

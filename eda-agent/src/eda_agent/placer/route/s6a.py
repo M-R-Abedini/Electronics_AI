@@ -250,13 +250,18 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
         users: dict[int, int] = {}  # id(via) -> pads on it
         tap_vias: list[dict] = []
         tap_site_cache: dict = {}
-        # ICs first, then decaps (so a decap can share its pin's via), then critical power/timing/ESD passives.
-        order = [
-            (ref, kind)
-            for kind, roles in (("ic", ACTIVE_ROLES), ("decap", ("decap",)), ("passive", CRITICAL_PASSIVE_TAP_ROLES))
-            for ref in sorted(intent["parts"], key=model.natural_key)
-            if intent["parts"][ref]["role"]["value"] in roles
-        ]
+        # ICs first, then decaps (so a decap can share its pin's via), then critical power/timing/ESD passives,
+        # then remaining SMD pads on dedicated inner planes (e.g. GND test points, divider/pull-down resistors, connectors).
+        already_ordered: set[str] = set()
+        order: list[tuple[str, str]] = []
+        for kind, roles in (("ic", ACTIVE_ROLES), ("decap", ("decap",)), ("passive", CRITICAL_PASSIVE_TAP_ROLES)):
+            for ref in sorted(intent["parts"], key=model.natural_key):
+                if intent["parts"][ref]["role"]["value"] in roles:
+                    order.append((ref, kind))
+                    already_ordered.add(ref)
+        for ref in sorted(intent["parts"], key=model.natural_key):
+            if ref not in already_ordered:
+                order.append((ref, "other"))
         for ref, kind in order:
             if ref not in board_refs:
                 continue
