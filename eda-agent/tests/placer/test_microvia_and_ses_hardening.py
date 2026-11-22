@@ -605,3 +605,39 @@ def test_auto_hdi_signals_escapes_inner_ring_on_fine_pitch_bga():
     assert len(res["rows"]) == 9
     assert all(row["routed"] and row["kind"] == "microvia_in_pad_l1_l2" for row in res["rows"])
 
+
+def test_inspect_summary_stackup_guidance_for_hdi_bga_and_plane():
+    """placer__inspect must emit non-hardcoded stackup.guidance warning when zones==0 and
+    recommend 4l_hdi_bga_escape when a fine-pitch BGA (<= 0.65 mm) is present on a 4L board."""
+    from eda_agent.placer.ir import Board, CopperLayer, Courtyard, Footprint, Net, NetClass, Outline, Pad, derive
+    from eda_agent.placer.mcp import _inspect_summary
+
+    pads = [
+        Pad(f"{chr(65 + r)}{c + 1}", f"N_{r}_{c}", ((c - 2) * 0.4, (r - 2) * 0.4), (0.22, 0.22),
+            shape="Circle", kind="smd", layers=("F.Cu",))
+        for r in range(5) for c in range(5)
+    ]
+    u1 = Footprint(
+        "U1", "WLCSP25", "Lib:WLCSP25", 10.0, 10.0, 0.0, "F", locked=True, pads=pads,
+        courtyard=Courtyard("file", [[(-1.2, -1.2), (1.2, -1.2), (1.2, 1.2), (-1.2, 1.2)]]),
+        uuid="u-U1",
+    )
+    board = derive(Board(
+        name="hdi_4l_no_plane", footprints=[u1],
+        outline=[Outline([(0, 0), (20, 0), (20, 20), (0, 20)])],
+        board_area_mm2=400.0,
+        copper_layers=[
+            CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("In1.Cu", "In1.Cu", 1),
+            CopperLayer("In2.Cu", "In2.Cu", 2), CopperLayer("B.Cu", "B.Cu", 3),
+        ],
+        netclasses=[NetClass("Default", 0.09, 0.09, 0.20, 0.10)],
+        nets=[Net("GND", "Default", 2)],
+    ))
+    summary = _inspect_summary(board)
+    guidance = summary["stackup"]["guidance"]
+    assert summary["stackup"]["policy"] == "needs_decision"
+    assert guidance["gnd_routing_mode"] == "point_to_point_traces_warning"
+    assert guidance["fine_pitch_bgas"][0]["ref"] == "U1"
+    assert guidance["options"][0]["id"] == "4l_hdi_bga_escape"
+
+
