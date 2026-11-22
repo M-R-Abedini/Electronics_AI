@@ -693,6 +693,11 @@ def plan_bga_escapes(
             row: dict[str, Any] = {"ref": fp.ref, "pad": str(pad.number), "net": net, "routed": False}
 
             adj1, adj2 = _adjacent_escape_layers(pad_layer, ctx.ordered_layers)
+            plane_adj2 = (
+                ctx.ordered_layers[2] if (pad_layer == ctx.ordered_layers[0] and len(ctx.ordered_layers) >= 4)
+                else (ctx.ordered_layers[-3] if (pad_layer == ctx.ordered_layers[-1] and len(ctx.ordered_layers) >= 4) else None)
+            )
+            all_plane_lyrs = set().union(*plane_layers_by_net.values()) if plane_layers_by_net else set()
             want_uvia = (
                 microvia != "off"
                 and board_allows_uvia
@@ -708,30 +713,47 @@ def plan_bga_escapes(
                 uspec = _microvia_spec(board, net, pitch, pad_diam)
                 if uspec is not None:
                     uw, uclr, ud, udr = uspec
-                    need_l2_l3 = (
-                        adj2 is not None
-                        and (
-                            (net in plane_nets and adj1 not in net_plane_lyrs and adj2 in net_plane_lyrs)
-                            or (escape_sig_here and net not in plane_nets and ring >= 2)
-                        )
+                    stagger_layer = (
+                        plane_adj2
+                        if (net in plane_nets and adj1 not in net_plane_lyrs and plane_adj2 is not None and plane_adj2 in net_plane_lyrs)
+                        else (adj2 if (adj2 is not None and escape_sig_here and net not in plane_nets and ring >= 2) else None)
                     )
+                    need_l2_l3 = stagger_layer is not None
                     can_l1_l2 = (
                         (net not in plane_nets)
                         or (adj1 in net_plane_lyrs)
+                        or (ring >= 1 and adj1 not in all_plane_lyrs)
                     )
-                    if need_l2_l3 and adj2 is not None:
+                    if need_l2_l3 and stagger_layer is not None:
                         for dx, dy in offsets:
                             stag_xy = transform((pad.local[0] + dx, pad.local[1] + dy), (fp.x, fp.y), fp.rotation)
                             if target_plane is not None and not target_plane.covers(Point(round(stag_xy[0], 4), round(stag_xy[1], 4))):
                                 continue
                             got_u = ctx.validate_staggered_microvia(
-                                net, pad_layer, adj1, adj2, pad_xy, stag_xy, uw, uclr, ud, udr,
+                                net, pad_layer, adj1, stagger_layer, pad_xy, stag_xy, uw, uclr, ud, udr,
                             )
                             if got_u is not None:
                                 placed_uvia = got_u
                                 uvia_kind = "microvia_l1_l2_l3_staggered"
                                 break
-                    elif can_l1_l2 and (target_plane is None or target_plane.covers(Point(round(pad_xy[0], 4), round(pad_xy[1], 4)))):
+                        # If tight pitch (e.g. 0.40 mm WLCSP) cannot fit a staggered L2-L3 microvia,
+                        # use an IPC-4761 stacked L1-L2 + L2-L3 microvia-in-pad directly to the inner plane.
+                        if placed_uvia is None and net in plane_nets and (
+                            target_plane is None or target_plane.covers(Point(round(pad_xy[0], 4), round(pad_xy[1], 4)))
+                        ):
+                            v1 = ctx._validate_microvia(
+                                net, pad_xy, (pad_layer, adj1), uclr, ud, udr,
+                                allow_own_pad_at=pad_xy,
+                            )
+                            if v1 is not None:
+                                v2 = ctx._validate_microvia(
+                                    net, pad_xy, (adj1, stagger_layer), uclr, ud, udr,
+                                    allow_own_pad_at=None,
+                                )
+                                if v2 is not None:
+                                    placed_uvia = [v1, v2]
+                                    uvia_kind = "microvia_l1_l2_l3_stacked"
+                    if placed_uvia is None and can_l1_l2 and (target_plane is None or target_plane.covers(Point(round(pad_xy[0], 4), round(pad_xy[1], 4)))):
                         v1 = ctx._validate_microvia(
                             net, pad_xy, (pad_layer, adj1), uclr, ud, udr,
                             allow_own_pad_at=pad_xy,

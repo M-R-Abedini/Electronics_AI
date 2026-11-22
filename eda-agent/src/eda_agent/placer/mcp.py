@@ -108,6 +108,34 @@ def _stackup_guidance(board: Board) -> dict:
     }
 
 
+def _drc_signoff(rep: dict) -> dict | None:
+    """Explicit fabrication DRC sign-off summary so connected AIs never confuse
+    ``passed=True`` (placement/accounting gates) with ``0 unconnected items``."""
+    route_m = (rep.get("metrics") or {}).get("route")
+    if not route_m:
+        return None
+    gates = {g["name"]: g["value"] for g in (rep.get("gates") or [])}
+    legality_v = int(gates.get("legality_violations") or 0)
+    drc_router = int(gates.get("drc_router_caused") or 0)
+    drc_new = int(gates.get("drc_new_non_routing") or 0)
+    unrouted = int(route_m.get("unrouted") or 0)
+    unconn_nets = sorted({str(f["net"]) for f in (rep.get("failures") or []) if f.get("net")})
+    fab_ready = (legality_v == 0 and drc_router == 0 and drc_new == 0 and unrouted == 0)
+    return {
+        "fab_ready": fab_ready,
+        "drc_errors": drc_router + drc_new,
+        "drc_unconnected": unrouted,
+        "unconnected_nets": unconn_nets,
+        "note": (
+            "DRC clean and 100% connected (0 violations, 0 unconnected items)."
+            if fab_ready else
+            f"NOT fab-ready: {drc_router + drc_new} DRC errors and {unrouted} Unconnected Items remain "
+            f"({', '.join(unconn_nets[:8]) or 'see failures'}). Run a closed diagnose -> fix -> re-route loop "
+            "before declaring the board DRC-clean or ready for fabrication."
+        ),
+    }
+
+
 def _inspect_summary(board: Board) -> dict:
     by_class: dict[str, int] = {}
     for net in board.nets:
@@ -330,6 +358,7 @@ class PlacerService:
         lint = rep["metrics"].get("lint")
         return {
             "passed": rep["passed"],
+            "drc_signoff": _drc_signoff(rep),
             "gates": [{k: g[k] for k in ("name", "value", "op", "threshold", "passed")} for g in rep["gates"]],
             "placed_board": rep["artifacts"]["placed_board"],
             "mode": info["mode"], "candidates": info.get("candidates"), "fixed_parts": info["fixed"],
