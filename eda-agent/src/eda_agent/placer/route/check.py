@@ -475,6 +475,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     text = dsn.add_wire_keepouts(text, macro_zone_keepouts + intent_kps)
     text = dsn.restore_wiring_precision(text, ir)
     text, stacked_vias_merged = dsn.merge_stacked_fixed_vias(text, ordered_layer_names)
+    text, vippo_attached = dsn.enable_vippo_attach(text, layer_count=len(ir.copper_layers))
     text, restricted_vias = dsn.restrict_structure_vias(
         text,
         layer_count=len(ir.copper_layers),
@@ -596,7 +597,10 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                         via_drill_mm=eff_via_dr,
                         copper_clearance_mm=eff_clr,
                     )
+                locked_ir = read_board(locked_board)
+                rr_text = dsn.restore_wiring_precision(rr_text, locked_ir)
                 rr_text, _ = dsn.merge_stacked_fixed_vias(rr_text, ordered_layer_names)
+                rr_text, _ = dsn.enable_vippo_attach(rr_text, layer_count=len(ir.copper_layers))
                 rr_text = dsn.add_wire_keepouts(rr_text, macro_zone_keepouts + intent_kps + san_kps)
                 rr_text, _ = dsn.restrict_structure_vias(
                     rr_text, layer_count=len(ir.copper_layers), allow_blind_micro=allow_router_microvias,
@@ -756,6 +760,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "dsn_power_layers": power_layers(ir),
             "dsn_via_hole_clearances": via_hole_clrs,
             "dsn_stacked_vias_merged": stacked_vias_merged,
+            "dsn_vippo_attached": vippo_attached,
             "dsn_restricted_vias": restricted_vias,
             "macro_zone_wire_keepouts": len(macro_zone_keepouts),
             "intent_wire_keepouts": len(intent_kps),

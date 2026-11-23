@@ -20,8 +20,6 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.fft import dctn, idctn
-from shapely.geometry import Point
-from shapely.prepared import prep
 
 from .problem import PlaceProblem
 
@@ -121,14 +119,15 @@ class Analytical:
             grid[win[0], win[1]] += scale * win[2]
 
     def _fixed_density(self, side: int) -> np.ndarray:
+        from shapely import contains_xy
+
         grid = np.zeros((self.my, self.mx))
-        board = prep(self._board_shape())
+        shape = self._board_shape()
         cx = self.gx0 + self.bw * (np.arange(self.mx) + 0.5)
         cy = self.gy0 + self.bw * (np.arange(self.my) + 0.5)
-        for j, yy in enumerate(cy):
-            for i, xx in enumerate(cx):
-                if not board.contains(Point(xx, yy)):
-                    grid[j, i] = self.bin_area  # outside the board: full
+        xx, yy = np.meshgrid(cx, cy)
+        inside = contains_xy(shape, xx, yy)
+        grid[~inside] = self.bin_area  # outside the board: full
         idx = np.flatnonzero(self.fixed & (self.side == side))
         for rect in self._rects(idx):
             self._raster(tuple(rect), grid)
@@ -242,32 +241,50 @@ class Analytical:
     # ------------------------------------------------------------- rotation
     def choose_rotations(self, gamma: float) -> int:
         changed = 0
+        px, py = self._pins_xy()
         for k in self.movable:
             if not self.can_rotate[k]:
                 continue
-            nets = np.unique(self.pin_net[self.pin_part == k])
-            mask = np.isin(self.pin_net, nets)
+            p_idx = np.flatnonzero(self.pin_part == k)
+            nets = np.unique(self.pin_net[p_idx]) if p_idx.size else np.empty(0, dtype=int)
             local = [affinity for affinity in self.affinities
                      if affinity[0][0] == k or any(pin[0] == k for pin in affinity[1])]
             if not nets.size and not local:
                 continue
-            best_r, best = int(self.r[k]), None
-            for r in (self.r[k], (self.r[k] + 1) % 4, (self.r[k] + 2) % 4, (self.r[k] + 3) % 4):
+            if nets.size:
+                mask = np.isin(self.pin_net, nets)
+                nn = self.pin_net[mask]
+                starts = np.flatnonzero(np.r_[True, nn[1:] != nn[:-1]])
+                nw = self.net_w[nn[starts]]
+            else:
+                mask = nn = starts = nw = None
+            orig_r = int(self.r[k])
+            best_r, best = orig_r, None
+            lx_k = self.pin_lx[p_idx]
+            ly_k = self.pin_ly[p_idx]
+            xk, yk = self.x[k], self.y[k]
+            for r in (orig_r, (orig_r + 1) % 4, (orig_r + 2) % 4, (orig_r + 3) % 4):
                 self.r[k] = r
-                px, py = self._pins_xy()
+                if p_idx.size:
+                    dx, dy = _rot(lx_k, ly_k, np.full(p_idx.size, r, dtype=np.int8))
+                    px[p_idx] = xk + dx
+                    py[p_idx] = yk + dy
                 cost = 0.0
-                for v in (px, py) if nets.size else ():
-                    sel = v[mask]
-                    nn = self.pin_net[mask]
-                    starts = np.flatnonzero(np.r_[True, nn[1:] != nn[:-1]])
-                    cost += float(np.sum((np.maximum.reduceat(sel, starts) - np.minimum.reduceat(sel, starts))
-                                         * self.net_w[nn[starts]]))
+                if nets.size:
+                    sel_x = px[mask]
+                    sel_y = py[mask]
+                    cost += float(np.sum((np.maximum.reduceat(sel_x, starts) - np.minimum.reduceat(sel_x, starts)) * nw))
+                    cost += float(np.sum((np.maximum.reduceat(sel_y, starts) - np.minimum.reduceat(sel_y, starts)) * nw))
                 cost += self.local_affinity(affinities=local)
                 if best is None or cost < best - 1e-9:
                     best, best_r = cost, int(r)
-            if best_r != self.r[k]:
+            if best_r != orig_r:
                 changed += 1
             self.r[k] = best_r
+            if p_idx.size:
+                dx, dy = _rot(lx_k, ly_k, np.full(p_idx.size, best_r, dtype=np.int8))
+                px[p_idx] = xk + dx
+                py[p_idx] = yk + dy
         return changed
 
     # ------------------------------------------------------------ optimiser

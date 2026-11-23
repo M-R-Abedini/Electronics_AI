@@ -206,6 +206,21 @@ pub struct AnnealStats {
     pub t0: f64,
 }
 
+#[inline]
+fn body_center(part: &crate::problem::Part) -> (f64, f64) {
+    let r = crate::geom::placed_rect(&part.local, part.x, part.y, part.r);
+    (0.5 * (r.x0 + r.x1), 0.5 * (r.y0 + r.y1))
+}
+
+#[inline]
+fn pose_for_center(part: &crate::problem::Part, cx: f64, cy: f64, rot: u8) -> (f64, f64) {
+    let l = crate::geom::placed_rect(&part.local, 0.0, 0.0, rot);
+    (
+        round3(cx - 0.5 * (l.x0 + l.x1)),
+        round3(cy - 0.5 * (l.y0 + l.y1)),
+    )
+}
+
 /// Legality-preserving annealing: every accepted state is legal (requires a legal start).
 pub fn anneal(
     p: &mut Problem,
@@ -234,6 +249,22 @@ pub fn anneal(
     stats.t0 = t0;
     let t_end = t0 * 1e-4;
     let mut best: Vec<(f64, f64, u8)> = p.parts.iter().map(|q| (q.x, q.y, q.r)).collect();
+    let mut movable_by_side: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    for &m in &movable {
+        let s = (p.parts[m].side as usize).min(1);
+        movable_by_side[s].push(m);
+    }
+    let n_parts = p.parts.len();
+    let mut affinity_nets: Vec<Vec<usize>> = vec![Vec::new(); n_parts];
+    for (ni, net) in p.nets.iter().enumerate() {
+        if net.nearest && net.pins.len() >= 2 {
+            let owner = p.pins[net.pins[0]].part;
+            if !p.parts[owner].fixed {
+                affinity_nets[owner].push(ni);
+            }
+        }
+    }
+    let mut undos = Vec::with_capacity(2);
     for k in 0..iters {
         let f = k as f64 / iters as f64;
         let t = t0 * (t_end / t0).powf(f);
@@ -242,51 +273,81 @@ pub fn anneal(
         let before = p.cost();
         let kind = rng.random_range(0..10u8);
         let (x, y, r) = (p.parts[i].x, p.parts[i].y, p.parts[i].r);
-        let mut undos = Vec::with_capacity(2);
-        let mut moved = vec![i];
-        if kind < 6 || (kind < 8 && !p.parts[i].can_rotate) || (kind >= 8 && !swap) {
-            let nx = round3(x + rng.random_range(-radius..=radius));
-            let ny = round3(y + rng.random_range(-radius..=radius));
-            undos.push(p.apply_pose(i, nx, ny, r));
-        } else if kind < 8 {
-            let nr = (r + rng.random_range(1..4u8)) & 3;
-            undos.push(p.apply_pose(i, x, y, nr));
-        } else {
-            let side = p.parts[i].side;
-            let peers: Vec<usize> = movable
-                .iter()
-                .copied()
-                .filter(|&j| j != i && p.parts[j].side == side)
-                .collect();
-            if peers.is_empty() {
+        undos.clear();
+        if kind == 5 && !affinity_nets[i].is_empty() {
+            // Connected-target affinity jump: lets trapped decaps/crystals hop over IC bodies.
+            let affs = &affinity_nets[i];
+            let ni = affs[rng.random_range(0..affs.len())];
+            let pins = &p.nets[ni].pins;
+            let tpin = pins[1 + rng.random_range(0..(pins.len() - 1))];
+            let (tx, ty) = p.pin_xy(tpin);
+            let jr = radius.clamp(0.5, 3.0);
+            let nr = if p.parts[i].can_rotate {
+                rng.random_range(0..4u8)
+            } else {
+                r
+            };
+            let cx = tx + rng.random_range(-jr..=jr);
+            let cy = ty + rng.random_range(-jr..=jr);
+            let (nx, ny) = pose_for_center(&p.parts[i], cx, cy, nr);
+            stats.iterations += 1;
+            if !p.can_place_at(i, nx, ny, nr, None) {
+                stats.illegal += 1;
                 continue;
             }
-            let j = peers[rng.random_range(0..peers.len())];
+            undos.push(p.apply_pose(i, nx, ny, nr));
+        } else if kind < 6 || (kind < 8 && !p.parts[i].can_rotate) || (kind >= 8 && !swap) {
+            let nx = round3(x + rng.random_range(-radius..=radius));
+            let ny = round3(y + rng.random_range(-radius..=radius));
+            stats.iterations += 1;
+            if !p.can_place_at(i, nx, ny, r, None) {
+                stats.illegal += 1;
+                continue;
+            }
+            undos.push(p.apply_pose(i, nx, ny, r));
+        } else if kind < 8 {
+            // Body-center-preserving rotation avoids spurious collisions on off-center footprints.
+            let nr = (r + rng.random_range(1..4u8)) & 3;
+            let (cx, cy) = body_center(&p.parts[i]);
+            let (nx, ny) = pose_for_center(&p.parts[i], cx, cy, nr);
+            stats.iterations += 1;
+            if !p.can_place_at(i, nx, ny, nr, None) {
+                stats.illegal += 1;
+                continue;
+            }
+            undos.push(p.apply_pose(i, nx, ny, nr));
+        } else {
+            let side = (p.parts[i].side as usize).min(1);
+            let peers = &movable_by_side[side];
+            if peers.len() <= 1 {
+                continue;
+            }
+            let pick = rng.random_range(0..(peers.len() - 1));
+            let j = if peers[pick] == i {
+                peers[peers.len() - 1]
+            } else {
+                peers[pick]
+            };
             let (xj, yj, rj) = (p.parts[j].x, p.parts[j].y, p.parts[j].r);
+            stats.iterations += 1;
+            if !p.can_swap(i, xj, yj, r, j, x, y, rj) {
+                stats.illegal += 1;
+                continue;
+            }
             undos.push(p.apply_pose(i, xj, yj, r));
             undos.push(p.apply_pose(j, x, y, rj));
-            moved.push(j);
         }
-        stats.iterations += 1;
-        let legal = moved.iter().all(|&m| p.legal_at(m, None));
         let delta = p.cost() - before;
-        let accept = legal && (delta <= 0.0 || rng.random::<f64>() < (-delta / t).exp());
+        let accept = delta <= 0.0 || rng.random::<f64>() < (-delta / t).exp();
         if accept {
             stats.accepted += 1;
             if p.cost() < stats.best_cost - 1e-12 {
                 stats.best_cost = p.cost();
-                for &m in &moved {
-                    best[m] = (p.parts[m].x, p.parts[m].y, p.parts[m].r);
-                }
-                // keep the whole snapshot coherent
                 for (q, b) in p.parts.iter().zip(best.iter_mut()) {
                     *b = (q.x, q.y, q.r);
                 }
             }
         } else {
-            if !legal {
-                stats.illegal += 1;
-            }
             while let Some(u) = undos.pop() {
                 p.undo(u);
             }

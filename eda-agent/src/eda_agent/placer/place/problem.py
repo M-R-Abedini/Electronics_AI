@@ -124,7 +124,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
           fixed_override: dict[str, str] | None = None) -> PlaceProblem:
     fixed = dict(fixed_override) if fixed_override is not None else fixed_parts(board)
     sides = assign_sides(board, side_policy, fixed)
-    planes = zone_nets(board) | {n for r in board.stackup.roles for n in r.nets}
+    planes = zone_nets(board)
     pb = PlaceProblem(board=board, refs=[fp.ref for fp in board.footprints], fixed=fixed, sides=sides)
     pin_of: dict[str, list[int]] = {}
     part_pins: dict[tuple[str, str], list[tuple[str, int]]] = {}

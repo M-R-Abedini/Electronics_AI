@@ -456,6 +456,21 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
             g = net_graph_cache[net_name] = _copper_graph_for_net(board, net_name, tracks, vias, name_to_canon)
         return g
 
+    intent_rail_nets = {
+        n for n, info in (intent.get("nets") or {}).items()
+        if ((info.get("rail") or {}).get("value")) in ("power", "ground")
+    }
+
+    def _is_rail_net(net_name: str) -> bool:
+        return bool(net_name) and (net_name in intent_rail_nets or net_name in plane_nets or is_power_net(net_name))
+
+    from ..route.bga_escape import MICROVIA_AUTO_PITCH_MM, detect_bga
+
+    fine_bga_refs = {
+        fp.ref for fp in board.footprints
+        if (bga := detect_bga(fp)) is not None and min(bga["pitch_x"], bga["pitch_y"]) <= MICROVIA_AUTO_PITCH_MM
+    }
+
     if has_copper:
         for fp, meta in decaps:
             t_claim = meta.get("target")
@@ -487,7 +502,9 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                 continue
             decap_lengths.append(path_mm)
             same_side = fp.side == ic.side
-            if used_via and same_side:
+            # Interior fine-pitch BGA balls must escape via a VIPPO microvia; do not penalize short VIPPO paths.
+            is_short_bga_vippo = t_ref in fine_bga_refs and path_mm <= 3.5
+            if used_via and same_side and not is_short_bga_vippo:
                 decap_via_between += 1
                 add_finding(
                     "decap_loop", "warning",
@@ -534,10 +551,17 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
     # Deduplicate split findings per (net, layer) so one split doesn't spam multiple segments.
     worst_split: dict[tuple[str, str], tuple[float, float, tuple[float, float], float]] = {}
 
+    if has_copper and n_layers >= 4 and not ref_planes:
+        add_finding(
+            "missing_reference_plane", "critical",
+            f"{n_layers}-layer routed board has zero filled reference planes (add Solid GND plane zone and refill)",
+            value=0.0, limit=1.0,
+        )
+
     if has_copper and adj_ref_union:
         for t in tracks:
             net = t.get("net") or ""
-            if not net or is_power_net(net) or net in plane_nets:
+            if not net or _is_rail_net(net):
                 continue
             canon = name_to_canon.get(t.get("layer", ""), t.get("layer", ""))
             ref_poly = adj_ref_union.get(canon)
@@ -639,7 +663,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
         for t in tracks:
             net = t.get("net") or ""
             pts = t.get("points") or []
-            if not net or len(pts) < 2 or is_power_net(net) or net in plane_nets:
+            if not net or len(pts) < 2 or _is_rail_net(net):
                 continue
             canon = name_to_canon.get(t.get("layer", ""), t.get("layer", ""))
             tracks_by_net_layer[net].append((canon, float(pts[0][0]), float(pts[0][1]), float(pts[-1][0]), float(pts[-1][1])))
@@ -659,7 +683,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
 
         for v in vias:
             net = v.get("net") or ""
-            if not net or is_power_net(net) or net in plane_nets:
+            if not net or _is_rail_net(net):
                 continue
             vx, vy = float(v["x"]), float(v["y"])
             touched = set()

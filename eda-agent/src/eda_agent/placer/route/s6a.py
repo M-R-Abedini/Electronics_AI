@@ -61,12 +61,68 @@ ACTIVE_ROLES = ("ic", "converter_ic", "linear_regulator", "power_switch")
 CRITICAL_PASSIVE_TAP_ROLES = ("regulator_input_cap", "regulator_output_cap", "bulk_cap", "crystal_load_cap", "esd")
 
 
+def _deduplicate_collinear_segments(segs: list[dict]) -> list[dict]:
+    """Merge overlapping collinear fixed segments of the same (net, layer, width).
+
+    Prevents Specctra DSN duplicate/overlapping (type fix) wires (e.g. two decaps sharing
+    a trunk to the same IC pin) from triggering Freerouting normalizeTraces oscillation caps.
+    """
+    groups: dict[tuple[str, str, float, float, float, float], list[tuple[float, float, dict]]] = {}
+    passthrough: list[dict] = []
+    for seg in segs:
+        (x0, y0), (x1, y1) = seg["points"][0], seg["points"][1]
+        dx, dy = x1 - x0, y1 - y0
+        length = math.hypot(dx, dy)
+        if length <= 1e-4:
+            continue
+        ux, uy = dx / length, dy / length
+        # Canonicalize unit direction so collinear opposite segments share one bucket.
+        if ux < -1e-6 or (abs(ux) <= 1e-6 and uy < 0):
+            ux, uy = -ux, -uy
+        # Signed perpendicular distance from origin to the infinite line.
+        perp = round(-uy * x0 + ux * y0, 4)
+        t0 = ux * x0 + uy * y0
+        t1 = ux * x1 + uy * y1
+        if t1 < t0:
+            t0, t1 = t1, t0
+        key = (seg["net"], seg["layer"], round(float(seg["width"]), 4), round(ux, 4), round(uy, 4), perp)
+        groups.setdefault(key, []).append((t0, t1, seg))
+
+    out: list[dict] = list(passthrough)
+    for (_net, _layer, _w, ux, uy, perp), intervals in groups.items():
+        if len(intervals) == 1:
+            out.append(intervals[0][2])
+            continue
+        intervals.sort(key=lambda item: (item[0], item[1]))
+        merged: list[tuple[float, float, dict]] = []
+        for t0, t1, seg in intervals:
+            if merged and t0 <= merged[-1][1] + 1e-4:
+                prev_t0, prev_t1, prev_seg = merged[-1]
+                merged[-1] = (prev_t0, max(prev_t1, t1), prev_seg)
+            else:
+                merged.append((t0, t1, seg))
+        # Reconstruct exact endpoints from (ux, uy, perp) when intervals merged; keep original if untouched.
+        if len(merged) == len(intervals):
+            for _t0, _t1, seg in intervals:
+                out.append(seg)
+        else:
+            # Origin point on the line closest to (0, 0) is (-uy * perp, ux * perp).
+            ox, oy = -uy * perp, ux * perp
+            for t0, t1, template in merged:
+                if t1 - t0 <= 1e-4:
+                    continue
+                p0 = (round(ox + ux * t0, 6), round(oy + uy * t0, 6))
+                p1 = (round(ox + ux * t1, 6), round(oy + uy * t1, 6))
+                out.append({**template, "points": [p0, p1]})
+    return out
+
+
 def _segments(tracks: list[dict]) -> list[dict]:
     out = []
     for t in tracks:
         pts = [tuple(p) for p in t["points"]]
-        out += [{**t, "points": [p, q]} for p, q in itertools.pairwise(pts) if math.dist(p, q) > 1e-6]
-    return out
+        out += [{**t, "points": [p, q]} for p, q in itertools.pairwise(pts) if math.dist(p, q) > 1e-4]
+    return _deduplicate_collinear_segments(out)
 
 
 def _pair_pad_xy(board: Board, pos: str, neg: str) -> list[tuple[float, float]]:
@@ -277,22 +333,30 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                     row["kind"] = "decap"
                 trapped_reason = None
                 for layer in targets:
-                    share = [v for v in tap_vias if users[id(v)] < MAX_PADS_PER_VIA]
-                    got = plan_power_tap(board, fp, pad, layer, fixed=fixed, max_length_mm=TAP_MAX_MM,
-                                         share=share, share_max_mm=SHARE_MAX_MM, site_cache=tap_site_cache)
+                    max_users = 4 if kind == "other" else MAX_PADS_PER_VIA
+                    share = [v for v in tap_vias if users[id(v)] < max_users]
+                    got = plan_power_tap(
+                        board, fp, pad, layer, fixed=fixed, max_length_mm=TAP_MAX_MM,
+                        share=share, share_max_mm=SHARE_MAX_MM, site_cache=tap_site_cache,
+                        allow_microvia=(microvia != "off"),
+                    )
                     if got:
-                        track, via = got
-                        shared = id(via) in users
-                        closed = traps_pads(board, fixed, [track], [] if shared else [via], {pad.net})
+                        track, via_obj = got
+                        vias_list = via_obj if isinstance(via_obj, list) else [via_obj]
+                        share_via = vias_list[0]
+                        target_via = vias_list[-1]
+                        shared = id(share_via) in users
+                        closed = traps_pads(board, fixed, [track], [] if shared else vias_list, {pad.net})
                         if closed:
                             trapped_reason = f"closes in {closed[0]}"
                             continue
-                        fixed += [track] if shared else [track, via]
+                        fixed += [track] if shared else [track, *vias_list]
                         if not shared:
-                            tap_vias.append(via)
-                        users[id(via)] = users.get(id(via), 0) + 1
-                        tap_items.append((row, track, via))
+                            tap_vias.append(share_via)
+                        users[id(share_via)] = users.get(id(share_via), 0) + 1
+                        tap_items.append((row, track, target_via))
                         row.update(routed=True, layer=layer, shared_via=shared,
+                                   via_type=target_via.get("via_type", "through"),
                                    length_mm=round(sum(math.dist(p, q) for p, q in
                                                        itertools.pairwise(track["points"])), 3))
                         break
@@ -422,6 +486,13 @@ def _write_and_verify_taps(src: Path, out: Path, copper: list[dict], live_taps: 
                 copper.remove(track)
             if via in copper:  # a shared via goes once, with every tap on it
                 copper.remove(via)
+            # Drop any stacked companion microvia at the same coordinate and net.
+            vx, vy, vnet = via["x"], via["y"], via["net"]
+            copper = [
+                c for c in copper
+                if "points" in c or c.get("net") != vnet
+                or abs(c["x"] - vx) > 1e-4 or abs(c["y"] - vy) > 1e-4
+            ]
         live_taps = [item for item in live_taps if item[0]["routed"]]
         apply_instance(src, _instance(copper), out, keep_only=None, strip="tracks")
     settle_plane_links(report, plane_links)

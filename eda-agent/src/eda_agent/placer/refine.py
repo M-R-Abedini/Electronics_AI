@@ -20,11 +20,20 @@ from .route.check import PROJECT_SIDECARS, RouteCheckError, route_check
 from .toolchain import ToolchainError, sha256_file
 
 
-def _baseline_cache_key(board_path: Path, reference: Path, route_timeout_s: int) -> str:
+def _baseline_cache_key(
+    board_path: Path,
+    reference: Path,
+    route_timeout_s: int,
+    *,
+    s6a_enabled: bool = False,
+    intent_sha256: str | None = None,
+) -> str:
     payload: dict = {
         "board_sha256": sha256_file(board_path),
         "reference_sha256": sha256_file(reference),
         "route_timeout_s": int(route_timeout_s),
+        "s6a": bool(s6a_enabled),
+        "intent_sha256": intent_sha256,
         "sidecars": {},
         "tools": {},
     }
@@ -78,10 +87,11 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     depth = int(report.get("refinement_round", 0))
     if depth >= 3:
         raise ValueError("Three refinement rounds have already been accepted for this run")
-    src = Path(report["artifacts"]["placed_board"]).resolve()
+    src = Path(report["artifacts"].get("placed_board") or report["inputs"]["board"]["path"]).resolve()
     before = read_board(src)
     original_hash = sha256_file(src)
-    why_fixed = problem.fixed_parts(before) | (report.get("stages", {}).get("place", {}).get("fixed") or {})
+    place_stage = report.get("stages", {}).get("place") or {}
+    why_fixed = problem.fixed_parts(before) | (place_stage.get("fixed") or {})
     ref = change["ref"]
     if sum(fp.ref == ref for fp in before.footprints) != 1:
         raise ValueError("Refinement requires a unique existing footprint reference")
@@ -95,7 +105,7 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     if info["sha256"] != saved["sha256"]:
         raise ValueError("Recorded intent hash differs; rerun placement with the current intent")
     protected = set(why_fixed) | set(intent.get("mechanical", {}))
-    macros = report["stages"]["place"].get("rigid_macros") or {}
+    macros = place_stage.get("rigid_macros") or {}
     protected.update(member for group in macros.get("members", []) for member in group)
     delta = {"run": str(report_path), "retained_board": str(src), "source_sha256": original_hash, "change": change}
     if ref in protected:
@@ -180,20 +190,36 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
             return {**delta, "status": "rejected", "reason": "New solder mask bridges before routing",
                     "new_mask_bridge_count": len(added), "new_mask_bridges": added[:12],
                     "drc_reports": [str(mask_before), str(mask_after)], **comparison}
-    cache_file = out_root.resolve() / ".refine_baseline_cache" / f"{_baseline_cache_key(original, reference, route_timeout_s)}.json"
+    use_s6a = bool(report.get("config", {}).get("s6a", False))
+
+    def _route_trial(board_file: Path, route_dir: Path) -> dict:
+        route_in = board_file
+        if use_s6a:
+            from .route import s6a as s6a_mod
+
+            s6a_res = s6a_mod.apply_to_board(board_file, intent, route_dir / "s6a")
+            if s6a_res["applied"] and s6a_res["s6a_board"]:
+                route_in = Path(s6a_res["s6a_board"])
+        return route_check(
+            route_in, out_dir=route_dir, reference_board=reference,
+            router_timeout_s=route_timeout_s, intent=intent,
+        )
+
+    cache_key = _baseline_cache_key(
+        original, reference, route_timeout_s,
+        s6a_enabled=use_s6a, intent_sha256=info["sha256"],
+    )
+    cache_file = out_root.resolve() / ".refine_baseline_cache" / f"{cache_key}.json"
     cached_a = _load_cached_baseline(cache_file) if cache_baseline else None
     baseline_cached = cached_a is not None
     try:
         if cached_a is not None:
             a = cached_a
-            b = route_check(candidate, out_dir=work / "route_after", reference_board=reference,
-                            router_timeout_s=route_timeout_s)
+            b = _route_trial(candidate, work / "route_after")
         else:
             with ThreadPoolExecutor(max_workers=2) as pool:
-                fut_a = pool.submit(route_check, original, out_dir=work / "route_before",
-                                    reference_board=reference, router_timeout_s=route_timeout_s)
-                fut_b = pool.submit(route_check, candidate, out_dir=work / "route_after",
-                                    reference_board=reference, router_timeout_s=route_timeout_s)
+                fut_a = pool.submit(_route_trial, original, work / "route_before")
+                fut_b = pool.submit(_route_trial, candidate, work / "route_after")
                 a, b = fut_a.result(), fut_b.result()
             if cache_baseline:
                 _save_cached_baseline(cache_file, a)
@@ -222,14 +248,19 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     if (after_route["unrouted_signal"] > before_route["unrouted_signal"]
             or after_route["unrouted_plane"] > before_route["unrouted_plane"] or not b["passed"]):
         return {**delta, "status": "rejected", "reason": "Route constraints or DRC failed", **comparison}
-    if before_route["unrouted"] - after_route["unrouted"] < max(1, int(min_improvement)):
+    req_gain = 0 if before_route["unrouted"] == 0 else max(1, int(min_improvement))
+    if before_route["unrouted"] - after_route["unrouted"] < req_gain:
         return {**delta, "status": "rejected", "reason": "No reduction in open connections", **comparison}
-    old_score = score.evaluate(before, before_route, protected, intent)["pro_score"]["score"]
-    new_evaluation = score.evaluate(after, after_route, protected, intent)
+    before_copper_path = (a.get("artifacts") or {}).get("routed_board")
+    after_copper_path = (b.get("artifacts") or {}).get("routed_board")
+    before_copper = read_board(before_copper_path) if before_copper_path and Path(before_copper_path).is_file() else None
+    after_copper = read_board(after_copper_path) if after_copper_path and Path(after_copper_path).is_file() else None
+    old_score = score.evaluate(before, before_route, protected, intent, copper_board=before_copper)["pro_score"]["score"]
+    new_evaluation = score.evaluate(after, after_route, protected, intent, copper_board=after_copper)
     new_score = new_evaluation["pro_score"]["score"]
     comparison.update(baseline_pro_score=old_score, candidate_pro_score=new_score)
-    if new_score < old_score:
-        return {**delta, "status": "rejected", "reason": "Pro Score regressed", **comparison}
+    if (before_route["unrouted"] == 0 and new_score <= old_score + 1e-6) or new_score < old_score:
+        return {**delta, "status": "rejected", "reason": "Pro Score did not improve" if before_route["unrouted"] == 0 else "Pro Score regressed", **comparison}
     new_report = work / "run_report.json"
     updated = run_report.build(
         kind="place_refinement", inputs=report["inputs"], config={"change": change, "router_timeout_s": route_timeout_s},

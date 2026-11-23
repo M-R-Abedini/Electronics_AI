@@ -126,7 +126,19 @@ def _family(fp: Footprint) -> str:
         r"BATTERY|COIN.?CELL|\b(?:CR|BR|LR|SR)\d{2,4}\b", f"{v} {lib}", re.IGNORECASE
     ):
         return "battery"
-    if "Crystal" in lib or p in ("Y", "XTAL") or (p == "X" and "Crystal" in lib):
+    if (
+        "Crystal" in lib
+        or p in ("Y", "XTAL")
+        or (
+            p == "X"
+            and 2 <= len(fp.pads) <= 4
+            and re.search(
+                r"(XTAL|XIN|XOUT|OSC_IN|OSC_OUT|KHZ|MHZ|32\.768|FC-?135|ABS05)",
+                f"{v} {lib} " + " ".join(pad.net or "" for pad in fp.pads),
+                re.IGNORECASE,
+            )
+        )
+    ):
         return "crystal"
     if "Oscillator" in lib or p in ("OSC", "G") or re.search(r"(TCXO|VCXO|OCXO|\bNT\d{4}\b)", f"{v} {lib}", re.IGNORECASE):
         return "oscillator"

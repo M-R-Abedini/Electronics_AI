@@ -41,6 +41,45 @@ _COPPER_OBS_CACHE: dict[tuple, list[tuple[str, str, Polygon]]] = {}
 _MASK_OBS_CACHE: dict[tuple, list[tuple[str, str, Polygon]]] = {}
 _TH_INFO_CACHE: dict[tuple, tuple] = {}
 _SIDE_PAD_CACHE: dict[tuple, tuple] = {}
+_PAD_UNION_CACHE: dict[tuple, Polygon | None] = {}
+
+
+def _pad_union(
+    fp: Footprint,
+    side: str,
+    names: dict[str, str],
+    *,
+    margin_mm: float = 0.02,
+) -> Polygon | None:
+    """Cached same-side pad union for *fp*, keyed on pose, margin, and pad geometry."""
+    pad_sig = tuple(
+        (p.local, p.size, p.shape, p.rotation, p.kind, p.drill, tuple(p.layers))
+        for p in fp.pads
+    )
+    key = (
+        fp.ref,
+        fp.lib_id,
+        round(fp.x, 4),
+        round(fp.y, 4),
+        round(fp.rotation % 360.0, 2),
+        fp.side,
+        side,
+        round(margin_mm, 4),
+        pad_sig,
+    )
+    if key in _PAD_UNION_CACHE:
+        return _PAD_UNION_CACHE[key]
+    polys = [
+        poly for pad in fp.pads
+        if side in pad_copper_sides(fp, pad, names)
+        and (poly := _pad_polygon(fp, pad, margin_mm=margin_mm)) is not None
+        and not poly.is_empty
+    ]
+    res = unary_union(polys) if polys else None
+    if len(_PAD_UNION_CACHE) > 8192:
+        _PAD_UNION_CACHE.clear()
+    _PAD_UNION_CACHE[key] = res
+    return res
 
 
 def courtyard_polygon(fp: Footprint) -> Polygon | None:
@@ -534,6 +573,7 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
 
     mask_obs = board_mask_obstacles(board, fixed)
     if mask_obs:
+        raw_side_union: dict[tuple[str, str], Polygon | None] = {}
         for uid, mask_side, obs_poly in mask_obs:
             obx = obs_poly.bounds
             for fp in board.footprints:
@@ -543,22 +583,21 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                 if sbx is not None and (sbx[0] > obx[2] + 2.0 or sbx[2] < obx[0] - 2.0
                                         or sbx[1] > obx[3] + 2.0 or sbx[3] < obx[1] - 2.0):
                     continue
-                for pad in fp.pads:
-                    if mask_side not in pad_copper_sides(fp, pad, names):
-                        continue
-                    p_poly = _pad_polygon(fp, pad, margin_mm=0.0)
-                    if p_poly is None:
-                        continue
-                    pbx = p_poly.bounds
-                    if pbx[0] > obx[2] or pbx[2] < obx[0] or pbx[1] > obx[3] or pbx[3] < obx[1]:
-                        continue
-                    hit = p_poly.intersection(obs_poly).area
-                    if hit > 1e-4:
-                        findings.append(Finding(
-                            "keepout", [fp.ref], round(max(hit, 0.0101), 4), mask_side,
-                            detail=f"mask_aperture:{uid}", fixed=False,
-                        ))
-                        break
+                ck = (fp.ref, mask_side)
+                if ck not in raw_side_union:
+                    raw_side_union[ck] = _pad_union(fp, mask_side, names, margin_mm=0.0)
+                u_poly = raw_side_union[ck]
+                if u_poly is None:
+                    continue
+                ubx = u_poly.bounds
+                if ubx[0] > obx[2] or ubx[2] < obx[0] or ubx[1] > obx[3] or ubx[3] < obx[1]:
+                    continue
+                hit = u_poly.intersection(obs_poly).area
+                if hit > 1e-4:
+                    findings.append(Finding(
+                        "keepout", [fp.ref], round(max(hit, 0.0101), 4), mask_side,
+                        detail=f"mask_aperture:{uid}", fixed=False,
+                    ))
 
     # Same-side pad-to-pad overlap guard (catches pads protruding outside a footprint's file courtyard).
     existing_cy: dict[tuple[str, str, str | None], Finding] = {
@@ -568,14 +607,9 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
     for side in ("F", "B"):
         pad_entries: list[tuple[str, Polygon]] = []
         for fp in board.footprints:
-            polys = [
-                poly for pad in fp.pads
-                if side in pad_copper_sides(fp, pad, names)
-                and (poly := _pad_polygon(fp, pad, margin_mm=0.02)) is not None
-                and not poly.is_empty
-            ]
-            if polys:
-                pad_entries.append((fp.ref, unary_union(polys)))
+            merged = _pad_union(fp, side, names)
+            if merged is not None:
+                pad_entries.append((fp.ref, merged))
         if len(pad_entries) < 2:
             continue
         geoms = [g for _r, g in pad_entries]

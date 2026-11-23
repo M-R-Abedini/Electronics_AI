@@ -154,8 +154,12 @@ def _local_legal(board: Board, moved_fps: tuple, fixed: set[str],
     y0 = min(bx[1] for bx in boxes) - 3.5
     x1 = max(bx[2] for bx in boxes) + 3.5
     y1 = max(bx[3] for bx in boxes) + 3.5
-    sub_fps = [f for f in board.footprints if f.ref in moved_refs or f.ref in fixed or not (
-        f.box()[2] < x0 or f.box()[0] > x1 or f.box()[3] < y0 or f.box()[1] > y1)]
+    sub_fps = [
+        f for f in board.footprints
+        if f.ref in moved_refs or not (
+            f.box()[2] < x0 or f.box()[0] > x1 or f.box()[3] < y0 or f.box()[1] > y1
+        )
+    ]
     sub = replace(board, footprints=sub_fps)
     return not any(not f.fixed for f in legality.check(sub, fixed=fixed))
 

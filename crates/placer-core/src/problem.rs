@@ -51,6 +51,8 @@ struct EdgeIndex {
     net_edges: Vec<Vec<u32>>,
     stamp: Vec<u32>,
     epoch: u32,
+    skip_stamp: Vec<u32>,
+    skip_epoch: u32,
     trace_cells: bool,
 }
 
@@ -127,6 +129,8 @@ impl EdgeIndex {
             net_edges: vec![Vec::new(); nets],
             stamp: Vec::new(),
             epoch: 0,
+            skip_stamp: vec![0; nets],
+            skip_epoch: 0,
             trace_cells,
         }
     }
@@ -181,11 +185,22 @@ impl EdgeIndex {
 
     /// Crossings between `segs` (of nets in `skip`) and indexed edges of nets not in `skip`.
     fn crossings_against(&mut self, segs: &[(Seg, u32)], skip: &[usize]) -> usize {
+        self.skip_epoch = self.skip_epoch.wrapping_add(1);
+        if self.skip_epoch == 0 {
+            self.skip_stamp.fill(0);
+            self.skip_epoch = 1;
+        }
+        for &sn in skip {
+            if sn < self.skip_stamp.len() {
+                self.skip_stamp[sn] = self.skip_epoch;
+            }
+        }
+        let skip_ep = self.skip_epoch;
         let mut count = 0;
         for (s, net) in segs {
             self.epoch = self.epoch.wrapping_add(1);
             if self.epoch == 0 {
-                self.stamp.iter_mut().for_each(|v| *v = 0);
+                self.stamp.fill(0);
                 self.epoch = 1;
             }
             for (j, i0, i1) in self.grid().rows(*s) {
@@ -196,7 +211,7 @@ impl EdgeIndex {
                         }
                         self.stamp[id as usize] = self.epoch;
                         let (f, fnet) = self.edges[id as usize];
-                        if fnet == *net || skip.contains(&(fnet as usize)) {
+                        if fnet == *net || self.skip_stamp[fnet as usize] == skip_ep {
                             continue;
                         }
                         if segments_cross(s.0, s.1, f.0, f.1) {
@@ -305,6 +320,7 @@ pub struct Problem {
     pub w_hpwl: f64,
     pub w_cross: f64,
     pub part_nets: Vec<Vec<usize>>,
+    part_cross_nets: Vec<Vec<usize>>,
     pub placed: Vec<bool>, // parts present in the overlap index (all, except during legalization)
     bounds: Rect,
     index: PartIndex,
@@ -313,6 +329,7 @@ pub struct Problem {
     hpwl_total: f64,
     crossings: usize,
     scratch: Vec<u32>,
+    new_edges_scratch: Vec<(Seg, u32)>,
 }
 
 impl Problem {
@@ -356,6 +373,19 @@ impl Problem {
                 }
             }
         }
+        let part_cross_nets: Vec<Vec<usize>> = part_nets
+            .iter()
+            .map(|pns| {
+                pns.iter()
+                    .copied()
+                    .filter(|&n| {
+                        nets[n].crossing
+                            && nets[n].pins.len() >= 2
+                            && nets[n].pins.len() <= MAX_CROSSING_PINS
+                    })
+                    .collect()
+            })
+            .collect();
         let mut dims: Vec<f64> = parts
             .iter()
             .map(|p| (p.local.x1 - p.local.x0).max(p.local.y1 - p.local.y0))
@@ -385,6 +415,7 @@ impl Problem {
             w_hpwl,
             w_cross,
             part_nets,
+            part_cross_nets,
             placed: vec![true; n_parts],
             bounds,
             index: PartIndex::new(bounds, cell),
@@ -393,6 +424,7 @@ impl Problem {
             hpwl_total: 0.0,
             crossings: 0,
             scratch: Vec::new(),
+            new_edges_scratch: Vec::new(),
         };
         pb.rebuild();
         pb
@@ -486,17 +518,73 @@ impl Problem {
     }
 
     /// Prim's MST over the net's pins, deterministic for a fixed pin order.
+    /// Uses squared Euclidean distance (strictly monotone with sqrt) and fixed
+    /// stack buffers for crossing nets (<= MAX_CROSSING_PINS) to avoid heap traffic.
     pub fn mst(&self, n: usize) -> Vec<Seg> {
-        let pts: Vec<(f64, f64)> = self.nets[n].pins.iter().map(|&p| self.pin_xy(p)).collect();
-        let k = pts.len();
+        let k = self.nets[n].pins.len();
         if k < 2 {
             return Vec::new();
         }
+        let mut tmp = Vec::with_capacity(k - 1);
+        self.mst_into(n, &mut tmp);
+        tmp.into_iter().map(|(s, _)| s).collect()
+    }
+
+    fn mst_into(&self, n: usize, out: &mut Vec<(Seg, u32)>) {
+        let pins = &self.nets[n].pins;
+        let k = pins.len();
+        if k < 2 {
+            return;
+        }
+        let net_id = n as u32;
+        if k == 2 {
+            let a = self.pin_xy(pins[0]);
+            let b = self.pin_xy(pins[1]);
+            if a != b {
+                out.push(((a, b), net_id));
+            }
+            return;
+        }
+        if k <= MAX_CROSSING_PINS {
+            let mut pts = [(0.0f64, 0.0f64); MAX_CROSSING_PINS];
+            for (idx, &p) in pins.iter().enumerate() {
+                pts[idx] = self.pin_xy(p);
+            }
+            let mut inside = [false; MAX_CROSSING_PINS];
+            let mut best = [f64::INFINITY; MAX_CROSSING_PINS];
+            let mut parent = [usize::MAX; MAX_CROSSING_PINS];
+            best[0] = 0.0;
+            for _ in 0..k {
+                let mut u = usize::MAX;
+                for i in 0..k {
+                    if !inside[i] && (u == usize::MAX || best[i] < best[u]) {
+                        u = i;
+                    }
+                }
+                inside[u] = true;
+                if parent[u] != usize::MAX && pts[parent[u]] != pts[u] {
+                    out.push(((pts[parent[u]], pts[u]), net_id));
+                }
+                let (ux, uy) = pts[u];
+                for v in 0..k {
+                    if !inside[v] {
+                        let dx = pts[v].0 - ux;
+                        let dy = pts[v].1 - uy;
+                        let d2 = dx * dx + dy * dy;
+                        if d2 < best[v] {
+                            best[v] = d2;
+                            parent[v] = u;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let pts: Vec<(f64, f64)> = pins.iter().map(|&p| self.pin_xy(p)).collect();
         let mut inside = vec![false; k];
         let mut best = vec![f64::INFINITY; k];
         let mut parent = vec![usize::MAX; k];
         best[0] = 0.0;
-        let mut out = Vec::with_capacity(k - 1);
         for _ in 0..k {
             let mut u = usize::MAX;
             for i in 0..k {
@@ -506,19 +594,21 @@ impl Problem {
             }
             inside[u] = true;
             if parent[u] != usize::MAX && pts[parent[u]] != pts[u] {
-                out.push((pts[parent[u]], pts[u]));
+                out.push(((pts[parent[u]], pts[u]), net_id));
             }
+            let (ux, uy) = pts[u];
             for v in 0..k {
                 if !inside[v] {
-                    let d = ((pts[v].0 - pts[u].0).powi(2) + (pts[v].1 - pts[u].1).powi(2)).sqrt();
-                    if d < best[v] {
-                        best[v] = d;
+                    let dx = pts[v].0 - ux;
+                    let dy = pts[v].1 - uy;
+                    let d2 = dx * dx + dy * dy;
+                    if d2 < best[v] {
+                        best[v] = d2;
                         parent[v] = u;
                     }
                 }
             }
         }
-        out
     }
 
     pub fn hpwl(&self) -> f64 {
@@ -534,18 +624,17 @@ impl Problem {
     }
 
     // ------------------------------------------------------------- legality
-    /// Is part `i` legal at its current pose (inside the board, no same-side overlap), ignoring `skip`?
-    pub fn legal_at(&mut self, i: usize, skip: Option<usize>) -> bool {
-        let r = self.rect(i);
-        let inner = Rect {
-            x0: r.x0 + self.gap / 2.0,
-            y0: r.y0 + self.gap / 2.0,
-            x1: r.x1 - self.gap / 2.0,
-            y1: r.y1 - self.gap / 2.0,
-        };
+    /// Check whether part `i` would be legal at candidate pose `(x, y, r)`
+    /// without mutating `parts`, `index`, or `edges` (exact match to `legal_at`).
+    pub fn can_place_at(&mut self, i: usize, x: f64, y: f64, r: u8, skip: Option<usize>) -> bool {
+        let inner = placed_rect(&self.parts[i].local, x, y, r);
+        let rect = inner.expand(self.gap / 2.0);
+        if !self.parts[i].fixed && !self.outline.contains_rect(&inner) {
+            return false;
+        }
         let side = self.parts[i].side;
         let mut cand = std::mem::take(&mut self.scratch);
-        self.index.candidates(side, &r, &mut cand);
+        self.index.candidates(side, &rect, &mut cand);
         let mut ok = true;
         for &j in &cand {
             let j = j as usize;
@@ -553,15 +642,55 @@ impl Problem {
                 continue;
             }
             if self.parts[j].fixed && self.parts[i].fixed {
-                continue; // fixed parts are the designer's: never blame them on each other
+                continue;
             }
-            if r.overlap(&self.rect(j)) > 1e-9 {
+            if rect.overlap(&self.rect(j)) > 1e-9 {
                 ok = false;
                 break;
             }
         }
         self.scratch = cand;
-        ok && (self.parts[i].fixed || self.outline.contains_rect(&inner))
+        ok
+    }
+
+    /// Check whether swapping `(i -> xi, yi, ri)` and `(j -> xj, yj, rj)` is legal
+    /// without mutating any state (exact match to applying both and checking `legal_at`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn can_swap(
+        &mut self,
+        i: usize,
+        xi: f64,
+        yi: f64,
+        ri: u8,
+        j: usize,
+        xj: f64,
+        yj: f64,
+        rj: u8,
+    ) -> bool {
+        if !self.can_place_at(i, xi, yi, ri, Some(j)) {
+            return false;
+        }
+        if !self.can_place_at(j, xj, yj, rj, Some(i)) {
+            return false;
+        }
+        if self.parts[i].side == self.parts[j].side
+            && self.placed[i]
+            && self.placed[j]
+            && !(self.parts[i].fixed && self.parts[j].fixed)
+        {
+            let rect_i = placed_rect(&self.parts[i].local, xi, yi, ri).expand(self.gap / 2.0);
+            let rect_j = placed_rect(&self.parts[j].local, xj, yj, rj).expand(self.gap / 2.0);
+            if rect_i.overlap(&rect_j) > 1e-9 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Is part `i` legal at its current pose (inside the board, no same-side overlap), ignoring `skip`?
+    pub fn legal_at(&mut self, i: usize, skip: Option<usize>) -> bool {
+        let (x, y, r) = (self.parts[i].x, self.parts[i].y, self.parts[i].r);
+        self.can_place_at(i, x, y, r, skip)
     }
 
     pub fn illegal_parts(&mut self) -> Vec<usize> {
@@ -586,19 +715,16 @@ impl Problem {
             let new_rect = self.rect(i);
             self.index.insert(self.parts[i].side, &new_rect, i as u32);
         }
-        let nets = self.part_nets[i].clone();
-        let mut net_old = Vec::with_capacity(nets.len());
-        for &n in &nets {
+        let n_nets = self.part_nets[i].len();
+        let mut net_old = Vec::with_capacity(n_nets);
+        for idx in 0..n_nets {
+            let n = self.part_nets[i][idx];
             let h = self.compute_net_hpwl(n);
             net_old.push((n, self.net_hpwl[n]));
             self.hpwl_total += self.nets[n].weight * (h - self.net_hpwl[n]);
             self.net_hpwl[n] = h;
         }
-        let cross_nets: Vec<usize> = nets
-            .iter()
-            .copied()
-            .filter(|&n| self.crossing_net(n))
-            .collect();
+        let cross_nets = self.part_cross_nets[i].clone();
         let mut old_edges = Vec::new();
         let mut cross_delta: isize = 0;
         if !cross_nets.is_empty() {
@@ -612,17 +738,17 @@ impl Problem {
             for &n in &cross_nets {
                 self.edges.remove_net(n);
             }
-            let mut new_edges = Vec::new();
+            let mut new_edges = std::mem::take(&mut self.new_edges_scratch);
+            new_edges.clear();
             for &n in &cross_nets {
-                for s in self.mst(n) {
-                    new_edges.push((s, n as u32));
-                }
+                self.mst_into(n, &mut new_edges);
             }
             let after = self.edges.crossings_against(&new_edges, &cross_nets)
                 + crossings_within(&new_edges);
-            for (s, n) in &new_edges {
-                self.edges.insert(*s, *n);
+            for &(s, n) in &new_edges {
+                self.edges.insert(s, n);
             }
+            self.new_edges_scratch = new_edges;
             cross_delta = after as isize - before as isize;
             self.crossings = (self.crossings as isize + cross_delta) as usize;
         }
@@ -819,6 +945,44 @@ mod tests {
         assert_eq!(p.illegal_parts(), vec![0, 1]);
         let _ = p.apply_pose(1, 19.5, 10.0, 0); // sticks out of the board
         assert_eq!(p.illegal_parts(), vec![1]);
+    }
+
+    #[test]
+    fn can_place_and_swap_match_legal_at() {
+        let mut p = problem();
+        let probes = [
+            (1, 2.5, 2.0, 0u8),
+            (1, 19.5, 10.0, 0u8),
+            (1, 10.0, 10.0, 1u8),
+            (3, 2.0, 16.0, 2u8),
+        ];
+        for (i, x, y, r) in probes {
+            let predicted = p.can_place_at(i, x, y, r, None);
+            let u = p.apply_pose(i, x, y, r);
+            let actual = p.legal_at(i, None);
+            p.undo(u);
+            assert_eq!(predicted, actual, "can_place_at mismatch for part {i}");
+        }
+        // Swap check: swapping 0 and 1 (both valid), then swapping onto an overlapping pose
+        let (x0, y0, r0) = (p.parts[0].x, p.parts[0].y, p.parts[0].r);
+        let (x1, y1, r1) = (p.parts[1].x, p.parts[1].y, p.parts[1].r);
+        let pred_ok = p.can_swap(0, x1, y1, r0, 1, x0, y0, r1);
+        let u0 = p.apply_pose(0, x1, y1, r0);
+        let u1 = p.apply_pose(1, x0, y0, r1);
+        let act_ok = p.legal_at(0, None) && p.legal_at(1, None);
+        p.undo(u1);
+        p.undo(u0);
+        assert_eq!(pred_ok, act_ok);
+        assert!(pred_ok);
+
+        let pred_bad = p.can_swap(0, 10.0, 10.0, 0, 1, 10.5, 10.0, 0);
+        let u0 = p.apply_pose(0, 10.0, 10.0, 0);
+        let u1 = p.apply_pose(1, 10.5, 10.0, 0);
+        let act_bad = p.legal_at(0, None) && p.legal_at(1, None);
+        p.undo(u1);
+        p.undo(u0);
+        assert_eq!(pred_bad, act_bad);
+        assert!(!pred_bad);
     }
 }
 

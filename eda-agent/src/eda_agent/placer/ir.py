@@ -406,12 +406,16 @@ def is_power_net(name: str | None) -> bool:
     upper = name.upper().lstrip("/")
     if is_ground_net(upper):
         return True
-    if upper.startswith(("+", "VCC", "VDD", "VBUS", "VIN", "VBAT", "VSYS", "V_", "PWR", "VREF", "AVDD", "DVDD", "IOVDD")):
+    if upper.startswith((
+        "+", "VCC", "VDD", "VBUS", "VIN", "VBAT", "VSYS", "V_", "PWR", "VREF",
+        "AVDD", "DVDD", "IOVDD", "VCORE", "VIO", "VRF", "VRTC", "VSRAM", "VLDO", "VREG",
+    )):
         return True
     if upper.startswith("-") and any(ch.isdigit() for ch in upper):
         return True
     core = upper.lstrip("+")
-    return len(core) <= 6 and core[:1].isdigit() and "V" in core
+    head = core.split("_", 1)[0]
+    return len(head) <= 6 and head[:1].isdigit() and "V" in head
 
 
 

@@ -30,12 +30,19 @@ def gate(name: str, value: Any, threshold: Any, op: str = "==") -> dict:
 def tools() -> dict:
     kc = toolchain.kicad()
     fr = toolchain.freerouting()
+    core_info: dict | None = None
+    try:
+        import placer_core  # type: ignore[import-not-found]
+
+        core_info = {"version": getattr(placer_core, "__version__", "installed")}
+    except ImportError:
+        core_info = None
     return {
         "kicad": {"version": kc.version, "cli": str(kc.cli)},
         "java": {"version": fr.java_version, "path": str(fr.java)},
         "freerouting": {"version": fr.version, "sha256": fr.sha256, "jar": str(fr.jar)},
         "eda_agent": {"version": EDA_AGENT_VERSION},
-        "placer_core": None,  # Rust core arrives in F1
+        "placer_core": core_info,
     }
 
 
