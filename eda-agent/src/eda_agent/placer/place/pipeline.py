@@ -863,7 +863,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     silk_raw = write_stats.get("silkscreen")
     if isinstance(silk_raw, dict):
         post_texts = silk_raw.pop("post_texts", [])
-        silk_audit = silk_mod.audit_texts(post_texts, fab_profile=fab_profile, rules=placed.rules)
+        silk_audit = silk_mod.audit_texts(post_texts, fab_profile=fab_profile, rules=placed.rules, board=placed)
         info["silkscreen"] = {
             **silk_raw,
             "density": silk_cfg["density"],

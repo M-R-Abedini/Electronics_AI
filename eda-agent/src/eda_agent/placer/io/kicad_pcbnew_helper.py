@@ -1157,7 +1157,10 @@ def _text_box(item):
 def _box_inside_outline(box, outline_poly, edge_margin=0):
     x0, y0, x1, y1 = box[0] - edge_margin, box[1] - edge_margin, box[2] + edge_margin, box[3] + edge_margin
     cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-    for px, py in ((x0, y0), (x1, y0), (x1, y1), (x0, y1), (cx, cy)):
+    for px, py in (
+        (x0, y0), (x1, y0), (x1, y1), (x0, y1),
+        (cx, cy), (cx, y0), (cx, y1), (x0, cy), (x1, cy),
+    ):
         if not outline_poly.Contains(pcbnew.VECTOR2I(int(px), int(py))):
             return False
     return True
@@ -1202,6 +1205,9 @@ def _extract_silkscreen_texts(board):
     silk_layers = (pcbnew.F_SilkS, pcbnew.B_SilkS)
     fab_layers = (pcbnew.F_Fab, pcbnew.B_Fab)
     all_layers = silk_layers + fab_layers
+
+    outline_poly = pcbnew.SHAPE_POLY_SET()
+    has_outline = bool(board.GetBoardPolygonOutlines(outline_poly, False))
 
     pad_boxes = {pcbnew.F_SilkS: [], pcbnew.B_SilkS: []}
     body_boxes = {pcbnew.F_SilkS: [], pcbnew.B_SilkS: []}
@@ -1257,6 +1263,7 @@ def _extract_silkscreen_texts(board):
         pad_clr_mm = None
         under_body = False
         overlaps_silk = False
+        outside_board = bool(has_outline and not _box_inside_outline(box, outline_poly, 0))
         if lyr in silk_layers:
             if pad_boxes[lyr]:
                 min_d = min(_box_distance_nm(box, pb) for pb in pad_boxes[lyr])
@@ -1284,6 +1291,9 @@ def _extract_silkscreen_texts(board):
             "pad_clearance_mm": pad_clr_mm,
             "under_body": under_body,
             "overlaps_silk": overlaps_silk,
+            "outside_board": outside_board,
+            "pos_mm": [_mm((box[0] + box[2]) // 2), _mm((box[1] + box[3]) // 2)],
+            "bbox_mm": [_mm(box[2] - box[0]), _mm(box[3] - box[1])],
         })
     out.sort(key=lambda r: (r["layer"], r["ref"], r["text"], r["uuid"]))
     return out
@@ -1307,12 +1317,15 @@ def _ensure_fab_reference(board, fp):
     bh = max(pcbnew.FromMM(0.5), body[3] - body[1])
     cx = (body[0] + body[2]) // 2
     cy = (body[1] + body[3]) // 2
+    tall = bh > bw * 1.25
+    long_side = max(bw, bh)
+    short_side = min(bw, bh)
     # Size fab text cleanly to fit inside the component body outline for Assembly Drawings.
     char_count = max(2, len(ref_str))
-    fit_h = min(pcbnew.FromMM(0.90), int(bh * 0.55), int(bw / (char_count * 0.85)))
-    fab_h = max(pcbnew.FromMM(0.35), fit_h)
-    fab_w = max(pcbnew.FromMM(0.30), int(fab_h * 0.85))
-    fab_s = max(pcbnew.FromMM(0.08), min(pcbnew.FromMM(0.15), int(fab_h / 7.0)))
+    fit_h = min(pcbnew.FromMM(0.90), int(short_side * 0.55), int(long_side / (char_count * 0.85)))
+    fab_h = max(pcbnew.FromMM(0.25), fit_h)
+    fab_w = max(pcbnew.FromMM(0.22), int(fab_h * 0.85))
+    fab_s = max(pcbnew.FromMM(0.05), min(pcbnew.FromMM(0.15), int(fab_h / 7.0)))
 
     txt = pcbnew.PCB_TEXT(fp)
     txt.SetText(ref_str)
@@ -1320,6 +1333,7 @@ def _ensure_fab_reference(board, fp):
     txt.SetPosition(pcbnew.VECTOR2I(int(cx), int(cy)))
     txt.SetTextSize(pcbnew.VECTOR2I(int(fab_w), int(fab_h)))
     txt.SetTextThickness(int(fab_s))
+    txt.SetTextAngleDegrees(90.0 if tall else 0.0)
     txt.SetVisible(True)
     if fp.IsFlipped() and hasattr(txt, "SetMirrored"):
         txt.SetMirrored(True)
@@ -1327,6 +1341,97 @@ def _ensure_fab_reference(board, fp):
     txt.SetUuidDirect(pcbnew.KIID(str(ident)))
     fp.Add(txt)
     return True
+
+
+def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_miniature):
+    """Keep F.Fab/B.Fab assembly legends proportioned inside component bodies and board outline."""
+    fab_layers = (pcbnew.F_Fab, pcbnew.B_Fab)
+    normalized = 0
+    values_hidden = 0
+    footprints = sorted(board.GetFootprints(), key=lambda f: (f.GetReference(), f.m_Uuid.AsString()))
+
+    for fp in footprints:
+        body = fp_body_map.get(fp.m_Uuid.AsString()) or _footprint_body_box(fp)
+        bw = max(pcbnew.FromMM(0.4), body[2] - body[0])
+        bh = max(pcbnew.FromMM(0.4), body[3] - body[1])
+        cx = (body[0] + body[2]) // 2
+        cy = (body[1] + body[3]) // 2
+        long_side = max(bw, bh)
+        short_side = min(bw, bh)
+        preferred_ang = 90.0 if bh > bw * 1.25 else 0.0
+
+        fab_items = []
+        for fld in fp.GetFields():
+            if fld.GetLayer() in fab_layers and fld.IsVisible() and _item_text(fld):
+                fld_name = fld.GetName() if hasattr(fld, "GetName") else ""
+                fab_items.append((fld, fld_name != "Reference"))
+        for g in fp.GraphicalItems():
+            if g.GetLayer() in fab_layers and g.GetClass() in _TEXT_CLASSES and g.IsVisible() and _item_text(g):
+                fab_items.append((g, False))
+
+        for item, is_value in fab_items:
+            txt = _item_text(item)
+            box = _text_box(item)
+            tw = box[2] - box[0]
+            th = box[3] - box[1]
+            outside = bool(has_outline and not _box_inside_outline(box, outline_poly, 0))
+            oversized = bool(is_miniature and max(tw, th) > max(int(long_side * 1.35), pcbnew.FromMM(3.5)))
+            if not outside and not oversized:
+                continue
+
+            chars = max(2, len(txt))
+            base_h = min(
+                pcbnew.FromMM(0.80),
+                int(short_side * 0.55),
+                int(long_side / (chars * 0.80)),
+            )
+            trial_heights = []
+            for h_cand in (
+                base_h,
+                pcbnew.FromMM(0.50),
+                pcbnew.FromMM(0.35),
+                pcbnew.FromMM(0.25),
+                pcbnew.FromMM(0.20),
+            ):
+                clamped = max(pcbnew.FromMM(0.20), min(pcbnew.FromMM(0.80), int(h_cand)))
+                if clamped not in trial_heights:
+                    trial_heights.append(clamped)
+            trial_heights.sort(reverse=True)
+
+            item.SetPosition(pcbnew.VECTOR2I(int(cx), int(cy)))
+            if fp.IsFlipped() and hasattr(item, "SetMirrored"):
+                item.SetMirrored(True)
+
+            fitted = False
+            angles = (preferred_ang, 90.0 - preferred_ang)
+            for h_nm in trial_heights:
+                s_nm = max(pcbnew.FromMM(0.04), min(pcbnew.FromMM(0.12), int(h_nm / 7.0)))
+                for w_ratio in (0.85, 0.72):
+                    w_nm = max(pcbnew.FromMM(0.15), int(h_nm * w_ratio))
+                    item.SetTextSize(pcbnew.VECTOR2I(w_nm, h_nm))
+                    item.SetTextThickness(s_nm)
+                    for ang in angles:
+                        item.SetTextAngleDegrees(ang)
+                        nbox = _text_box(item)
+                        if not has_outline or _box_inside_outline(nbox, outline_poly, 0):
+                            fitted = True
+                            break
+                    if fitted:
+                        break
+                if fitted:
+                    break
+
+            if fitted:
+                normalized += 1
+            elif is_value and has_outline:
+                # Never leave an oversized Fab Value string sticking outside the board outline;
+                # the component's F.Fab/B.Fab Reference remains visible for assembly drawings.
+                item.SetVisible(False)
+                values_hidden += 1
+            else:
+                normalized += 1
+
+    return normalized, values_hidden
 
 
 def _segment_hits_any_box(p0, p1, boxes):
@@ -1442,8 +1547,13 @@ def _clean_silkscreen(board, cfg=None):
     avoid_bodies = bool(cfg.get("avoid_bodies", True))
     enable_leaders = bool(cfg.get("enable_leader_lines", policy != "assembly_only"))
     effective_mode = cfg.get("effective_mode", "ipc_standard" if policy != "dense" else "dense")
+    is_miniature = bool(cfg.get("is_miniature", (cfg.get("density") or {}).get("is_miniature", False)))
+    prefer_dense_size = bool(cfg.get("prefer_dense_size", (policy == "dense") or is_miniature))
     proactive_offload = bool(cfg.get("proactive_offload_non_critical", policy == "dense"))
     fallback_offload = bool(cfg.get("fallback_offload_non_critical", policy in ("auto", "ipc_standard", "dense")))
+    fallback_offload_critical = bool(cfg.get("fallback_offload_critical", policy in ("auto", "ipc_standard", "dense")))
+    populate_hidden_refs = bool(cfg.get("populate_hidden_refs", False))
+    normalize_fab_texts = bool(cfg.get("normalize_fab_texts", policy != "off"))
 
     critical_refs = set(cfg.get("critical_refs") or ())
     non_critical_refs = set(cfg.get("non_critical_refs") or ())
@@ -1500,6 +1610,8 @@ def _clean_silkscreen(board, cfg=None):
             add_shape_boxes(d, lyr)
 
     movable_texts = []
+    hidden_ref_candidates = []
+    visible_ref_count = 0
     offloaded_refs = []
     fab_created = 0
     fp_body_map = {}
@@ -1524,21 +1636,43 @@ def _clean_silkscreen(board, cfg=None):
                 continue
             if g.GetClass() in _TEXT_CLASSES:
                 if g.IsVisible():
-                    movable_texts.append((fp, g, False))
+                    movable_texts.append((fp, g, False, False))
             else:
                 add_shape_boxes(g, lyr)
         for fld in fp.GetFields():
-            if not (fld.IsVisible() and fld.GetLayer() in silk_layers):
+            if fld.GetLayer() not in silk_layers:
                 continue
             fld_name = fld.GetName() if hasattr(fld, "GetName") else ""
             is_ref_field = fld_name == "Reference"
+            if not fld.IsVisible():
+                if is_ref_field and _item_text(fld):
+                    if policy == "assembly_only":
+                        if _ensure_fab_reference(board, fp):
+                            fab_created += 1
+                    elif populate_hidden_refs:
+                        hidden_ref_candidates.append((fp, fld, True, True))
+                    else:
+                        if _ensure_fab_reference(board, fp):
+                            fab_created += 1
+                continue
+            if is_ref_field:
+                visible_ref_count += 1
             if is_ref_field and (policy == "assembly_only" or (proactive_offload and ref in non_critical_refs)):
                 fld.SetVisible(False)
                 if _ensure_fab_reference(board, fp):
                     fab_created += 1
                 offloaded_refs.append(ref)
             else:
-                movable_texts.append((fp, fld, is_ref_field))
+                movable_texts.append((fp, fld, is_ref_field, False))
+
+    # Only auto-populate hidden silkscreen references on boards where all refs start hidden
+    # (or when explicitly requested via policy="ipc_standard").
+    do_populate_hidden = bool(hidden_ref_candidates) and (policy == "ipc_standard" or visible_ref_count == 0)
+    if not do_populate_hidden:
+        for fp, _fld, _is_ref, _was_hidden in hidden_ref_candidates:
+            if _ensure_fab_reference(board, fp):
+                fab_created += 1
+        hidden_ref_candidates = []
 
     def collides_hard(box, lyr):
         if has_outline and not _box_inside_outline(box, outline_poly, edge_margin):
@@ -1567,6 +1701,8 @@ def _clean_silkscreen(board, cfg=None):
         th = int(item.GetTextThickness())
         if sz.y < min_h - pcbnew.FromMM(0.01):
             return False
+        if is_miniature and sz.y > dense_h + pcbnew.FromMM(0.05):
+            return False
         if th < min_w - pcbnew.FromMM(0.005) or th > max_w + pcbnew.FromMM(0.02):
             return False
         ratio = th / float(max(1, sz.y))
@@ -1576,7 +1712,7 @@ def _clean_silkscreen(board, cfg=None):
     pending = []
     already_clean = 0
     normalized_in_place = 0
-    for fp, item, is_ref in movable_texts:
+    for fp, item, is_ref, was_hidden in movable_texts:
         lyr = item.GetLayer()
         orig_sz = item.GetTextSize()
         orig_th = int(item.GetTextThickness())
@@ -1584,7 +1720,7 @@ def _clean_silkscreen(board, cfg=None):
         if not compliant and is_ref:
             # Try normalizing size/stroke in place first while preserving IPC bounds.
             nh = max(min_h, min(max_h, orig_sz.y if orig_sz.y >= min_h else target_h))
-            if policy == "dense" and nh > dense_h:
+            if prefer_dense_size and nh > dense_h:
                 nh = dense_h
             nw = max(round(nh * condensed_ratio), min(nh, orig_sz.x)) if orig_sz.x > 0 else nh
             ns = _stroke_for(nh)
@@ -1598,7 +1734,7 @@ def _clean_silkscreen(board, cfg=None):
                 continue
             item.SetTextSize(orig_sz)
             item.SetTextThickness(orig_th)
-            pending.append((fp, item, is_ref))
+            pending.append((fp, item, is_ref, was_hidden))
             continue
 
         box = _text_box(item)
@@ -1607,7 +1743,10 @@ def _clean_silkscreen(board, cfg=None):
             placed_boxes[lyr].append((box[0] - silk_margin, box[1] - silk_margin,
                                       box[2] + silk_margin, box[3] + silk_margin))
         else:
-            pending.append((fp, item, is_ref))
+            pending.append((fp, item, is_ref, was_hidden))
+
+    if hidden_ref_candidates:
+        pending.extend(hidden_ref_candidates)
 
     # Precompute compact deterministic spiral offsets.
     def _spiral_offsets(max_ring):
@@ -1659,19 +1798,20 @@ def _clean_silkscreen(board, cfg=None):
 
     # Phase B: polarity markers first, then critical refs, then non-critical passive refs.
     def _sort_key(row):
-        fp, _item, is_ref = row
+        fp, _item, is_ref, was_hidden = row
         ref = fp.GetReference()
         tier = 0 if not is_ref else (1 if (ref in critical_refs or ref not in non_critical_refs) else 2)
-        return (tier, ref, fp.m_Uuid.AsString())
+        return (tier, 1 if was_hidden else 0, ref, fp.m_Uuid.AsString())
 
     pending.sort(key=_sort_key)
     moved_count = 0
+    populated_from_hidden = 0
     condensed_used = 0
     dense_used = 0
     leader_refs = []
     unresolved = 0
 
-    for fp, item, is_ref in pending:
+    for fp, item, is_ref, was_hidden in pending:
         ref = fp.GetReference()
         is_non_crit = is_ref and (ref in non_critical_refs) and (ref not in critical_refs)
         lyr = item.GetLayer()
@@ -1679,6 +1819,8 @@ def _clean_silkscreen(board, cfg=None):
         orig_ang = float(item.GetTextAngleDegrees())
         orig_size = item.GetTextSize()
         orig_thick = int(item.GetTextThickness())
+        if was_hidden:
+            item.SetVisible(True)
         orig_box = _text_box(item)
         orig_hard_collision = collides_hard(orig_box, lyr)
         orig_under_body = hits_body(orig_box, lyr)
@@ -1690,7 +1832,7 @@ def _clean_silkscreen(board, cfg=None):
         angles = (0.0, 90.0) if is_ref else (orig_ang % 180.0, (orig_ang + 90.0) % 180.0)
 
         if is_ref:
-            if policy == "dense":
+            if prefer_dense_size:
                 size_trials = [
                     ("dense", pcbnew.VECTOR2I(int(dense_h), int(dense_h)), _stroke_for(dense_h)),
                     ("dense_condensed", pcbnew.VECTOR2I(round(dense_h * 0.75), int(dense_h)), _stroke_for(dense_h)),
@@ -1707,7 +1849,7 @@ def _clean_silkscreen(board, cfg=None):
         else:
             size_trials = [("keep", orig_size, max(min_w, orig_thick))]
 
-        step_nm = pcbnew.FromMM(0.45 if is_ref else 0.25)
+        step_nm = pcbnew.FromMM(0.25 if (is_miniature or not is_ref) else 0.45)
 
         # 1. Preferred: outside all component bodies, near footprint.
         found = _search(
@@ -1716,8 +1858,19 @@ def _clean_silkscreen(board, cfg=None):
         )
         used_wide = False
 
+        # Non-critical passives must stay unambiguously adjacent to their own body;
+        # if the nearest free slot is too far away, offload cleanly to F.Fab/B.Fab instead.
+        if found is not None and is_non_crit and (fallback_offload or was_hidden):
+            max_passive_dist = pcbnew.FromMM(1.5 if is_miniature else 2.5)
+            if _box_distance_nm(found[1], b_box) > max_passive_dist:
+                found = None
+
         # 2. If non-critical passive did not fit cleanly outside bodies -> offload to F.Fab/B.Fab!
-        if found is None and is_non_crit and fallback_offload:
+        if found is None and is_non_crit and (fallback_offload or was_hidden):
+            item.SetTextSize(orig_size)
+            item.SetTextThickness(orig_thick)
+            item.SetPosition(orig_pos)
+            item.SetTextAngleDegrees(orig_ang)
             item.SetVisible(False)
             if _ensure_fab_reference(board, fp):
                 fab_created += 1
@@ -1732,8 +1885,21 @@ def _clean_silkscreen(board, cfg=None):
             )
             used_wide = found is not None
 
-        # 4. Last resort: allow inside component body only if already colliding or already under a body.
-        if found is None and (orig_hard_collision or orig_under_body):
+        # 3b. If a critical ref STILL has no clean outside-body slot on silkscreen -> offload cleanly
+        #     to F.Fab/B.Fab instead of burying it beneath a component body or leaving a collision!
+        if found is None and is_ref and (fallback_offload_critical or was_hidden):
+            item.SetTextSize(orig_size)
+            item.SetTextThickness(orig_thick)
+            item.SetPosition(orig_pos)
+            item.SetTextAngleDegrees(orig_ang)
+            item.SetVisible(False)
+            if _ensure_fab_reference(board, fp):
+                fab_created += 1
+            offloaded_refs.append(ref)
+            continue
+
+        # 4. Last resort (non-ref graphics or when fallback offload disabled): allow inside body only if colliding.
+        if found is None and not was_hidden and (orig_hard_collision or orig_under_body):
             found = _search(
                 item, lyr, is_ref, size_trials, offsets_near, anchor_x, anchor_y, step_nm, angles,
                 require_outside_body=False,
@@ -1742,6 +1908,8 @@ def _clean_silkscreen(board, cfg=None):
         if found is not None:
             tag, found_box, used_stroke = found
             moved_count += 1
+            if was_hidden:
+                populated_from_hidden += 1
             if "condensed" in tag:
                 condensed_used += 1
             if "dense" in tag:
@@ -1761,22 +1929,36 @@ def _clean_silkscreen(board, cfg=None):
                 leader_refs.append(ref)
         else:
             unresolved += 1
-            # Keep IPC-legal stroke/size even if position could not move.
+            # Keep original geometry if position could not move.
             item.SetTextSize(orig_size)
             item.SetTextThickness(orig_thick)
             item.SetPosition(orig_pos)
             item.SetTextAngleDegrees(orig_ang)
-            box = _text_box(item)
-            placed_boxes[lyr].append((box[0] - silk_margin, box[1] - silk_margin,
-                                      box[2] + silk_margin, box[3] + silk_margin))
+            if was_hidden:
+                item.SetVisible(False)
+                if _ensure_fab_reference(board, fp):
+                    fab_created += 1
+            else:
+                box = _text_box(item)
+                placed_boxes[lyr].append((box[0] - silk_margin, box[1] - silk_margin,
+                                          box[2] + silk_margin, box[3] + silk_margin))
+
+    fab_texts_normalized = 0
+    fab_values_hidden = 0
+    if normalize_fab_texts:
+        fab_texts_normalized, fab_values_hidden = _normalize_fab_texts(
+            board, outline_poly, has_outline, fp_body_map, is_miniature
+        )
 
     return {
         "policy": policy,
         "effective_mode": effective_mode,
         "fab_profile": cfg.get("fab_profile", "ipc_standard"),
-        "checked": len(movable_texts) + len(offloaded_refs),
+        "is_miniature": is_miniature,
+        "checked": len(movable_texts) + len(hidden_ref_candidates) + len(offloaded_refs),
         "already_clean": already_clean,
         "normalized_in_place": normalized_in_place,
+        "populated_from_hidden": populated_from_hidden,
         "colliding": len(pending),
         "moved": moved_count,
         "condensed_used": condensed_used,
@@ -1784,6 +1966,8 @@ def _clean_silkscreen(board, cfg=None):
         "offloaded_to_fab": len(offloaded_refs),
         "offloaded_refs": sorted(set(offloaded_refs)),
         "fab_refs_created": fab_created,
+        "fab_texts_normalized": fab_texts_normalized,
+        "fab_values_hidden": fab_values_hidden,
         "leader_lines_added": len(leader_refs),
         "leader_refs": sorted(set(leader_refs)),
         "unresolved": unresolved,
