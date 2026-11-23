@@ -399,3 +399,35 @@ def test_gallery_and_diagnose_surface_silkscreen_and_assembly_visual_qa(tmp_path
     assert diag.structuredContent["finding_counts"]["fab_text_outside_board"] == 1
     diag_imgs = [item for item in diag.content if item.type == "image"]
     assert diag_imgs and base64.b64decode(diag_imgs[0].data).startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_audit_catches_overlapping_oversized_fab_and_mirror_mismatches() -> None:
+    mini = _make_miniature_board()
+    messy_fab = [
+        {
+            "uuid": "f1", "ref": "U3", "kind": "value_field", "text": "MS583702BA01-50",
+            "layer": "F.Fab", "visible": True, "height_mm": 0.8, "width_mm": 0.8, "stroke_mm": 0.12,
+            "outside_board": False, "overlaps_fab": True, "exceeds_body": True, "mirror_mismatch": True,
+            "pos_mm": [6.0, 6.0], "bbox_mm": [7.5, 1.3],
+        },
+        {
+            "uuid": "f2", "ref": "C5", "kind": "graphic_text", "text": "C5",
+            "layer": "F.Fab", "visible": True, "height_mm": 0.8, "width_mm": 0.8, "stroke_mm": 0.12,
+            "outside_board": False, "overlaps_fab": True, "exceeds_body": True, "mirror_mismatch": False,
+            "pos_mm": [3.5, 6.5], "bbox_mm": [2.2, 1.3],
+        },
+        {
+            "uuid": "f3", "ref": "J1", "kind": "graphic_text", "text": "J1",
+            "layer": "B.Fab", "visible": True, "height_mm": 0.5, "width_mm": 0.4, "stroke_mm": 0.08,
+            "outside_board": False, "overlaps_fab": False, "exceeds_body": False, "mirror_mismatch": True,
+            "pos_mm": [6.0, 2.0], "bbox_mm": [1.0, 0.5],
+        },
+    ]
+    aud = silkscreen.audit_texts(messy_fab, board=mini)
+    assert aud["status"] == "warn"
+    assert aud["dfm_score"] < 75.0
+    assert aud["counts"]["fab_overlaps"] == 2
+    assert aud["counts"]["fab_oversized"] == 2
+    assert aud["counts"]["mirror_mismatches"] == 2
+    rules_hit = {f["rule"] for f in aud["findings"]}
+    assert {"fab_text_overlap", "fab_text_oversized_for_body", "text_mirror_mismatch"} <= rules_hit

@@ -178,10 +178,30 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
                          "description": "Connection still open in this route output", "points": _points(row["evidence"]),
                          "source": route_path or source, "run_stop": stop, "cause_confirmed": False})
 
+    from .route.bga_escape import check_hdi_rule_conflicts
+
+    hdi_conflicts = check_hdi_rule_conflicts(board)
+    for hc in hdi_conflicts:
+        fp = footprints.get(hc["ref"])
+        pts = [{"x_mm": fp.x, "y_mm": fp.y, "layer": f"{fp.side}.Cu", "ref": fp.ref, "pad": None}] if fp else []
+        findings.append({
+            "kind": "hdi_rule_conflict",
+            "severity": "error",
+            "description": hc["message"],
+            "points": pts,
+            "source": source,
+            "board_hole_clearance_mm": hc["board_hole_clearance_mm"],
+            "max_possible_hole_clearance_mm": hc["max_possible_hole_clearance_mm"],
+            "recommended_hole_clearance_mm": hc["recommended_hole_clearance_mm"],
+        })
+
     silk_audit = silk_mod.audit_board(board)
     if board.silkscreen_texts:
         silk_descriptions = {
             "fab_text_outside_board": "Assembly text on F.Fab/B.Fab extends outside the board outline; normalize or resize Fab text",
+            "fab_text_overlap": "Assembly texts on F.Fab/B.Fab overlap each other; resize Refs inside component bodies and hide cluttering Fab Value strings",
+            "fab_text_oversized_for_body": "Assembly text on F.Fab/B.Fab exceeds its component body; size strictly within component body per IPC-A-610",
+            "text_mirror_mismatch": "Visible text has wrong mirror state for its side (mirrored on Front or non-mirrored on Back)",
             "silk_text_outside_board": "Overlay text extends outside the board outline; resize to board proportions or transfer to F.Fab/B.Fab",
             "silk_oversized_for_miniature_board": "Overlay reference is oversized for a miniature board; use dense 0.80 mm height or transfer to F.Fab/B.Fab",
             "silk_under_component_body": "Overlay reference sits under a component body; relocate outside body or transfer to F.Fab/B.Fab",
@@ -222,7 +242,8 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
     silk_kinds = {
         "silk_text_height", "silk_stroke_width", "silk_stroke_ratio_too_thin", "silk_stroke_ratio_too_thick",
         "silk_pad_clearance", "silk_under_component_body", "silk_text_overlap", "silk_text_outside_board",
-        "silk_oversized_for_miniature_board", "fab_text_outside_board", "missing_component_legend",
+        "silk_oversized_for_miniature_board", "fab_text_outside_board", "fab_text_overlap",
+        "fab_text_oversized_for_body", "text_mirror_mismatch", "missing_component_legend",
     }
 
     def _priority(row: dict) -> int:

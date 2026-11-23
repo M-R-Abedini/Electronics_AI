@@ -386,6 +386,9 @@ def audit_texts(
     condensed = 0
     silk_outside_board = 0
     fab_outside_board = 0
+    fab_overlaps = 0
+    fab_oversized = 0
+    mirror_mismatches = 0
     oversized_for_board = 0
 
     heights: list[float] = []
@@ -532,6 +535,16 @@ def audit_texts(
                 "layer": layer,
             }, t))
 
+        if t.get("mirror_mismatch"):
+            mirror_mismatches += 1
+            findings.append(_with_pos({
+                "severity": "warning",
+                "rule": "text_mirror_mismatch",
+                "ref": ref,
+                "text": text_val,
+                "layer": layer,
+            }, t))
+
     for t in fab_visible:
         if t.get("outside_board"):
             fab_outside_board += 1
@@ -542,6 +555,35 @@ def audit_texts(
                 "text": t.get("text") or "",
                 "layer": t.get("layer"),
                 "bbox_mm": t.get("bbox_mm"),
+            }, t))
+        if t.get("overlaps_fab"):
+            fab_overlaps += 1
+            findings.append(_with_pos({
+                "severity": "warning",
+                "rule": "fab_text_overlap",
+                "ref": t.get("ref") or "board",
+                "text": t.get("text") or "",
+                "layer": t.get("layer"),
+                "bbox_mm": t.get("bbox_mm"),
+            }, t))
+        if t.get("exceeds_body"):
+            fab_oversized += 1
+            findings.append(_with_pos({
+                "severity": "warning",
+                "rule": "fab_text_oversized_for_body",
+                "ref": t.get("ref") or "board",
+                "text": t.get("text") or "",
+                "layer": t.get("layer"),
+                "bbox_mm": t.get("bbox_mm"),
+            }, t))
+        if t.get("mirror_mismatch"):
+            mirror_mismatches += 1
+            findings.append(_with_pos({
+                "severity": "warning",
+                "rule": "text_mirror_mismatch",
+                "ref": t.get("ref") or "board",
+                "text": t.get("text") or "",
+                "layer": t.get("layer"),
             }, t))
 
     ref_texts = [t for t in silk_visible if t.get("kind") == "field"]
@@ -605,7 +647,13 @@ def audit_texts(
     ref_errors = sum(1 for f in ref_findings if f["severity"] == "error")
     ref_warnings = sum(1 for f in ref_findings if f["severity"] == "warning")
 
-    fab_penalty = min(30.0, 10.0 * fab_outside_board) if fab_outside_board else 0.0
+    fab_denom = max(1, len(fab_visible))
+    fab_penalty = (
+        (min(30.0, 10.0 * fab_outside_board) if fab_outside_board else 0.0)
+        + (min(25.0, 25.0 * fab_overlaps / fab_denom) if fab_overlaps else 0.0)
+        + (min(15.0, 15.0 * fab_oversized / fab_denom) if fab_oversized else 0.0)
+        + (min(15.0, 15.0 * mirror_mismatches / max(1, len(silk_visible) + len(fab_visible))) if mirror_mismatches else 0.0)
+    )
     missing_penalty = (
         min(25.0, 25.0 * len(missing_refs) / max(1, len(footprint_refs)))
         if (texts and missing_refs)
@@ -676,6 +724,9 @@ def audit_texts(
             "overlaps": overlaps,
             "silk_outside_board": silk_outside_board,
             "fab_outside_board": fab_outside_board,
+            "fab_overlaps": fab_overlaps,
+            "fab_oversized": fab_oversized,
+            "mirror_mismatches": mirror_mismatches,
             "oversized_for_board": oversized_for_board,
             "missing_legends": len(missing_refs) if texts else 0,
         },

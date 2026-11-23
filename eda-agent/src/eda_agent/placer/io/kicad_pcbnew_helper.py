@@ -618,17 +618,104 @@ def sanitize(board_path, remove_json, out_board, out_json):
         remove_uuids = set(json.load(fh))
     removed_tracks = removed_vias = 0
     to_remove = []
+    affected_nets = set()
     for t in list(board.GetTracks()):
         if t.IsLocked():
             continue
         if t.m_Uuid.AsString() in remove_uuids:
             to_remove.append(t)
+            affected_nets.add(t.GetNetCode())
             if t.GetClass() == "PCB_VIA":
                 removed_vias += 1
             else:
                 removed_tracks += 1
     for t in to_remove:
         board.Remove(t)
+
+    # Iteratively prune resulting dead-end dangling tracks and orphan vias on affected nets
+    # (never removing locked S6a/macro items) so sanitize never leaves track_dangling warnings!
+    pruned_dangling_tracks = 0
+    pruned_dangling_vias = 0
+    if affected_nets:
+        pads_by_net = {}
+        for fp in board.GetFootprints():
+            for pad in fp.Pads():
+                nc = pad.GetNetCode()
+                if nc in affected_nets:
+                    pads_by_net.setdefault(nc, []).append(pad)
+        zone_layers_by_net = {}
+        for z in board.Zones():
+            if z.GetIsRuleArea():
+                continue
+            nc = z.GetNetCode()
+            if nc in affected_nets:
+                zone_layers_by_net.setdefault(nc, set()).update(z.GetLayerSet().CuStack())
+        all_tracks = list(board.GetTracks())
+        by_net_alive = {}
+        for idx, item in enumerate(all_tracks):
+            nc = item.GetNetCode()
+            if nc in affected_nets:
+                by_net_alive.setdefault(nc, set()).add(idx)
+
+        def _san_hits_pad(nc, lyr, pt):
+            for pad in pads_by_net.get(nc, ()):
+                if pad.IsOnLayer(lyr) and pad.HitTest(pt, 0):
+                    return True
+            return False
+
+        def _san_hits_other(nc, lyr, pt, self_idx):
+            for other_idx in by_net_alive.get(nc, ()):
+                if other_idx == self_idx:
+                    continue
+                other = all_tracks[other_idx]
+                if other.GetClass() == "PCB_VIA":
+                    if lyr in other.GetLayerSet().CuStack() and other.HitTest(pt, 0):
+                        return True
+                else:
+                    if other.GetLayer() == lyr and other.HitTest(pt, 0):
+                        return True
+            return False
+
+        pruned_idxs = set()
+        changed = True
+        while changed:
+            changed = False
+            for nc, alive in list(by_net_alive.items()):
+                drop = set()
+                z_lyrs = zone_layers_by_net.get(nc, set())
+                for idx in alive:
+                    item = all_tracks[idx]
+                    if item.IsLocked():
+                        continue
+                    if item.GetClass() == "PCB_VIA":
+                        pos = item.GetPosition()
+                        v_lyrs = list(item.GetLayerSet().CuStack())
+                        if any(_san_hits_pad(nc, lyr, pos) for lyr in v_lyrs):
+                            continue
+                        track_layers = {lyr for lyr in v_lyrs if _san_hits_other(nc, lyr, pos, idx)}
+                        if not track_layers:
+                            drop.add(idx)
+                            continue
+                        connected_layers = track_layers | (set(v_lyrs) & z_lyrs)
+                        if len(connected_layers) < 2:
+                            drop.add(idx)
+                    else:
+                        lyr = item.GetLayer()
+                        for pt in (item.GetStart(), item.GetEnd()):
+                            if not _san_hits_pad(nc, lyr, pt) and not _san_hits_other(nc, lyr, pt, idx):
+                                drop.add(idx)
+                                break
+                if drop:
+                    alive -= drop
+                    pruned_idxs |= drop
+                    changed = True
+        for idx in sorted(pruned_idxs):
+            item = all_tracks[idx]
+            if item.GetClass() == "PCB_VIA":
+                pruned_dangling_vias += 1
+            else:
+                pruned_dangling_tracks += 1
+            board.Remove(item)
 
     zones = list(board.Zones())
     copper = [z for z in zones if not z.GetIsRuleArea()]
@@ -645,7 +732,9 @@ def sanitize(board_path, remove_json, out_board, out_json):
     report = {
         "removed_tracks": removed_tracks,
         "removed_vias": removed_vias,
-        "removed_total": removed_tracks + removed_vias,
+        "pruned_dangling_tracks": pruned_dangling_tracks,
+        "pruned_dangling_vias": pruned_dangling_vias,
+        "removed_total": removed_tracks + removed_vias + pruned_dangling_tracks + pruned_dangling_vias,
         "unrouted_tracks_only": unrouted_tracks_only,
         "unrouted_final": unrouted_final,
         "routing": stats,
@@ -1211,10 +1300,13 @@ def _extract_silkscreen_texts(board):
 
     pad_boxes = {pcbnew.F_SilkS: [], pcbnew.B_SilkS: []}
     body_boxes = {pcbnew.F_SilkS: [], pcbnew.B_SilkS: []}
+    fp_body_by_ref = {}
     footprints = sorted(board.GetFootprints(), key=lambda f: (f.GetReference(), f.m_Uuid.AsString()))
     for fp in footprints:
         silk_lyr = pcbnew.B_SilkS if fp.IsFlipped() else pcbnew.F_SilkS
-        body_boxes[silk_lyr].append(_footprint_body_box(fp))
+        bb_fp = _footprint_body_box(fp)
+        body_boxes[silk_lyr].append(bb_fp)
+        fp_body_by_ref[fp.GetReference()] = bb_fp
         for pad in fp.Pads():
             pbb = pad.GetBoundingBox()
             box = _box_from_bbox(pbb, 0)
@@ -1241,8 +1333,9 @@ def _extract_silkscreen_texts(board):
         if lyr in all_layers and d.GetClass() in _TEXT_CLASSES and d.IsVisible() and _item_text(d):
             raw_items.append(("board", "board_text", d, lyr))
 
-    # Precompute visible silkscreen text bboxes to detect text-to-text overlaps.
+    # Precompute visible text bboxes to detect silk-to-silk and fab-to-fab overlaps.
     silk_boxes = {pcbnew.F_SilkS: [], pcbnew.B_SilkS: []}
+    fab_boxes = {pcbnew.F_Fab: [], pcbnew.B_Fab: []}
     entries = []
     for ref, kind, item, lyr in raw_items:
         sz = item.GetTextSize()
@@ -1250,6 +1343,8 @@ def _extract_silkscreen_texts(board):
         box = _text_box(item)
         if lyr in silk_layers:
             silk_boxes[lyr].append((item.m_Uuid.AsString(), box))
+        elif lyr in fab_layers:
+            fab_boxes[lyr].append((item.m_Uuid.AsString(), box))
         entries.append((ref, kind, item, lyr, sz, thick, box))
 
     out = []
@@ -1263,6 +1358,11 @@ def _extract_silkscreen_texts(board):
         pad_clr_mm = None
         under_body = False
         overlaps_silk = False
+        overlaps_fab = False
+        exceeds_body = False
+        is_back = lyr in (pcbnew.B_SilkS, pcbnew.B_Fab)
+        mirrored = bool(item.IsMirrored()) if hasattr(item, "IsMirrored") else is_back
+        mirror_mismatch = bool(mirrored != is_back)
         outside_board = bool(has_outline and not _box_inside_outline(box, outline_poly, 0))
         if lyr in silk_layers:
             if pad_boxes[lyr]:
@@ -1278,6 +1378,20 @@ def _extract_silkscreen_texts(board):
                 if o_uid != uid and _boxes_overlap(box, o_box):
                     overlaps_silk = True
                     break
+        elif lyr in fab_layers:
+            t_area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+            for o_uid, o_box in fab_boxes[lyr]:
+                if o_uid != uid and _boxes_overlap(box, o_box):
+                    o_area = max(1, (o_box[2] - o_box[0]) * (o_box[3] - o_box[1]))
+                    if _box_overlap_area(box, o_box) / min(t_area, o_area) >= 0.15:
+                        overlaps_fab = True
+                        break
+            if ref in fp_body_by_ref:
+                bb_fp = fp_body_by_ref[ref]
+                body_long = max(bb_fp[2] - bb_fp[0], bb_fp[3] - bb_fp[1])
+                txt_long = max(box[2] - box[0], box[3] - box[1])
+                if txt_long > max(int(body_long * 1.5), pcbnew.FromMM(2.0)):
+                    exceeds_body = True
         out.append({
             "uuid": uid,
             "ref": ref,
@@ -1291,6 +1405,9 @@ def _extract_silkscreen_texts(board):
             "pad_clearance_mm": pad_clr_mm,
             "under_body": under_body,
             "overlaps_silk": overlaps_silk,
+            "overlaps_fab": overlaps_fab,
+            "exceeds_body": exceeds_body,
+            "mirror_mismatch": mirror_mismatch,
             "outside_board": outside_board,
             "pos_mm": [_mm((box[0] + box[2]) // 2), _mm((box[1] + box[3]) // 2)],
             "bbox_mm": [_mm(box[2] - box[0]), _mm(box[3] - box[1])],
@@ -1313,8 +1430,8 @@ def _ensure_fab_reference(board, fp):
             return False
 
     body = _footprint_body_box(fp)
-    bw = max(pcbnew.FromMM(0.5), body[2] - body[0])
-    bh = max(pcbnew.FromMM(0.5), body[3] - body[1])
+    bw = max(pcbnew.FromMM(0.4), body[2] - body[0])
+    bh = max(pcbnew.FromMM(0.4), body[3] - body[1])
     cx = (body[0] + body[2]) // 2
     cy = (body[1] + body[3]) // 2
     tall = bh > bw * 1.25
@@ -1322,10 +1439,10 @@ def _ensure_fab_reference(board, fp):
     short_side = min(bw, bh)
     # Size fab text cleanly to fit inside the component body outline for Assembly Drawings.
     char_count = max(2, len(ref_str))
-    fit_h = min(pcbnew.FromMM(0.90), int(short_side * 0.55), int(long_side / (char_count * 0.85)))
-    fab_h = max(pcbnew.FromMM(0.25), fit_h)
-    fab_w = max(pcbnew.FromMM(0.22), int(fab_h * 0.85))
-    fab_s = max(pcbnew.FromMM(0.05), min(pcbnew.FromMM(0.15), int(fab_h / 7.0)))
+    fit_h = min(pcbnew.FromMM(0.85), int(short_side * 0.65), int(long_side / (char_count * 0.88)))
+    fab_h = max(pcbnew.FromMM(0.16), fit_h)
+    fab_w = max(pcbnew.FromMM(0.14), int(fab_h * 0.82))
+    fab_s = max(pcbnew.FromMM(0.03), min(pcbnew.FromMM(0.14), int(fab_h / 7.0)))
 
     txt = pcbnew.PCB_TEXT(fp)
     txt.SetText(ref_str)
@@ -1335,8 +1452,8 @@ def _ensure_fab_reference(board, fp):
     txt.SetTextThickness(int(fab_s))
     txt.SetTextAngleDegrees(90.0 if tall else 0.0)
     txt.SetVisible(True)
-    if fp.IsFlipped() and hasattr(txt, "SetMirrored"):
-        txt.SetMirrored(True)
+    if hasattr(txt, "SetMirrored"):
+        txt.SetMirrored(bool(fp.IsFlipped()))
     ident = uuid5(NAMESPACE_URL, f"electronics-ai/fab-ref/{fp.m_Uuid.AsString()}/{ref_str}")
     txt.SetUuidDirect(pcbnew.KIID(str(ident)))
     fp.Add(txt)
@@ -1344,16 +1461,40 @@ def _ensure_fab_reference(board, fp):
 
 
 def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_miniature):
-    """Keep F.Fab/B.Fab assembly legends proportioned inside component bodies and board outline."""
+    """Enforce IPC-A-610 Assembly Drawing typography on F.Fab/B.Fab and fix mirror mismatches.
+
+    1. Fixes mirrored_text_on_front_layer / nonmirrored_text_on_back_layer on all visible texts.
+    2. On dense miniature boards (is_miniature and > 12 footprints), hides cluttering F.Fab/B.Fab
+       Value strings (keeping crisp body-contained Reference designators only, matching real
+       IPC-A-610 Assembly PDFs). Never touches Silkscreen Value port labels.
+    3. Sizes every F.Fab/B.Fab Reference strictly inside its component body along the long axis.
+    """
     fab_layers = (pcbnew.F_Fab, pcbnew.B_Fab)
+    silk_layers = (pcbnew.F_SilkS, pcbnew.B_SilkS)
     normalized = 0
     values_hidden = 0
+    mirrors_fixed = 0
     footprints = sorted(board.GetFootprints(), key=lambda f: (f.GetReference(), f.m_Uuid.AsString()))
+    dense_miniature_fab = bool(is_miniature and len(footprints) > 12)
 
     for fp in footprints:
+        # Fix mirror mismatch on ALL visible silkscreen and fab items of this footprint.
+        for item in list(fp.GetFields()) + [
+            g for g in fp.GraphicalItems() if g.GetClass() in _TEXT_CLASSES
+        ]:
+            lyr = item.GetLayer()
+            if lyr not in fab_layers and lyr not in silk_layers:
+                continue
+            if not item.IsVisible() or not hasattr(item, "SetMirrored"):
+                continue
+            want_mirror = lyr in (pcbnew.B_Fab, pcbnew.B_SilkS)
+            if bool(item.IsMirrored()) != want_mirror:
+                item.SetMirrored(want_mirror)
+                mirrors_fixed += 1
+
         body = fp_body_map.get(fp.m_Uuid.AsString()) or _footprint_body_box(fp)
-        bw = max(pcbnew.FromMM(0.4), body[2] - body[0])
-        bh = max(pcbnew.FromMM(0.4), body[3] - body[1])
+        bw = max(pcbnew.FromMM(0.35), body[2] - body[0])
+        bh = max(pcbnew.FromMM(0.35), body[3] - body[1])
         cx = (body[0] + body[2]) // 2
         cy = (body[1] + body[3]) // 2
         long_side = max(bw, bh)
@@ -1370,50 +1511,73 @@ def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_minia
                 fab_items.append((g, False))
 
         for item, is_value in fab_items:
+            if is_value and dense_miniature_fab:
+                # Dense miniature boards (e.g. 0201 wearables): keep F.Fab/B.Fab Ref-only per IPC-A-610.
+                item.SetVisible(False)
+                values_hidden += 1
+                continue
+
             txt = _item_text(item)
             box = _text_box(item)
             tw = box[2] - box[0]
             th = box[3] - box[1]
             outside = bool(has_outline and not _box_inside_outline(box, outline_poly, 0))
-            oversized = bool(is_miniature and max(tw, th) > max(int(long_side * 1.35), pcbnew.FromMM(3.5)))
+            exceeds_own_body = (
+                max(tw, th) > int(long_side * 1.08)
+                or min(tw, th) > int(short_side * 0.92)
+            )
+            oversized = bool(
+                dense_miniature_fab
+                or (is_miniature and exceeds_own_body)
+                or (max(tw, th) > max(int(long_side * 1.45), pcbnew.FromMM(2.5)))
+            )
             if not outside and not oversized:
                 continue
 
             chars = max(2, len(txt))
             base_h = min(
-                pcbnew.FromMM(0.80),
-                int(short_side * 0.55),
-                int(long_side / (chars * 0.80)),
+                pcbnew.FromMM(0.85),
+                int(short_side * 0.62),
+                int(long_side / (chars * 0.88)),
             )
+            min_fab_h = pcbnew.FromMM(0.14 if not is_value else 0.18)
             trial_heights = []
             for h_cand in (
                 base_h,
+                int(base_h * 0.80),
                 pcbnew.FromMM(0.50),
                 pcbnew.FromMM(0.35),
                 pcbnew.FromMM(0.25),
-                pcbnew.FromMM(0.20),
+                pcbnew.FromMM(0.18),
+                min_fab_h,
             ):
-                clamped = max(pcbnew.FromMM(0.20), min(pcbnew.FromMM(0.80), int(h_cand)))
+                clamped = max(min_fab_h, min(pcbnew.FromMM(0.85), int(h_cand)))
                 if clamped not in trial_heights:
                     trial_heights.append(clamped)
             trial_heights.sort(reverse=True)
 
             item.SetPosition(pcbnew.VECTOR2I(int(cx), int(cy)))
-            if fp.IsFlipped() and hasattr(item, "SetMirrored"):
-                item.SetMirrored(True)
+            if hasattr(item, "SetMirrored"):
+                item.SetMirrored(item.GetLayer() == pcbnew.B_Fab)
 
             fitted = False
             angles = (preferred_ang, 90.0 - preferred_ang)
+            max_allow_long = int(long_side * 1.05)
+            max_allow_short = int(short_side * 0.95)
             for h_nm in trial_heights:
-                s_nm = max(pcbnew.FromMM(0.04), min(pcbnew.FromMM(0.12), int(h_nm / 7.0)))
-                for w_ratio in (0.85, 0.72):
-                    w_nm = max(pcbnew.FromMM(0.15), int(h_nm * w_ratio))
+                s_nm = max(pcbnew.FromMM(0.03), min(pcbnew.FromMM(0.12), int(h_nm / 7.0)))
+                for w_ratio in (0.82, 0.68):
+                    w_nm = max(pcbnew.FromMM(0.11), int(h_nm * w_ratio))
                     item.SetTextSize(pcbnew.VECTOR2I(w_nm, h_nm))
                     item.SetTextThickness(s_nm)
                     for ang in angles:
                         item.SetTextAngleDegrees(ang)
                         nbox = _text_box(item)
-                        if not has_outline or _box_inside_outline(nbox, outline_poly, 0):
+                        nw = nbox[2] - nbox[0]
+                        nh = nbox[3] - nbox[1]
+                        in_outline = not has_outline or _box_inside_outline(nbox, outline_poly, 0)
+                        in_body = max(nw, nh) <= max_allow_long and min(nw, nh) <= max_allow_short
+                        if in_outline and (in_body or h_nm == trial_heights[-1]):
                             fitted = True
                             break
                     if fitted:
@@ -1431,7 +1595,7 @@ def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_minia
             else:
                 normalized += 1
 
-    return normalized, values_hidden
+    return normalized, values_hidden, mirrors_fixed
 
 
 def _segment_hits_any_box(p0, p1, boxes):
@@ -1945,8 +2109,9 @@ def _clean_silkscreen(board, cfg=None):
 
     fab_texts_normalized = 0
     fab_values_hidden = 0
+    mirrors_fixed = 0
     if normalize_fab_texts:
-        fab_texts_normalized, fab_values_hidden = _normalize_fab_texts(
+        fab_texts_normalized, fab_values_hidden, mirrors_fixed = _normalize_fab_texts(
             board, outline_poly, has_outline, fp_body_map, is_miniature
         )
 
@@ -1968,6 +2133,7 @@ def _clean_silkscreen(board, cfg=None):
         "fab_refs_created": fab_created,
         "fab_texts_normalized": fab_texts_normalized,
         "fab_values_hidden": fab_values_hidden,
+        "mirrors_fixed": mirrors_fixed,
         "leader_lines_added": len(leader_refs),
         "leader_refs": sorted(set(leader_refs)),
         "unresolved": unresolved,

@@ -344,6 +344,21 @@ def apply_run(
             target = input_path.with_name(f"{input_path.stem}{suffix}").resolve()
         live_sha = sha256_file(target) if target.is_file() else None
 
+    route_m = (rep.get("metrics") or {}).get("route") or {}
+    unrouted_count = int(route_m.get("unrouted") or 0) if route_m else None
+    dangling_count = int(route_m.get("drc_track_dangling") or 0) + int(route_m.get("drc_via_dangling") or 0)
+    apply_warnings: list[str] = []
+    if resolved["artifact_kind"] == "routed" and route_m:
+        if unrouted_count and unrouted_count > 0:
+            apply_warnings.append(
+                f"Applied routed board is NOT fab-ready: {unrouted_count} unconnected item(s) remain "
+                f"(coverage={route_m.get('coverage')}). Run diagnose -> fix -> re-route before fabrication."
+            )
+        if dangling_count > 0:
+            apply_warnings.append(
+                f"Applied routed board has {dangling_count} dangling track/via warning(s) in KiCad DRC."
+            )
+
     if dry_run:
         return {
             "dry_run": True,
@@ -358,6 +373,7 @@ def apply_run(
             "target_path": str(target),
             "target_exists": target.is_file(),
             "target_live_sha256": live_sha,
+            "warnings": apply_warnings,
         }
 
     backup_dir = entry_dir / "backup"
@@ -416,6 +432,7 @@ def apply_run(
         "after_sha256": after_sha,
         "backup_files": backup_files,
         "created_files": created_files,
+        "warnings": apply_warnings,
         "reverted": False,
         "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
     }

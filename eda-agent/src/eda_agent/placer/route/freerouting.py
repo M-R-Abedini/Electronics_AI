@@ -29,12 +29,14 @@ class RouterConfig:
     fanout: bool = False
     strict_drc: bool = True
     optimizer_threads: int = 1
+    copper_to_edge_clearance_um: float | None = None
+    hole_clearance_um: float | None = None
 
     def flags(self) -> list[str]:
         def b(v: bool) -> str:
             return "true" if v else "false"
 
-        return [
+        out = [
             f"--router.automatic_neckdown={b(self.automatic_neckdown)}",
             f"--router.fanout.enabled={b(self.fanout)}",
             f"--router.neck_width_um={self.neck_width_um:g}",
@@ -43,6 +45,11 @@ class RouterConfig:
             f"--router.optimizer.max_threads={self.optimizer_threads}",
             f"--router.job_timeout={self.timeout_s // 3600:02d}:{self.timeout_s // 60 % 60:02d}:{self.timeout_s % 60:02d}",
         ]
+        if self.copper_to_edge_clearance_um is not None and self.copper_to_edge_clearance_um > 0:
+            out.append(f"--router.copper_to_edge_clearance_um={self.copper_to_edge_clearance_um:g}")
+        if self.hole_clearance_um is not None and self.hole_clearance_um > 0:
+            out.append(f"--router.hole_clearance_um={self.hole_clearance_um:g}")
+        return out
 
 
 _PRIVACY = [

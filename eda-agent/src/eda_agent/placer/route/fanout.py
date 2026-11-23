@@ -172,7 +172,11 @@ class _Site:
                 self._other_shapes.append((g, r, lyrs, (x0 - pad_b, y0 - pad_b, x1 + pad_b, y1 + pad_b), gap))
         self.same_vias = [v for v in fixed if v["net"] == net and "points" not in v]
 
-        cache_key = (id(board), net, clearance)
+        hole_clr = float(board.rules.get("hole_clearance") or 0.0)
+        via_annular = max(0.0, 0.5 * (self.diameter - self.drill))
+        via_clr = max(clearance, (hole_clr - via_annular + 0.005) if hole_clr > 0.0 else 0.0)
+
+        cache_key = (id(board), net, clearance, round(via_clr, 5))
         cached = static_cache.get(cache_key) if static_cache is not None else None
         if cached is not None:
             self.outline, self._track, self._via = cached
@@ -180,9 +184,16 @@ class _Site:
 
         self.outline = board_polygon(board)
         pad_obstacles = list(_pad_clearances(board, self.layers, net, clearance))
+        via_pad_obstacles = (
+            pad_obstacles if abs(via_clr - clearance) <= 1e-6
+            else list(_pad_clearances(board, self.layers, net, via_clr))
+        )
         # A via keeps the clearance to SMD pads of its own net as well: the router counts a via
         # closer than that to a same-net SMD pad as a violation (no via on or against a pad).
-        solder_pads = [pad_polygon(fp, pad, clearance) for fp in board.footprints for pad in fp.pads if pad.kind == "smd"]
+        solder_pads = [
+            pad_polygon(fp, pad, clearance if pad.net == net else via_clr)
+            for fp in board.footprints for pad in fp.pads if pad.kind == "smd"
+        ]
         keepouts = [
             (area["layers"], area["keepout"], Polygon(area["polygons"][0], area["polygons"][1:]))
             for area in board.rule_areas if area["polygons"]
@@ -206,7 +217,7 @@ class _Site:
             for layer in ("F.Cu", "B.Cu") if layer in self.layers
         }
         self._via = prep(unary_union(
-            solder_pads + [g for _, g in pad_obstacles]
+            solder_pads + [g for _, g in via_pad_obstacles]
             + [g for _, flags, g in keepouts if flags["vias"]]
             + [g for _, g in graphics]
         ))
