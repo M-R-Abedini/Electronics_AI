@@ -8,6 +8,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from . import silkscreen as silk_mod
 from .eval import legality, metrics
 from .eval.score import DECAP_BAD_MM
 from .intent.resolve import IntentError, resolve
@@ -177,13 +178,62 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
                          "description": "Connection still open in this route output", "points": _points(row["evidence"]),
                          "source": route_path or source, "run_stop": stop, "cause_confirmed": False})
 
+    silk_audit = silk_mod.audit_board(board)
+    if board.silkscreen_texts:
+        silk_descriptions = {
+            "fab_text_outside_board": "Assembly text on F.Fab/B.Fab extends outside the board outline; normalize or resize Fab text",
+            "silk_text_outside_board": "Overlay text extends outside the board outline; resize to board proportions or transfer to F.Fab/B.Fab",
+            "silk_oversized_for_miniature_board": "Overlay reference is oversized for a miniature board; use dense 0.80 mm height or transfer to F.Fab/B.Fab",
+            "silk_under_component_body": "Overlay reference sits under a component body; relocate outside body or transfer to F.Fab/B.Fab",
+            "silk_pad_clearance": "Overlay text violates minimum pad/mask clearance; relocate or transfer to F.Fab/B.Fab",
+            "silk_text_overlap": "Overlay text overlaps another silkscreen item; relocate or transfer to F.Fab/B.Fab",
+            "missing_component_legend": "Component has no visible reference on Overlay (Silkscreen) or Assembly (F.Fab/B.Fab)",
+        }
+        for sf in silk_audit.get("findings", []):
+            ref = sf.get("ref")
+            fp = footprints.get(ref) if ref else None
+            pos = sf.get("pos_mm")
+            pts = []
+            if isinstance(pos, (list, tuple)) and len(pos) == 2:
+                pts.append({"x_mm": float(pos[0]), "y_mm": float(pos[1]), "layer": sf.get("layer"),
+                            "ref": ref if ref != "board" else None, "pad": None, "text": sf.get("text")})
+            elif fp is not None:
+                pts.append({"x_mm": fp.x, "y_mm": fp.y, "layer": sf.get("layer") or f"{fp.side}.Silkscreen",
+                            "ref": fp.ref, "pad": None, "text": sf.get("text")})
+            rule = sf["rule"]
+            entry = {
+                "kind": rule,
+                "severity": sf["severity"],
+                "description": silk_descriptions.get(rule, f"Silkscreen/assembly DFM finding ({rule})"),
+                "points": pts,
+                "source": source,
+            }
+            for k in ("measured_mm", "limit_mm", "recommended_mm", "bbox_mm", "ratio"):
+                if k in sf:
+                    entry[k] = sf[k]
+            findings.append(entry)
+
     counts = Counter(row["kind"] for row in findings)
     open_link_deltas = [{"net": row["net"], "before": row["baseline_count"], "after": row["measured_count"]}
                         for row in findings if row["kind"] == "unconnected_items" and "baseline_count" in row]
     # Show each observed type before using the remaining slots on repeated findings.
     priority = {"shorting_items": 0, "clearance": 1, "copper_edge_clearance": 1, "solder_mask_bridge": 2,
                 "pad_exit_blocked": 2, "unconnected_items": 3, "unrouted": 3, "isolated_copper": 4}
-    findings.sort(key=lambda row: priority.get(row["kind"], 5 if row.get("severity") == "error" else 6))
+    silk_kinds = {
+        "silk_text_height", "silk_stroke_width", "silk_stroke_ratio_too_thin", "silk_stroke_ratio_too_thick",
+        "silk_pad_clearance", "silk_under_component_body", "silk_text_overlap", "silk_text_outside_board",
+        "silk_oversized_for_miniature_board", "fab_text_outside_board", "missing_component_legend",
+    }
+
+    def _priority(row: dict) -> int:
+        kind = row["kind"]
+        if kind in priority:
+            return priority[kind]
+        if kind in silk_kinds:
+            return 7 if row.get("severity") == "error" else 8
+        return 5 if row.get("severity") == "error" else 6
+
+    findings.sort(key=_priority)
     unique_types = set()
     first, rest = [], []
     for row in findings:
@@ -202,6 +252,7 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
              "image_scope": "Placement IR with board outline, pads, tracks, mask artwork and zone boundaries; zone fill is omitted",
              "open_link_deltas": open_link_deltas,
              "reported_findings": min(len(findings), limit),
+             "silkscreen": silk_audit,
              "route": {"status": ("settled" if settled else "inconclusive") if stop else "not_run",
                        "stop": stop, "unrouted": unrouted, "localized_open_links": localized,
                        "unlocalized_open_links": unlocalized, "locations_status": locations_status},

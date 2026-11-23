@@ -186,8 +186,18 @@ def _box_gap(a: tuple[float, float, float, float], b: tuple[float, float, float,
 
 
 def estimate_board_density(board: Board) -> dict[str, Any]:
-    """Estimate assembly silkscreen crowding from courtyard utilization and part-to-part spacing."""
+    """Estimate assembly silkscreen crowding and miniature-board sizing constraints."""
     area = float(board.board_area_mm2 or 0.0)
+    outline_box = board.outline_box
+    board_size_mm: list[float] | None = None
+    min_dim: float | None = None
+    if outline_box is not None:
+        bw = max(0.0, float(outline_box[2] - outline_box[0]))
+        bh = max(0.0, float(outline_box[3] - outline_box[1]))
+        board_size_mm = [round(bw, 2), round(bh, 2)]
+        min_dim = min(bw, bh)
+    is_miniature = bool((0.0 < area < 400.0) or (min_dim is not None and 0.0 < min_dim < 18.0))
+
     by_side: dict[str, list[Footprint]] = {"F": [], "B": []}
     for fp in board.footprints:
         by_side.setdefault(fp.side, []).append(fp)
@@ -217,8 +227,17 @@ def estimate_board_density(board: Board) -> dict[str, Any]:
         else (0.5 * (nearest_gaps[n // 2 - 1] + nearest_gaps[n // 2]) if n else None)
     )
     tight_fraction = (sum(1 for g in nearest_gaps if g < 1.0) / n) if n else 0.0
-    is_dense = (max_util >= 0.45) or (median_gap is not None and median_gap < 1.0) or (tight_fraction >= 0.60)
+    is_dense = (
+        is_miniature
+        or (max_util >= 0.45)
+        or (median_gap is not None and median_gap < 1.0)
+        or (tight_fraction >= 0.60)
+    )
     return {
+        "board_area_mm2": round(area, 2),
+        "board_size_mm": board_size_mm,
+        "is_miniature": is_miniature,
+        "recommended_height_mm": 0.80 if is_miniature else 1.00,
         "max_side_courtyard_utilization": round(max_util, 4),
         "median_neighbor_gap_mm": round(median_gap, 3) if median_gap is not None else None,
         "tight_neighbor_fraction_lt_1mm": round(tight_fraction, 3),
@@ -284,11 +303,24 @@ def build_config(
         else:
             non_critical_refs.append(fp.ref)
 
+    is_miniature = bool(density["is_miniature"])
+    prefer_dense_size = (policy == "dense") or is_miniature
+    populate_hidden_refs = (
+        policy == "ipc_standard"
+        or (
+            policy == "auto"
+            and len(board.footprints) <= 16
+            and float(density["max_side_courtyard_utilization"]) < 0.45
+        )
+    )
+
     return {
         "policy": policy,
         "effective_mode": effective_mode,
         "fab_profile": fab_profile,
         "density": density,
+        "is_miniature": is_miniature,
+        "prefer_dense_size": prefer_dense_size,
         "target_height_mm": round(target_h, 4),
         "max_height_mm": round(max_h, 4),
         "dense_height_mm": round(dense_h, 4),
@@ -303,9 +335,12 @@ def build_config(
         "avoid_bodies": True,
         "enable_leader_lines": policy != "assembly_only",
         # In explicit "dense" policy, proactively offload non-critical passives to F.Fab/B.Fab;
-        # in "auto" and "ipc_standard", offload non-critical passives only when no legal silk slot fits.
+        # in "auto" and "ipc_standard", offload any part whose ref cannot fit cleanly outside bodies.
         "proactive_offload_non_critical": policy == "dense",
         "fallback_offload_non_critical": policy in ("auto", "ipc_standard", "dense"),
+        "fallback_offload_critical": policy in ("auto", "ipc_standard", "dense"),
+        "populate_hidden_refs": populate_hidden_refs,
+        "normalize_fab_texts": policy != "off",
         "critical_refs": critical_refs,
         "non_critical_refs": non_critical_refs,
         "cured_ink_spec_um": CURED_INK_SPEC_UM,
@@ -317,6 +352,7 @@ def audit_texts(
     *,
     fab_profile: str = "ipc_standard",
     rules: dict[str, Any] | None = None,
+    board: Board | None = None,
 ) -> dict[str, Any]:
     """Audit extracted silkscreen and assembly-layer texts against IPC-7351 and fab DFM limits."""
     prof = FAB_PROFILES.get(fab_profile, FAB_PROFILES["ipc_standard"])
@@ -328,6 +364,11 @@ def audit_texts(
     min_ratio = float(prof["min_stroke_ratio"])
     max_ratio = float(prof["max_stroke_ratio"])
     min_pad_clr = max(float(prof["min_pad_clearance_mm"]), float(rules.get("silk_clearance") or 0.0))
+
+    density = estimate_board_density(board) if board is not None else None
+    is_miniature = bool(density["is_miniature"]) if density is not None else False
+    board_size_mm = density["board_size_mm"] if density is not None else None
+    footprint_refs = {fp.ref for fp in board.footprints if fp.ref} if board is not None else set()
 
     silk_visible = [t for t in texts if t.get("visible") and t.get("layer") in ("F.Silkscreen", "B.Silkscreen")]
     fab_visible = [t for t in texts if t.get("visible") and t.get("layer") in ("F.Fab", "B.Fab")]
@@ -343,10 +384,19 @@ def audit_texts(
     under_body = 0
     overlaps = 0
     condensed = 0
+    silk_outside_board = 0
+    fab_outside_board = 0
+    oversized_for_board = 0
 
     heights: list[float] = []
     strokes: list[float] = []
     ratios: list[float] = []
+
+    def _with_pos(entry: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+        pos = item.get("pos_mm")
+        if isinstance(pos, (list, tuple)) and len(pos) == 2:
+            entry["pos_mm"] = [round(float(pos[0]), 3), round(float(pos[1]), 3)]
+        return entry
 
     for t in silk_visible:
         h = float(t.get("height_mm") or 0.0)
@@ -368,7 +418,7 @@ def audit_texts(
 
         if h < min_h - 1e-3:
             below_min_h += 1
-            findings.append({
+            findings.append(_with_pos({
                 "severity": "error",
                 "rule": "silk_text_height",
                 "ref": ref,
@@ -376,14 +426,26 @@ def audit_texts(
                 "layer": layer,
                 "measured_mm": round(h, 3),
                 "limit_mm": round(min_h, 3),
-            })
+            }, t))
         elif h < rec_h - 1e-3:
             below_rec_h += 1
+
+        if is_miniature and t.get("kind") == "field" and h > 0.90 + 1e-3:
+            oversized_for_board += 1
+            findings.append(_with_pos({
+                "severity": "warning",
+                "rule": "silk_oversized_for_miniature_board",
+                "ref": ref,
+                "text": text_val,
+                "layer": layer,
+                "measured_mm": round(h, 3),
+                "recommended_mm": round(min_h, 3),
+            }, t))
 
         if s < hard_min_s - 1e-3:
             below_hard_s += 1
             below_min_s += 1
-            findings.append({
+            findings.append(_with_pos({
                 "severity": "error",
                 "rule": "silk_stroke_width",
                 "ref": ref,
@@ -391,10 +453,10 @@ def audit_texts(
                 "layer": layer,
                 "measured_mm": round(s, 3),
                 "limit_mm": round(min_s, 3),
-            })
+            }, t))
         elif s < min_s - 1e-3:
             below_min_s += 1
-            findings.append({
+            findings.append(_with_pos({
                 "severity": "warning",
                 "rule": "silk_stroke_width",
                 "ref": ref,
@@ -402,11 +464,11 @@ def audit_texts(
                 "layer": layer,
                 "measured_mm": round(s, 3),
                 "limit_mm": round(min_s, 3),
-            })
+            }, t))
 
         if h > 1e-6 and ratio < min_ratio - 1e-3:
             below_min_ratio += 1
-            findings.append({
+            findings.append(_with_pos({
                 "severity": "error",
                 "rule": "silk_stroke_ratio_too_thin",
                 "ref": ref,
@@ -414,10 +476,10 @@ def audit_texts(
                 "layer": layer,
                 "ratio": round(ratio, 4),
                 "min_ratio": min_ratio,
-            })
+            }, t))
         elif h > 1e-6 and ratio > max_ratio + 1e-3:
             above_max_ratio += 1
-            findings.append({
+            findings.append(_with_pos({
                 "severity": "warning",
                 "rule": "silk_stroke_ratio_too_thick",
                 "ref": ref,
@@ -425,12 +487,12 @@ def audit_texts(
                 "layer": layer,
                 "ratio": round(ratio, 4),
                 "max_ratio": max_ratio,
-            })
+            }, t))
 
         pclr = t.get("pad_clearance_mm")
         if pclr is not None and float(pclr) < min_pad_clr - 1e-3:
             pad_clr_bad += 1
-            findings.append({
+            findings.append(_with_pos({
                 "severity": "error" if float(pclr) <= 0.05 else "warning",
                 "rule": "silk_pad_clearance",
                 "ref": ref,
@@ -438,43 +500,130 @@ def audit_texts(
                 "layer": layer,
                 "measured_mm": round(float(pclr), 3),
                 "limit_mm": round(min_pad_clr, 3),
-            })
+            }, t))
 
         if t.get("under_body"):
             under_body += 1
-            findings.append({
+            findings.append(_with_pos({
                 "severity": "warning",
                 "rule": "silk_under_component_body",
                 "ref": ref,
                 "text": text_val,
                 "layer": layer,
-            })
+            }, t))
 
         if t.get("overlaps_silk"):
             overlaps += 1
-            findings.append({
+            findings.append(_with_pos({
                 "severity": "error",
                 "rule": "silk_text_overlap",
                 "ref": ref,
                 "text": text_val,
                 "layer": layer,
-            })
+            }, t))
+
+        if t.get("outside_board"):
+            silk_outside_board += 1
+            findings.append(_with_pos({
+                "severity": "error",
+                "rule": "silk_text_outside_board",
+                "ref": ref,
+                "text": text_val,
+                "layer": layer,
+            }, t))
+
+    for t in fab_visible:
+        if t.get("outside_board"):
+            fab_outside_board += 1
+            findings.append(_with_pos({
+                "severity": "warning",
+                "rule": "fab_text_outside_board",
+                "ref": t.get("ref") or "board",
+                "text": t.get("text") or "",
+                "layer": t.get("layer"),
+                "bbox_mm": t.get("bbox_mm"),
+            }, t))
+
+    ref_texts = [t for t in silk_visible if t.get("kind") == "field"]
+    silk_ref_set = {str(t.get("ref")) for t in ref_texts if t.get("ref")}
+    fab_ref_set = {
+        str(t.get("ref"))
+        for t in fab_visible
+        if t.get("ref") and (t.get("kind") == "field" or t.get("text") == t.get("ref"))
+    }
+    missing_refs: list[str] = []
+    legend_coverage: dict[str, Any] | None = None
+    if footprint_refs:
+        on_overlay = sorted(footprint_refs & silk_ref_set)
+        on_fab_only = sorted((footprint_refs - silk_ref_set) & fab_ref_set)
+        missing_refs = sorted(footprint_refs - silk_ref_set - fab_ref_set)
+        legend_coverage = {
+            "total_footprints": len(footprint_refs),
+            "on_overlay": len(on_overlay),
+            "on_fab_only": len(on_fab_only),
+            "missing": len(missing_refs),
+            "on_overlay_refs": on_overlay[:40],
+            "on_fab_only_refs": on_fab_only[:40],
+            "missing_refs": missing_refs[:40],
+        }
+        if texts:
+            fp_map = {fp.ref: fp for fp in board.footprints} if board is not None else {}
+            for ref in missing_refs:
+                fp = fp_map.get(ref)
+                entry = {
+                    "severity": "warning",
+                    "rule": "missing_component_legend",
+                    "ref": ref,
+                    "text": ref,
+                    "layer": f"{fp.side}.Silkscreen" if fp is not None else "F.Silkscreen",
+                }
+                if fp is not None:
+                    entry["pos_mm"] = [round(fp.x, 3), round(fp.y, 3)]
+                findings.append(entry)
+        if on_overlay and on_fab_only:
+            overlay_mode = "mixed_overlay_and_fab"
+        elif on_overlay:
+            overlay_mode = "populated"
+        elif on_fab_only:
+            overlay_mode = "assembly_only"
+        else:
+            overlay_mode = "missing_legends" if texts else "unextracted"
+    else:
+        if ref_texts and fab_ref_set - silk_ref_set:
+            overlay_mode = "mixed_overlay_and_fab"
+        elif ref_texts or silk_visible:
+            overlay_mode = "populated"
+        elif fab_visible:
+            overlay_mode = "assembly_only"
+        else:
+            overlay_mode = "unextracted"
 
     error_count = sum(1 for f in findings if f["severity"] == "error")
     warn_count = sum(1 for f in findings if f["severity"] == "warning")
-    ref_texts = [t for t in silk_visible if t.get("kind") == "field"]
     ref_uuids = {t.get("ref") for t in ref_texts}
     ref_findings = [f for f in findings if f.get("ref") in ref_uuids and f.get("ref") != "board"]
     ref_errors = sum(1 for f in ref_findings if f["severity"] == "error")
     ref_warnings = sum(1 for f in ref_findings if f["severity"] == "warning")
+
+    fab_penalty = min(30.0, 10.0 * fab_outside_board) if fab_outside_board else 0.0
+    missing_penalty = (
+        min(25.0, 25.0 * len(missing_refs) / max(1, len(footprint_refs)))
+        if (texts and missing_refs)
+        else 0.0
+    )
     if not silk_visible:
-        score = 100.0
+        score = round(max(0.0, 100.0 - fab_penalty - missing_penalty), 2)
     else:
         penalty = (
-            min(40.0, 40.0 * (below_min_h + below_hard_s + below_min_ratio) / len(silk_visible))
+            min(40.0, 40.0 * (below_min_h + below_hard_s + below_min_ratio + silk_outside_board) / len(silk_visible))
             + min(30.0, 30.0 * (pad_clr_bad + overlaps) / len(silk_visible))
             + min(20.0, 20.0 * under_body / len(silk_visible))
-            + min(10.0, 10.0 * (below_min_s - below_hard_s + above_max_ratio) / len(silk_visible))
+            + min(
+                10.0,
+                10.0 * (below_min_s - below_hard_s + above_max_ratio + oversized_for_board) / len(silk_visible),
+            )
+            + fab_penalty * 0.5
+            + missing_penalty * 0.5
         )
         score = round(max(0.0, 100.0 - penalty), 2)
 
@@ -483,10 +632,14 @@ def audit_texts(
         "fab_profile": fab_profile,
         "status": status,
         "dfm_score": score,
+        "overlay_mode": overlay_mode,
+        "is_miniature": is_miniature,
+        "board_size_mm": board_size_mm,
         "visible_silk_texts": len(silk_visible),
         "visible_ref_designators": len(ref_texts),
         "visible_fab_texts": len(fab_visible),
         "condensed_count": condensed,
+        "legend_coverage": legend_coverage,
         "reference_designators": {
             "count": len(ref_texts),
             "errors": ref_errors,
@@ -495,7 +648,7 @@ def audit_texts(
         "height_mm": {
             "min": round(min(heights), 3) if heights else None,
             "max": round(max(heights), 3) if heights else None,
-            "ipc_recommended": [1.00, 1.27],
+            "ipc_recommended": [0.80, 0.90] if is_miniature else [1.00, 1.27],
             "dense_floor": round(min_h, 3),
         },
         "stroke_mm": {
@@ -521,6 +674,10 @@ def audit_texts(
             "pad_clearance_violations": pad_clr_bad,
             "under_body": under_body,
             "overlaps": overlaps,
+            "silk_outside_board": silk_outside_board,
+            "fab_outside_board": fab_outside_board,
+            "oversized_for_board": oversized_for_board,
+            "missing_legends": len(missing_refs) if texts else 0,
         },
         "findings": findings[:40],
         "findings_total": len(findings),
@@ -530,4 +687,4 @@ def audit_texts(
 
 def audit_board(board: Board, *, fab_profile: str = "ipc_standard") -> dict[str, Any]:
     """Audit a Board IR's extracted silkscreen/assembly texts."""
-    return audit_texts(board.silkscreen_texts, fab_profile=fab_profile, rules=board.rules)
+    return audit_texts(board.silkscreen_texts, fab_profile=fab_profile, rules=board.rules, board=board)

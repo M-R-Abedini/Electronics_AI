@@ -204,3 +204,198 @@ def test_silkscreen_policies_end_to_end_on_stickhub(tmp_path: Path) -> None:
     assert res_cl["silkscreen"]["offloaded_to_fab"] >= 10
     with pytest.raises(ValueError, match="unsupported silkscreen_policy"):
         place_board(src, out_dir=tmp_path / "bad_pol", route=False, silkscreen_policy="invalid")
+
+
+def _make_miniature_board() -> Board:
+    sq = [(-0.8, -0.8), (0.8, -0.8), (0.8, 0.8), (-0.8, 0.8)]
+    tiny = [(-0.3, -0.15), (0.3, -0.15), (0.3, 0.15), (-0.3, 0.15)]
+    fps = [
+        Footprint(
+            ref="U3", value="MS583702BA01-50", lib_id="Sensor_Pressure:MS5837",
+            x=6.0, y=6.0, rotation=0.0, side="F",
+            pads=[Pad("1", "VDD", (-0.5, 0.0), (0.4, 0.4), layers=("F.Cu",))],
+            courtyard=Courtyard("file", [sq]), uuid="fp-U3",
+        ),
+        Footprint(
+            ref="C5", value="470nF_6.3V", lib_id="Capacitor_SMD:C_0201",
+            x=3.5, y=6.5, rotation=0.0, side="F",
+            pads=[Pad("1", "VDD", (-0.2, 0.0), (0.2, 0.2), layers=("F.Cu",))],
+            courtyard=Courtyard("file", [tiny]), uuid="fp-C5",
+        ),
+        Footprint(
+            ref="J1", value="BM23PF0.8-10DP", lib_id="Connector:BM23",
+            x=6.0, y=2.0, rotation=0.0, side="B",
+            pads=[Pad("1", "GND", (0.0, 0.0), (0.4, 0.4), layers=("B.Cu",))],
+            courtyard=Courtyard("file", [sq]), uuid="fp-J1",
+        ),
+    ]
+    b = Board(
+        name="mini_sensor_pcb",
+        footprints=fps,
+        outline=[Outline([(0.0, 0.0), (10.3, 0.0), (10.3, 8.99), (0.0, 8.99)])],
+        outline_valid=True,
+        board_area_mm2=57.11,
+        copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        rules={"min_silk_text_height": 0.5, "min_silk_text_thickness": 0.1, "silk_clearance": 0.1},
+        netclasses=[NetClass("Default", 0.15, 0.15, 0.4, 0.2)],
+        stackup=Stackup(source="missing"),
+        capabilities=Capabilities(can_flip=True, can_rotate_any_angle=True, can_write_copper=True, can_live_apply=False),
+    )
+    return derive(b)
+
+
+def test_miniature_board_density_sizing_and_fab_overflow_audit() -> None:
+    mini = _make_miniature_board()
+    dens = silkscreen.estimate_board_density(mini)
+    assert dens["is_miniature"] is True
+    assert dens["classification"] == "dense"
+    assert dens["recommended_height_mm"] == 0.80
+
+    cfg = silkscreen.build_config(mini, policy="auto", fab_profile="ipc_standard")
+    assert cfg["is_miniature"] is True
+    assert cfg["prefer_dense_size"] is True
+    assert cfg["fallback_offload_critical"] is True
+    assert cfg["populate_hidden_refs"] is True
+    assert cfg["normalize_fab_texts"] is True
+
+    # Blank overlay + giant overflowing F.Fab/B.Fab texts must NEVER score 100 / pass!
+    blank_overflow_texts = [
+        {
+            "uuid": "f1", "ref": "U3", "kind": "graphic_text", "text": "U3",
+            "layer": "F.Fab", "visible": True, "height_mm": 0.5, "width_mm": 0.4, "stroke_mm": 0.08,
+            "outside_board": False, "pos_mm": [6.0, 6.0], "bbox_mm": [1.0, 0.5],
+        },
+        {
+            "uuid": "f2", "ref": "U3", "kind": "value_field", "text": "MS583702BA01-50",
+            "layer": "F.Fab", "visible": True, "height_mm": 1.0, "width_mm": 1.0, "stroke_mm": 0.15,
+            "outside_board": True, "pos_mm": [6.0, 8.5], "bbox_mm": [14.96, 1.70],
+        },
+        {
+            "uuid": "f3", "ref": "J1", "kind": "value_field", "text": "BM23PF0.8-10DP",
+            "layer": "B.Fab", "visible": True, "height_mm": 1.0, "width_mm": 1.0, "stroke_mm": 0.15,
+            "outside_board": True, "pos_mm": [6.0, 2.0], "bbox_mm": [1.70, 21.01],
+        },
+    ]
+    aud_blank = silkscreen.audit_texts(blank_overflow_texts, board=mini)
+    assert aud_blank["overlay_mode"] == "assembly_only"
+    assert aud_blank["status"] == "warn"
+    assert aud_blank["dfm_score"] < 100.0
+    assert aud_blank["counts"]["fab_outside_board"] == 2
+    assert aud_blank["counts"]["missing_legends"] == 2  # C5 and J1 have no ref text on silk or fab
+
+    # Oversized 1.10 mm overlay text on miniature board triggers warning
+    oversized_texts = [
+        {
+            "uuid": "s1", "ref": "U3", "kind": "field", "text": "U3",
+            "layer": "F.Silkscreen", "visible": True, "height_mm": 1.10, "width_mm": 1.10, "stroke_mm": 0.16,
+            "pad_clearance_mm": 0.30, "under_body": False, "overlaps_silk": False,
+            "outside_board": False, "pos_mm": [8.0, 6.0], "bbox_mm": [2.2, 1.1],
+        },
+        {
+            "uuid": "f4", "ref": "C5", "kind": "graphic_text", "text": "C5",
+            "layer": "F.Fab", "visible": True, "height_mm": 0.30, "width_mm": 0.25, "stroke_mm": 0.05,
+            "outside_board": False, "pos_mm": [3.5, 6.5], "bbox_mm": [0.5, 0.3],
+        },
+        {
+            "uuid": "f5", "ref": "J1", "kind": "graphic_text", "text": "J1",
+            "layer": "B.Fab", "visible": True, "height_mm": 0.40, "width_mm": 0.35, "stroke_mm": 0.06,
+            "outside_board": False, "pos_mm": [6.0, 2.0], "bbox_mm": [0.8, 0.4],
+        },
+    ]
+    aud_over = silkscreen.audit_texts(oversized_texts, board=mini)
+    assert aud_over["overlay_mode"] == "mixed_overlay_and_fab"
+    assert aud_over["counts"]["oversized_for_board"] == 1
+    assert any(f["rule"] == "silk_oversized_for_miniature_board" for f in aud_over["findings"])
+
+
+def test_large_dense_board_does_not_force_populate_hidden_refs() -> None:
+    sq = [(-0.8, -0.5), (0.8, -0.5), (0.8, 0.5), (-0.8, 0.5)]
+    fps = [
+        Footprint(
+            ref=f"R{i + 1}", value="10k", lib_id="Resistor_SMD:R_0402",
+            x=4.0 + (i % 5) * 4.0, y=4.0 + (i // 5) * 4.0, rotation=0.0, side="F",
+            pads=[Pad("1", "N1", (0.0, 0.0), (0.4, 0.4), layers=("F.Cu",))],
+            courtyard=Courtyard("file", [sq]), uuid=f"fp-R{i + 1}",
+        )
+        for i in range(20)
+    ]
+    b = derive(Board(
+        name="large_hidden_board",
+        footprints=fps,
+        outline=[Outline([(0.0, 0.0), (50.0, 0.0), (50.0, 25.0), (0.0, 25.0)])],
+        outline_valid=True,
+        board_area_mm2=1250.0,
+        copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.2, 0.2, 0.6, 0.3)],
+        stackup=Stackup(source="missing"),
+    ))
+    cfg = silkscreen.build_config(b, policy="auto")
+    assert cfg["is_miniature"] is False
+    assert cfg["populate_hidden_refs"] is False
+
+
+def test_gallery_and_diagnose_surface_silkscreen_and_assembly_visual_qa(tmp_path: Path, monkeypatch) -> None:
+    import base64
+    import json
+
+    from eda_agent.placer import diagnose as diag_mod
+    from eda_agent.placer import mcp as placer_mcp
+
+    mini = _make_miniature_board()
+    mini.silkscreen_texts = [
+        {
+            "uuid": "f1", "ref": "U3", "kind": "graphic_text", "text": "U3",
+            "layer": "F.Fab", "visible": True, "height_mm": 0.5, "width_mm": 0.4, "stroke_mm": 0.08,
+            "outside_board": False, "pos_mm": [6.0, 6.0], "bbox_mm": [1.0, 0.5],
+        },
+        {
+            "uuid": "f2", "ref": "U3", "kind": "value_field", "text": "MS583702BA01-50",
+            "layer": "F.Fab", "visible": True, "height_mm": 1.0, "width_mm": 1.0, "stroke_mm": 0.15,
+            "outside_board": True, "pos_mm": [6.0, 8.5], "bbox_mm": [14.96, 1.70],
+        },
+        {
+            "uuid": "f3", "ref": "C5", "kind": "graphic_text", "text": "C5",
+            "layer": "F.Fab", "visible": True, "height_mm": 0.35, "width_mm": 0.30, "stroke_mm": 0.06,
+            "outside_board": False, "pos_mm": [3.5, 6.5], "bbox_mm": [0.6, 0.35],
+        },
+        {
+            "uuid": "f4", "ref": "J1", "kind": "graphic_text", "text": "J1",
+            "layer": "B.Fab", "visible": True, "height_mm": 0.5, "width_mm": 0.4, "stroke_mm": 0.08,
+            "outside_board": False, "pos_mm": [6.0, 2.0], "bbox_mm": [1.0, 0.5],
+        },
+    ]
+
+    run_dir = tmp_path / "run_mini"
+    run_dir.mkdir()
+    pcb_path = run_dir / "mini.placed.kicad_pcb"
+    pcb_path.write_bytes(b"mock")
+    rep_path = run_dir / "run_report.json"
+    rep_path.write_text(json.dumps({
+        "kind": "score",
+        "inputs": {"board": {"path": str(pcb_path)}},
+        "artifacts": {"placed_board": str(pcb_path), "run_dir": str(run_dir)},
+        "metrics": {},
+        "stages": {},
+        "failures": [],
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(placer_mcp, "read_board", lambda _: mini)
+    monkeypatch.setattr(placer_mcp, "review_images", lambda _: [("top", b"TOP"), ("bottom", b"BOT")])
+    monkeypatch.setattr(diag_mod, "read_board", lambda _: mini)
+
+    svc = PlacerService(data_dir=tmp_path / "svc")
+    gal = svc.gallery([str(rep_path)], include_images=True)
+    qa = gal.structuredContent["silkscreen_visual_qa"][0]
+    assert qa["overlay_mode"] == "assembly_only"
+    assert qa["is_miniature"] is True
+    assert qa["fab_outside_board"] == 1
+    assert qa["dfm_score"] < 100.0
+    assert [v["side"] for v in gal.structuredContent["views"]] == ["top", "bottom", "assembly_fab"]
+    fab_img = [item for item in gal.content if item.type == "image"][-1]
+    assert base64.b64decode(fab_img.data).startswith(b"\x89PNG\r\n\x1a\n")
+
+    diag = svc.diagnose(str(rep_path), include_images=True)
+    assert diag.structuredContent["silkscreen"]["counts"]["fab_outside_board"] == 1
+    assert diag.structuredContent["finding_counts"]["fab_text_outside_board"] == 1
+    diag_imgs = [item for item in diag.content if item.type == "image"]
+    assert diag_imgs and base64.b64decode(diag_imgs[0].data).startswith(b"\x89PNG\r\n\x1a\n")

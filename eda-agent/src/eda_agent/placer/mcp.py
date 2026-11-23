@@ -27,7 +27,7 @@ from . import report as run_report
 from .eval.score import evaluate
 from .io.kicad import read_board
 from .ir import Board
-from .render import Panel, finding_image, gallery, review_images
+from .render import Panel, assembly_overlay_image, finding_image, gallery, review_images
 from .route.check import route_check
 from .toolchain import RUNTIME_DIR
 
@@ -408,11 +408,14 @@ class PlacerService:
 
     def gallery(self, runs: list[str], title: str = "Placement gallery",
                 include_images: bool = False) -> dict[str, Any] | types.CallToolResult:
+        from . import silkscreen as silk_mod
+
         if include_images and len(runs) > 2:
             raise ValueError("Image review supports at most two runs per request")
         panels = []
         sources = []
-        for run in runs:
+        silk_qa = []
+        for index, run in enumerate(runs, 1):
             path = Path(run)
             report = path / "run_report.json" if path.is_dir() else path
             rep = json.loads(report.read_text(encoding="utf-8"))
@@ -426,17 +429,44 @@ class PlacerService:
                 shown = rr["artifacts"].get("routed_board", board_file)
                 route_metrics = rr["metrics"]
             board = read_board(shown)
+            sa = silk_mod.audit_board(board)
+            cnt = sa["counts"]
+            silk_qa.append({
+                "panel": index,
+                "board": board.name,
+                "board_size_mm": sa["board_size_mm"],
+                "is_miniature": sa["is_miniature"],
+                "overlay_mode": sa["overlay_mode"],
+                "status": sa["status"],
+                "dfm_score": sa["dfm_score"],
+                "visible_ref_designators": sa["visible_ref_designators"],
+                "visible_fab_texts": sa["visible_fab_texts"],
+                "height_mm": sa["height_mm"],
+                "stroke_mm": sa["stroke_mm"],
+                "fab_outside_board": cnt["fab_outside_board"],
+                "silk_outside_board": cnt["silk_outside_board"],
+                "oversized_for_board": cnt["oversized_for_board"],
+                "under_body": cnt["under_body"],
+                "missing_legends": cnt["missing_legends"],
+                "legend_coverage": sa["legend_coverage"],
+            })
             panels.append(Panel(f"{board.name} ({rep['kind']})", board, evaluate(board, route_metrics), route_metrics))
-            sources.append((Path(shown), board.name, rep["kind"]))
+            sources.append((Path(shown), board.name, rep["kind"], board, sa))
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out = gallery(panels, self.runs / f"gallery-{stamp}.html", title=title)
-        value = {"gallery": str(out), "panels": len(panels)}
+        value = {"gallery": str(out), "panels": len(panels), "silkscreen_visual_qa": silk_qa}
         if not include_images:
             return value
 
         content = []
         views = []
-        for index, (source, name, kind) in enumerate(sources, 1):
+        for index, (source, name, kind, board, sa) in enumerate(sources, 1):
+            cnt = sa["counts"]
+            qa_tag = (
+                f"overlay={sa['overlay_mode']} refs={sa['visible_ref_designators']} "
+                f"fab={sa['visible_fab_texts']} fab_out={cnt['fab_outside_board']} "
+                f"score={sa['dfm_score']}"
+            )
             try:
                 images = review_images(source)
             except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
@@ -444,8 +474,27 @@ class PlacerService:
                 continue
             for side, data in images:
                 views.append({"panel": index, "board": name, "side": side})
-                content.append(types.TextContent(type="text", text=f"Panel {index} · {name} ({kind}) · {side}"))
+                content.append(types.TextContent(type="text", text=f"Panel {index} · {name} ({kind}) · {side} | {qa_tag}"))
                 content.append(types.ImageContent(type="image", mimeType="image/png", data=base64.b64encode(data).decode("ascii")))
+            needs_fab_view = bool(board.silkscreen_texts) and (
+                sa["overlay_mode"] in ("assembly_only", "mixed_overlay_and_fab", "missing_legends")
+                or cnt["fab_outside_board"] > 0
+                or cnt["silk_outside_board"] > 0
+                or cnt["oversized_for_board"] > 0
+                or cnt["under_body"] > 0
+            )
+            if needs_fab_view:
+                fab_png = assembly_overlay_image(board, sa)
+                views.append({"panel": index, "board": name, "side": "assembly_fab"})
+                content.append(types.TextContent(
+                    type="text",
+                    text=f"Panel {index} · {name} ({kind}) · assembly_fab (SilkS + F.Fab/B.Fab) | {qa_tag}",
+                ))
+                content.append(types.ImageContent(
+                    type="image",
+                    mimeType="image/png",
+                    data=base64.b64encode(fab_png).decode("ascii"),
+                ))
         value["views"] = views
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=False)), *content],

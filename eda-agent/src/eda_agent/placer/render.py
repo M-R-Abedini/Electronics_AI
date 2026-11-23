@@ -54,8 +54,10 @@ def finding_image(board: Board, finding: dict) -> bytes:
     from PIL import Image, ImageDraw
 
     points = finding["points"]
-    layers = sorted({layer.replace(".Mask", ".Cu").replace(".SilkS", ".Cu")
-                     for p in points for layer in ([p["layer"]] if p.get("layer") else p.get("layers", ()))}) or [None]
+    layers = sorted({
+        layer.replace(".Mask", ".Cu").replace(".Silkscreen", ".Cu").replace(".SilkS", ".Cu").replace(".Fab", ".Cu")
+        for p in points for layer in ([p["layer"]] if p.get("layer") else p.get("layers", ()))
+    }) or [None]
     locations = [(p["x_mm"], p["y_mm"]) for p in points]
     if finding.get("end_mm"):
         locations.append(finding["end_mm"])
@@ -134,6 +136,136 @@ def finding_image(board: Board, finding: dict) -> bytes:
     return buffer.getvalue()
 
 
+def assembly_overlay_image(board: Board, silk_audit: dict | None = None) -> bytes:
+    """Render side-by-side Top and Bottom overlay (Silkscreen + Fab Assembly) diagnostic PNG."""
+    from PIL import Image, ImageDraw
+
+    from . import silkscreen as silk_mod
+
+    audit = silk_audit or silk_mod.audit_board(board)
+    box = board.outline_box or (0.0, 0.0, 10.0, 10.0)
+    x0, y0, x1, y1 = box
+    # Include overflowing visible text bboxes so out-of-board Fab/Silk texts remain clearly visible.
+    for t in board.silkscreen_texts:
+        if not t.get("visible"):
+            continue
+        pos = t.get("pos_mm")
+        bb = t.get("bbox_mm")
+        if isinstance(pos, (list, tuple)) and len(pos) == 2:
+            hw = (float(bb[0]) / 2.0) if (isinstance(bb, (list, tuple)) and len(bb) == 2) else 0.5
+            hh = (float(bb[1]) / 2.0) if (isinstance(bb, (list, tuple)) and len(bb) == 2) else 0.5
+            x0 = min(x0, float(pos[0]) - hw)
+            x1 = max(x1, float(pos[0]) + hw)
+            y0 = min(y0, float(pos[1]) - hh)
+            y1 = max(y1, float(pos[1]) + hh)
+    pad = max(1.2, 0.08 * max(x1 - x0, y1 - y0, 4.0))
+    left, top = x0 - pad, y0 - pad
+    span_x = max(x1 - x0 + 2 * pad, 2.0)
+    span_y = max(y1 - y0 + 2 * pad, 2.0)
+
+    pw, ph, header_h = 460, 500, 56
+    avail_w, avail_h = pw - 20, ph - header_h - 16
+    scale = min(avail_w / span_x, avail_h / span_y)
+    ox = (pw - span_x * scale) / 2.0
+    oy = header_h + (ph - header_h - span_y * scale) / 2.0
+
+    canvas = Image.new("RGB", (pw * 2, ph), "#0e1a1f")
+    sides = (
+        ("F", "Top Overlay (F.SilkS) + Assembly (F.Fab)", "F.Silkscreen", "F.Fab", False),
+        ("B", "Bottom Overlay (B.SilkS) + Assembly (B.Fab, mirrored)", "B.Silkscreen", "B.Fab", True),
+    )
+
+    for idx, (side, title, silk_layer, fab_layer, mirror_x) in enumerate(sides):
+        panel = Image.new("RGB", (pw, ph), "#0e1a1f")
+        draw = ImageDraw.Draw(panel)
+
+        def px(pt, *, _mirror=mirror_x):
+            x, y = pt
+            sx = (left + span_x - x) if _mirror else (x - left)
+            return ox + sx * scale, oy + (y - top) * scale
+
+        def poly(ring, fill, outline=None, *, _draw=draw, _px=px):
+            if len(ring) >= 3:
+                _draw.polygon([_px(p) for p in ring], fill=fill, outline=outline)
+
+        for shape in board.outline:
+            poly(shape.outer, "#183c34", "#95bcae")
+            for hole in shape.holes:
+                poly(hole, "#0e1a1f", "#95bcae")
+
+        for fp in board.footprints:
+            if fp.side == side:
+                for ring in fp.courtyard_world():
+                    poly(ring, "#1f4d43", "#5c898a")
+            for p in fp.pads:
+                if f"{side}.Cu" not in p.layers:
+                    continue
+                geom = _pad_polygon(fp, p)
+                if geom is not None:
+                    poly(list(geom.exterior.coords), "#b89f54")
+
+        # Draw Fab assembly texts first (cyan; orange/red if outside board outline).
+        for t in board.silkscreen_texts:
+            if not t.get("visible") or t.get("layer") != fab_layer:
+                continue
+            pos = t.get("pos_mm")
+            if not (isinstance(pos, (list, tuple)) and len(pos) == 2):
+                continue
+            bb = t.get("bbox_mm") or [0.8, 0.5]
+            hw, hh = max(float(bb[0]) / 2.0, 0.15), max(float(bb[1]) / 2.0, 0.15)
+            p0 = px((float(pos[0]) - hw, float(pos[1]) - hh))
+            p1 = px((float(pos[0]) + hw, float(pos[1]) + hh))
+            rx0, rx1 = min(p0[0], p1[0]), max(p0[0], p1[0])
+            ry0, ry1 = min(p0[1], p1[1]), max(p0[1], p1[1])
+            bad = bool(t.get("outside_board"))
+            color = "#ff6d42" if bad else "#5ce1e6"
+            draw.rectangle((rx0, ry0, rx1, ry1), outline=color, width=2 if bad else 1)
+            label = f"FAB:{t.get('text', '')}" if bad else str(t.get("text", ""))
+            draw.text((rx0 + 2, max(header_h + 2, ry0 - 11)), label[:24], fill=color)
+
+        # Draw Silkscreen overlay texts on top (bright cream/gold; red if defective).
+        for t in board.silkscreen_texts:
+            if not t.get("visible") or t.get("layer") != silk_layer:
+                continue
+            pos = t.get("pos_mm")
+            if not (isinstance(pos, (list, tuple)) and len(pos) == 2):
+                continue
+            bb = t.get("bbox_mm") or [0.8, 0.8]
+            hw, hh = max(float(bb[0]) / 2.0, 0.2), max(float(bb[1]) / 2.0, 0.2)
+            p0 = px((float(pos[0]) - hw, float(pos[1]) - hh))
+            p1 = px((float(pos[0]) + hw, float(pos[1]) + hh))
+            rx0, rx1 = min(p0[0], p1[0]), max(p0[0], p1[0])
+            ry0, ry1 = min(p0[1], p1[1]), max(p0[1], p1[1])
+            bad = bool(
+                t.get("outside_board")
+                or t.get("under_body")
+                or t.get("overlaps_silk")
+                or (t.get("pad_clearance_mm") is not None and float(t["pad_clearance_mm"]) < 0.20)
+            )
+            color = "#ff4b4b" if bad else "#fff4b8"
+            draw.rectangle((rx0, ry0, rx1, ry1), outline=color, width=2)
+            draw.text((rx0 + 2, max(header_h + 2, ry0 + 1)), str(t.get("text", ""))[:20], fill=color)
+
+        draw.rectangle((0, 0, pw - 1, header_h - 1), fill="#102126")
+        draw.text((10, 8), title, fill="white")
+        cnt = audit.get("counts", {})
+        mode = audit.get("overlay_mode", "unknown")
+        bsize = audit.get("board_size_mm")
+        sz_txt = f"{bsize[0]:.1f}x{bsize[1]:.1f}mm" if bsize else "size=?"
+        summary = (
+            f"mode={mode} | {sz_txt} | refs={audit.get('visible_ref_designators', 0)} "
+            f"fab={audit.get('visible_fab_texts', 0)} | fab_out={cnt.get('fab_outside_board', 0)} "
+            f"score={audit.get('dfm_score')}"
+        )
+        draw.text((10, 24), summary[:78], fill="#bdced0")
+        draw.text((10, 39), "gold: SilkS | cyan: Fab | red/orange: outside-board or DFM violation", fill="#9bb4b8")
+        canvas.paste(panel, (idx * pw, 0))
+
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _layer_colour(name: str) -> str:
     if name in _LAYER_COLOURS:
         return _LAYER_COLOURS[name]
@@ -187,6 +319,22 @@ def svg(board: Board, evaluation: dict | None = None, *, width_px: int = 640) ->
             continue
         for a, b in metrics.mst_edges(pts):
             out.append(f'<line x1="{a[0]:.3f}" y1="{a[1]:.3f}" x2="{b[0]:.3f}" y2="{b[1]:.3f}" class="rat"/>')
+    for t in board.silkscreen_texts:
+        if not t.get("visible"):
+            continue
+        pos = t.get("pos_mm")
+        if not (isinstance(pos, (list, tuple)) and len(pos) == 2):
+            continue
+        layer = t.get("layer", "")
+        cls = "silk-txt" if "Silkscreen" in layer else "fab-txt"
+        if t.get("outside_board"):
+            cls += " txt-bad"
+        fs = max(0.35, min(1.3, float(t.get("height_mm") or 0.8)))
+        out.append(
+            f'<text x="{float(pos[0]):.3f}" y="{float(pos[1]):.3f}" font-size="{fs:.2f}" '
+            f'text-anchor="middle" dominant-baseline="central" class="{cls}">'
+            f'{html.escape(str(t.get("text", ""))[:20])}</text>'
+        )
     out.append("</svg>")
     return "".join(out)
 
@@ -210,6 +358,9 @@ svg.board { max-width:100%; height:auto; background:#0d2b16; border-radius:4px; 
 .waived { stroke:#ff9d00; stroke-width:0.06; stroke-dasharray:0.25 0.2; }
 .pad-f { fill:#e8c35a; } .pad-b { fill:#c99a5a; opacity:0.75; }
 .rat { stroke:#cfcfcf; stroke-width:0.06; opacity:0.6; }
+.silk-txt { fill:#fff4b8; font-family:monospace; opacity:0.9; }
+.fab-txt { fill:#5ce1e6; font-family:monospace; opacity:0.65; }
+.txt-bad { fill:#ff6d42; opacity:1.0; font-weight:bold; }
 table { border-collapse:collapse; margin-top:8px; font-size:13px; }
 td { padding:2px 8px 2px 0; border-bottom:1px solid var(--line); vertical-align:top; }
 td:first-child { color:var(--muted); }
@@ -218,11 +369,24 @@ td:first-child { color:var(--muted); }
 
 
 def _rows(panel: Panel) -> list[tuple[str, str]]:
+    from . import silkscreen as silk_mod
+
     b, e = panel.board, panel.evaluation
     rows = [("parts F / B", f"{b.side_counts()['F']} / {b.side_counts()['B']}"),
             ("copper layers", str(b.layer_count)),
             ("layer roles", ", ".join(f"{r.layer}:{r.role}{'(' + r.net + ')' if r.net else ''}"
                                       for r in b.stackup.roles))]
+    if b.silkscreen_texts:
+        sa = silk_mod.audit_board(b)
+        cnt = sa["counts"]
+        rows.append((
+            "silkscreen / fab",
+            (
+                f"mode={sa['overlay_mode']}, score={sa['dfm_score']}, refs={sa['visible_ref_designators']}, "
+                f"fab={sa['visible_fab_texts']}, fab_out={cnt['fab_outside_board']}, "
+                f"silk_out={cnt['silk_outside_board']}, under_body={cnt['under_body']}"
+            ),
+        ))
     if e:
         legal = e["legality"]
         m = e["metrics"]
