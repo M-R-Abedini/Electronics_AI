@@ -217,10 +217,15 @@ def assembly_overlay_image(board: Board, silk_audit: dict | None = None) -> byte
             p1 = px((float(pos[0]) + hw, float(pos[1]) + hh))
             rx0, rx1 = min(p0[0], p1[0]), max(p0[0], p1[0])
             ry0, ry1 = min(p0[1], p1[1]), max(p0[1], p1[1])
-            bad = bool(t.get("outside_board"))
+            bad = bool(
+                t.get("outside_board")
+                or t.get("overlaps_fab")
+                or t.get("exceeds_body")
+                or t.get("mirror_mismatch")
+            )
             color = "#ff6d42" if bad else "#5ce1e6"
             draw.rectangle((rx0, ry0, rx1, ry1), outline=color, width=2 if bad else 1)
-            label = f"FAB:{t.get('text', '')}" if bad else str(t.get("text", ""))
+            label = f"FAB:{t.get('text', '')}" if t.get("outside_board") else str(t.get("text", ""))
             draw.text((rx0 + 2, max(header_h + 2, ry0 - 11)), label[:24], fill=color)
 
         # Draw Silkscreen overlay texts on top (bright cream/gold; red if defective).
@@ -254,8 +259,9 @@ def assembly_overlay_image(board: Board, silk_audit: dict | None = None) -> byte
         sz_txt = f"{bsize[0]:.1f}x{bsize[1]:.1f}mm" if bsize else "size=?"
         summary = (
             f"mode={mode} | {sz_txt} | refs={audit.get('visible_ref_designators', 0)} "
-            f"fab={audit.get('visible_fab_texts', 0)} | fab_out={cnt.get('fab_outside_board', 0)} "
-            f"score={audit.get('dfm_score')}"
+            f"fab={audit.get('visible_fab_texts', 0)} | out={cnt.get('fab_outside_board', 0)} "
+            f"ovl={cnt.get('fab_overlaps', 0)} big={cnt.get('fab_oversized', 0)} "
+            f"mir={cnt.get('mirror_mismatches', 0)} score={audit.get('dfm_score')}"
         )
         draw.text((10, 24), summary[:78], fill="#bdced0")
         draw.text((10, 39), "gold: SilkS | cyan: Fab | red/orange: outside-board or DFM violation", fill="#9bb4b8")

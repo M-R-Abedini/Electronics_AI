@@ -438,7 +438,35 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         raise RouteCheckError("KiCad failed to export the Specctra DSN")
     keepouts, skipped = keepouts_from(prepared["obstacles"]) if obstacle_keepouts else ([], [])
     text = (work / "board.dsn").read_text(encoding="utf-8")
-    text = dsn.set_layer_types(text, {name: "power" for name in power_layers(ir)})
+    pwr_set = set(power_layers(ir))
+    ordered_layer_names = [cl.name for cl in sorted(ir.copper_layers, key=lambda c: c.index)]
+    text = dsn.set_layer_types(
+        text,
+        {cl.name: ("power" if cl.name in pwr_set else "signal") for cl in ir.copper_layers},
+    )
+    default_nc = next((c for c in ir.netclasses if c.name == "Default"), ir.netclasses[0] if ir.netclasses else None)
+    eff_via_d = max(float(getattr(default_nc, "via_diameter", 0.0) or 0.0), float(ir.rules.get("min_via_diameter") or 0.0))
+    eff_via_dr = max(float(getattr(default_nc, "via_drill", 0.0) or 0.0), float(ir.rules.get("min_through_drill") or 0.0))
+    eff_clr = max(float(getattr(default_nc, "clearance", 0.0) or 0.0), float(ir.rules.get("min_clearance") or 0.0))
+    hole_clr_mm = float(ir.rules.get("hole_clearance") or 0.0)
+    hole_to_hole_mm = float(ir.rules.get("hole_to_hole") or 0.0)
+    edge_clr_mm = float(ir.rules.get("copper_edge_clearance") or 0.0)
+    has_vippo_microvias = any(
+        v.get("locked") and v.get("via_type") == "micro"
+        for v in ir.routing.get("vias", ())
+    )
+    # When locked VIPPO microvias-in-pad are present, Freerouting natively honors --router.hole_clearance_um
+    # without flagging same-net VIPPO pads via injected DSN via_smd clearances.
+    via_hole_clrs: dict[str, float] = {}
+    if not has_vippo_microvias:
+        text, via_hole_clrs = dsn.enforce_via_hole_clearances(
+            text,
+            hole_clearance_mm=hole_clr_mm,
+            hole_to_hole_mm=hole_to_hole_mm,
+            via_diameter_mm=eff_via_d,
+            via_drill_mm=eff_via_dr,
+            copper_clearance_mm=eff_clr,
+        )
     macro_zone_keepouts = [dsn.Keepout(name=f"macro_zone_{z['uuid'][:8]}_{i}", layer=layer,
                                        outline=tuple(tuple(q) for q in z["outline"][0]))
                            for z in ir.zones if (z.get("name") or "").startswith(MACRO_ZONE_PREFIX)
@@ -446,6 +474,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     intent_kps = intent_wire_keepouts(ir, intent) if obstacle_keepouts and intent else []
     text = dsn.add_wire_keepouts(text, macro_zone_keepouts + intent_kps)
     text = dsn.restore_wiring_precision(text, ir)
+    text, stacked_vias_merged = dsn.merge_stacked_fixed_vias(text, ordered_layer_names)
     text, restricted_vias = dsn.restrict_structure_vias(
         text,
         layer_count=len(ir.copper_layers),
@@ -459,6 +488,12 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     cfg = replace(config, neck_width_um=neck) if config else RouterConfig(neck_width_um=neck)
     if router_timeout_s is not None:
         cfg = replace(cfg, timeout_s=router_timeout_s)
+    if cfg.copper_to_edge_clearance_um is None and edge_clr_mm > 0.0:
+        cfg = replace(cfg, copper_to_edge_clearance_um=round(edge_clr_mm * 1000.0, 3))
+    if cfg.hole_clearance_um is None and hole_clr_mm > 0.0:
+        cfg = replace(cfg, hole_clearance_um=round(hole_clr_mm * 1000.0, 3))
+    if has_vippo_microvias and config is None:
+        cfg = replace(cfg, strict_drc=False)
     ses = work / "route.ses"
     routed = route(route_dsn, ses, work / "freerouting", cfg)
     t = tick("freerouting", t)
@@ -483,6 +518,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         "passes": 0,
         "removed_tracks": 0,
         "removed_vias": 0,
+        "pruned_dangling_tracks": 0,
+        "pruned_dangling_vias": 0,
         "initial_router_drc": initial_router_drc,
         "final_router_drc": initial_router_drc,
     }
@@ -504,6 +541,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             sanitize_info["passes"] = pass_idx
             sanitize_info["removed_tracks"] += int(san["removed_tracks"])
             sanitize_info["removed_vias"] += int(san["removed_vias"])
+            sanitize_info["pruned_dangling_tracks"] += int(san.get("pruned_dangling_tracks", 0))
+            sanitize_info["pruned_dangling_vias"] += int(san.get("pruned_dangling_vias", 0))
             finished["unrouted_tracks_only"] = san["unrouted_tracks_only"]
             finished["unrouted_final"] = san["unrouted_final"]
             finished["routing"] = san["routing"]
@@ -544,7 +583,20 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             if rr_prep.get("dsn_exported"):
                 rr_info["attempted"] = True
                 rr_text = (rr_dir / "board.dsn").read_text(encoding="utf-8")
-                rr_text = dsn.set_layer_types(rr_text, {name: "power" for name in power_layers(ir)})
+                rr_text = dsn.set_layer_types(
+                    rr_text,
+                    {cl.name: ("power" if cl.name in pwr_set else "signal") for cl in ir.copper_layers},
+                )
+                if not has_vippo_microvias:
+                    rr_text, _ = dsn.enforce_via_hole_clearances(
+                        rr_text,
+                        hole_clearance_mm=hole_clr_mm,
+                        hole_to_hole_mm=hole_to_hole_mm,
+                        via_diameter_mm=eff_via_d,
+                        via_drill_mm=eff_via_dr,
+                        copper_clearance_mm=eff_clr,
+                    )
+                rr_text, _ = dsn.merge_stacked_fixed_vias(rr_text, ordered_layer_names)
                 rr_text = dsn.add_wire_keepouts(rr_text, macro_zone_keepouts + intent_kps + san_kps)
                 rr_text, _ = dsn.restrict_structure_vias(
                     rr_text, layer_count=len(ir.copper_layers), allow_blind_micro=allow_router_microvias,
@@ -654,6 +706,12 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     total_s = round(time.monotonic() - started, 2)
     budget_s = max(TIME_BUDGET_S, cfg.timeout_s + TIME_BUDGET_OVERHEAD_S + reroute_budget_s)
     expected_listed = min(unrouted, KICAD_DRC_UNCONNECTED_CAP)
+    final_viols = result.get("violations", [])
+    drc_track_dangling = sum(1 for v in final_viols if v.get("type") == "track_dangling")
+    drc_via_dangling = sum(1 for v in final_viols if v.get("type") == "via_dangling")
+    drc_text_mirror_warnings = sum(
+        1 for v in final_viols if v.get("type") in ("mirrored_text_on_front_layer", "nonmirrored_text_on_back_layer")
+    )
     metrics = {
         "denominator": denominator,
         "routed_by_tracks": by_tracks,
@@ -674,6 +732,9 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         "pass_unrouted": routed.pass_unrouted,
         "settled": freerouting_settled(routed.stop_reason, routed.pass_unrouted, unrouted),
         "router_internal_violations": routed.internal_violations,
+        "drc_track_dangling": drc_track_dangling,
+        "drc_via_dangling": drc_via_dangling,
+        "drc_text_mirror_warnings": drc_text_mirror_warnings,
         "seconds_total": total_s,
     }
     gates = [
@@ -693,6 +754,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "prepare": {k: v for k, v in prepared.items() if k != "obstacles"},
             "layer_roles": [asdict(r) for r in ir.stackup.roles],
             "dsn_power_layers": power_layers(ir),
+            "dsn_via_hole_clearances": via_hole_clrs,
+            "dsn_stacked_vias_merged": stacked_vias_merged,
             "dsn_restricted_vias": restricted_vias,
             "macro_zone_wire_keepouts": len(macro_zone_keepouts),
             "intent_wire_keepouts": len(intent_kps),

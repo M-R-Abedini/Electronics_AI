@@ -475,14 +475,18 @@ def apply_to_board(
                 for k in ("pairs", "links", "taps", "escapes")}
 
     if not copper:
+        from .bga_escape import check_hdi_rule_conflicts
+
+        conflicts = check_hdi_rule_conflicts(board)
         return {
             "applied": False,
-            "reason": "no_critical_copper",
+            "reason": "hole_clearance_blocks_hdi_microvias" if conflicts else "no_critical_copper",
             "s6a_board": None,
             "counts": _counts(),
             "copper": {"tracks": 0, "vias": 0},
             "drc_touching_s6a": [],
             "pruned_nets": pruned_nets,
+            "hdi_rule_conflicts": conflicts,
             "report": report,
             "live_taps": [],
         }

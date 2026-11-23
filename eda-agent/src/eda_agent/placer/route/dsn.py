@@ -250,6 +250,158 @@ def restrict_structure_vias(dsn: str, *, layer_count: int, allow_blind_micro: bo
     return dsn[:struct_start] + new_header + dsn[struct_end:], removed
 
 
+def enforce_via_hole_clearances(
+    dsn: str,
+    *,
+    hole_clearance_mm: float,
+    hole_to_hole_mm: float,
+    via_diameter_mm: float,
+    via_drill_mm: float,
+    copper_clearance_mm: float,
+) -> tuple[str, dict[str, float]]:
+    """Inject Specctra typed via clearances into ``(structure (rule ...))`` when KiCad's
+    ``m_HoleClearance`` or ``m_HoleToHoleMin`` is stricter than netclass copper clearance.
+
+    KiCad exports only copper-to-copper ``(clearance C)`` in Specctra DSN, so when a via has
+    a narrow annular ring (e.g., 0.20 mm pad / 0.10 mm drill => 0.05 mm ring) and the board
+    enforces ``hole_clearance = 0.25 mm``, Freerouting routes tracks 0.09 mm from the via pad
+    (0.14 mm from drill edge) and triggers mass ``hole_clearance`` DRC violations. Adding
+    standard Specctra ``(clearance <val> (type via_*))`` rules prevents those violations.
+    """
+    if via_diameter_mm <= 0.0 or via_drill_mm <= 0.0:
+        return dsn, {}
+    annular = max(0.0, 0.5 * (via_diameter_mm - via_drill_mm))
+    guard_mm = 0.005
+    req_via_cu = (hole_clearance_mm - annular + guard_mm) if hole_clearance_mm > 0.0 else 0.0
+    req_via_via = max(
+        req_via_cu,
+        (hole_to_hole_mm - 2.0 * annular + guard_mm) if hole_to_hole_mm > 0.0 else 0.0,
+    )
+    need_cu = req_via_cu > copper_clearance_mm + 1e-4
+    need_vv = req_via_via > copper_clearance_mm + 1e-4
+    if not need_cu and not need_vv:
+        return dsn, {}
+
+    unit = _UNIT.search(dsn)
+    if unit is None or unit.group(1) not in _SCALE:
+        return dsn, {}
+    scale = _SCALE[unit.group(1)]
+
+    struct_start = dsn.find("(structure")
+    if struct_start < 0:
+        return dsn, {}
+    struct_end = _sexp_end(dsn, struct_start)
+    if struct_end < 0:
+        return dsn, {}
+    header = dsn[struct_start:struct_end]
+    rule_start = header.find("(rule")
+    if rule_start < 0:
+        return dsn, {}
+    rule_end = _sexp_end(header, rule_start)
+    if rule_end < 0:
+        return dsn, {}
+
+    rule_body = header[rule_start:rule_end - 1]
+    clauses: list[str] = []
+    applied: dict[str, float] = {}
+    if need_cu:
+        val_str = _num(req_via_cu * scale)
+        for kind in ("via_wire", "via_smd", "via_pin", "via_area"):
+            if f"(type {kind})" not in rule_body:
+                clauses.append(f"\n      (clearance {val_str} (type {kind}))")
+                applied[kind + "_mm"] = round(req_via_cu, 4)
+    if need_vv:
+        vv_val = _num(req_via_via * scale)
+        if "(type via_via)" not in rule_body:
+            clauses.append(f"\n      (clearance {vv_val} (type via_via))")
+            applied["via_via_mm"] = round(req_via_via, 4)
+    if not clauses:
+        return dsn, {}
+
+    new_rule = rule_body.rstrip() + "".join(clauses) + "\n    )"
+    new_header = header[:rule_start] + new_rule + header[rule_end:]
+    return dsn[:struct_start] + new_header + dsn[struct_end:], applied
+
+
+_FIXED_SPAN_VIA = re.compile(
+    r'^\s*\(via\s+"Via\[(\d+)-(\d+)\]_([^"]+)"\s+(\S+)\s+([^\s()]+)\s*\(net\s+([^)]+)\)\s*\(type\s+fix\)\s*\)\s*$',
+    re.MULTILINE,
+)
+
+
+def merge_stacked_fixed_vias(dsn: str, ordered_layer_names: list[str]) -> tuple[str, int]:
+    """Merge same-net, same-coordinate stacked fixed microvias (e.g. Via[0-1] + Via[1-2]) into
+    one combined DSN span (Via[0-2]) so Freerouting does not report FixedVia-to-FixedVia
+    self-collisions or enter PolylineTrace.normalize recursion loops.
+
+    KiCad's original stacked microvia objects are restored bit-for-bit by ``finish`` after SES import.
+    """
+    w_idx = dsn.find("(wiring")
+    if w_idx < 0 or len(ordered_layer_names) < 3:
+        return dsn, 0
+    wiring = dsn[w_idx:]
+    groups: dict[tuple[str, str, str, str], list[re.Match[str]]] = {}
+    for m in _FIXED_SPAN_VIA.finditer(wiring):
+        key = (m.group(3), m.group(4), m.group(5), m.group(6))
+        groups.setdefault(key, []).append(m)
+
+    replacements: dict[int, tuple[int, str]] = {}
+    needed_padstacks: dict[str, tuple[int, int, str]] = {}
+    merged = 0
+    for (spec, x_s, y_s, net_s), matches in groups.items():
+        if len(matches) < 2:
+            continue
+        lo = min(int(m.group(1)) for m in matches)
+        hi = max(int(m.group(2)) for m in matches)
+        if hi <= lo or hi >= len(ordered_layer_names):
+            continue
+        merged += 1
+        ps_name = f"Via[{lo}-{hi}]_{spec}"
+        needed_padstacks[ps_name] = (lo, hi, spec)
+        replacements[matches[0].start()] = (
+            matches[0].end(),
+            f'    (via "{ps_name}" {x_s} {y_s}(net {net_s})(type fix))',
+        )
+        for m in matches[1:]:
+            replacements[m.start()] = (m.end(), "")
+
+    if not merged:
+        return dsn, 0
+
+    out_w: list[str] = []
+    last = 0
+    for start in sorted(replacements):
+        end, rep = replacements[start]
+        out_w.append(wiring[last:start])
+        out_w.append(rep)
+        last = end
+    out_w.append(wiring[last:])
+    new_wiring = "".join(out_w)
+    head = dsn[:w_idx]
+
+    # Synthesize any missing merged padstacks inside (library ...) using the diameter from spec.
+    lib_start = head.find("(library")
+    lib_end = _sexp_end(head, lib_start) if lib_start >= 0 else -1
+    if lib_start >= 0 and lib_end > lib_start:
+        add_blocks: list[str] = []
+        for ps_name, (lo, hi, spec) in sorted(needed_padstacks.items()):
+            if f'(padstack "{ps_name}"' in head[lib_start:lib_end]:
+                continue
+            dm = re.match(r"([\d.]+):", spec)
+            if not dm:
+                continue
+            diam_tok = dm.group(1)
+            shapes = "\n".join(
+                f"      (shape (circle {_token(ordered_layer_names[idx])} {diam_tok}))"
+                for idx in range(lo, hi + 1)
+            )
+            add_blocks.append(f'    (padstack "{ps_name}"\n{shapes}\n      (attach off)\n    )\n')
+        if add_blocks:
+            head = head[:lib_end - 1] + "".join(add_blocks) + head[lib_end - 1:]
+
+    return head + new_wiring, merged
+
+
 def add_class_via_rule(dsn: str, class_name: str, via_names: list[str]) -> str:
     """Attach an explicit ``(circuit (use_via ...))`` list to one DSN net class (opt-in HDI routing)."""
     if not via_names:

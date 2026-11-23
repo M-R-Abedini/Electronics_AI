@@ -36,7 +36,11 @@ _STRING = {"type": "string"}
 
 def _stackup_guidance(board: Board) -> dict:
     """Physics-based, non-hardcoded stackup & GND-plane guidance for connected AI agents."""
-    from .route.bga_escape import MICROVIA_AUTO_PITCH_MM, detect_bga
+    from .route.bga_escape import (
+        MICROVIA_AUTO_PITCH_MM,
+        check_hdi_rule_conflicts,
+        detect_bga,
+    )
 
     n_layers = len(board.copper_layers)
     layer_names = [cl.canonical for cl in sorted(board.copper_layers, key=lambda c: c.index)]
@@ -50,11 +54,13 @@ def _stackup_guidance(board: Board) -> dict:
                 "pitch_mm": round(min(bga["pitch_x"], bga["pitch_y"]), 3),
                 "balls": len(bga["grid"]),
             })
+    hdi_conflicts = check_hdi_rule_conflicts(board)
     has_plane = any(r.role in ("plane", "mixed") for r in board.stackup.roles)
     if has_plane:
         return {
             "gnd_routing_mode": "plane_taps_and_refill",
             "fine_pitch_bgas": fine_bgas,
+            "hdi_rule_conflicts": hdi_conflicts,
             "note": (
                 "Active plane/pour detected: S6a SMD GND/power taps and post-route zone refill "
                 "are enabled, and dedicated inner plane nets are excluded from point-to-point trace routing."
@@ -97,6 +103,7 @@ def _stackup_guidance(board: Board) -> dict:
     return {
         "gnd_routing_mode": "point_to_point_traces_warning",
         "fine_pitch_bgas": fine_bgas,
+        "hdi_rule_conflicts": hdi_conflicts,
         "note": (
             "No GND/power plane zone exists on this board yet (stackup_policy == 'needs_decision'). "
             "If you route now without adding a Solid GND plane zone first, S6a plane taps will stay 0/0 "
@@ -119,17 +126,31 @@ def _drc_signoff(rep: dict) -> dict | None:
     drc_router = int(gates.get("drc_router_caused") or 0)
     drc_new = int(gates.get("drc_new_non_routing") or 0)
     unrouted = int(route_m.get("unrouted") or 0)
+    dangling_tracks = int(route_m.get("drc_track_dangling") or 0)
+    dangling_vias = int(route_m.get("drc_via_dangling") or 0)
+    mirror_warns = int(route_m.get("drc_text_mirror_warnings") or 0)
     unconn_nets = sorted({str(f["net"]) for f in (rep.get("failures") or []) if f.get("net")})
-    fab_ready = (legality_v == 0 and drc_router == 0 and drc_new == 0 and unrouted == 0)
+    fab_ready = (
+        legality_v == 0
+        and drc_router == 0
+        and drc_new == 0
+        and unrouted == 0
+        and dangling_tracks == 0
+        and dangling_vias == 0
+    )
     return {
         "fab_ready": fab_ready,
         "drc_errors": drc_router + drc_new,
         "drc_unconnected": unrouted,
+        "drc_track_dangling": dangling_tracks,
+        "drc_via_dangling": dangling_vias,
+        "drc_text_mirror_warnings": mirror_warns,
         "unconnected_nets": unconn_nets,
         "note": (
-            "DRC clean and 100% connected (0 violations, 0 unconnected items)."
+            "DRC clean and 100% connected (0 violations, 0 unconnected items, 0 dangling tracks/vias)."
             if fab_ready else
-            f"NOT fab-ready: {drc_router + drc_new} DRC errors and {unrouted} Unconnected Items remain "
+            f"NOT fab-ready: {drc_router + drc_new} DRC errors, {unrouted} Unconnected Items, "
+            f"{dangling_tracks} dangling tracks, {dangling_vias} dangling vias "
             f"({', '.join(unconn_nets[:8]) or 'see failures'}). Run a closed diagnose -> fix -> re-route loop "
             "before declaring the board DRC-clean or ready for fabrication."
         ),
@@ -444,6 +465,9 @@ class PlacerService:
                 "height_mm": sa["height_mm"],
                 "stroke_mm": sa["stroke_mm"],
                 "fab_outside_board": cnt["fab_outside_board"],
+                "fab_overlaps": cnt["fab_overlaps"],
+                "fab_oversized": cnt["fab_oversized"],
+                "mirror_mismatches": cnt["mirror_mismatches"],
                 "silk_outside_board": cnt["silk_outside_board"],
                 "oversized_for_board": cnt["oversized_for_board"],
                 "under_body": cnt["under_body"],
@@ -465,6 +489,7 @@ class PlacerService:
             qa_tag = (
                 f"overlay={sa['overlay_mode']} refs={sa['visible_ref_designators']} "
                 f"fab={sa['visible_fab_texts']} fab_out={cnt['fab_outside_board']} "
+                f"fab_ovl={cnt['fab_overlaps']} mir_err={cnt['mirror_mismatches']} "
                 f"score={sa['dfm_score']}"
             )
             try:
@@ -479,6 +504,9 @@ class PlacerService:
             needs_fab_view = bool(board.silkscreen_texts) and (
                 sa["overlay_mode"] in ("assembly_only", "mixed_overlay_and_fab", "missing_legends")
                 or cnt["fab_outside_board"] > 0
+                or cnt["fab_overlaps"] > 0
+                or cnt["fab_oversized"] > 0
+                or cnt["mirror_mismatches"] > 0
                 or cnt["silk_outside_board"] > 0
                 or cnt["oversized_for_board"] > 0
                 or cnt["under_body"] > 0

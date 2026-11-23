@@ -253,6 +253,56 @@ def _bboxes_close(a: tuple[float, float, float, float], b: tuple[float, float, f
     return not (a[2] + gap < b[0] or b[2] + gap < a[0] or a[3] + gap < b[1] or b[3] + gap < a[1])
 
 
+def check_hdi_rule_conflicts(board: Board) -> list[dict[str, Any]]:
+    """Detect geometric conflicts between board ``hole_clearance`` and fine-pitch BGA microvias.
+
+    On a fine-pitch HDI BGA (e.g. 0.40 mm pitch, 0.22 mm pad, 0.10 mm microvia drill), the
+    maximum geometrically possible drill-edge-to-adjacent-pad clearance is
+    ``pitch - pad_diameter/2 - microvia_drill/2`` (0.240 mm). When a board retains KiCad's
+    factory default ``hole_clearance = 0.25 mm``, every VIPPO microvia fails DRC.
+    """
+    rules = getattr(board, "rules", None)
+    if not isinstance(rules, dict) or not rules.get("allow_microvias", False):
+        return []
+    hole_clr = float(rules.get("hole_clearance") or 0.0)
+    if hole_clr <= 0.0:
+        return []
+    min_udr = float(rules.get("min_microvia_drill") or 0.0)
+    netclasses = getattr(board, "netclasses", None) or []
+    default_nc = next((c for c in netclasses if c.name == "Default"), netclasses[0] if netclasses else None)
+    nc_udr = float(getattr(default_nc, "microvia_drill", 0.0) or 0.0)
+    drill = max(nc_udr, min_udr, 0.10)
+
+    conflicts: list[dict[str, Any]] = []
+    for fp in sorted(getattr(board, "footprints", None) or [], key=lambda f: f.ref):
+        bga = detect_bga(fp)
+        if bga is None:
+            continue
+        pitch = min(bga["pitch_x"], bga["pitch_y"])
+        if pitch > MICROVIA_AUTO_PITCH_MM:
+            continue
+        pad_diam = bga["pad_diameter"]
+        max_possible = pitch - 0.5 * pad_diam - 0.5 * drill
+        if hole_clr > max_possible - 1e-4:
+            rec_clr = round(max(0.10, min(0.15, max_possible - 0.04)), 3)
+            conflicts.append({
+                "ref": fp.ref,
+                "pitch_mm": round(pitch, 3),
+                "pad_diameter_mm": round(pad_diam, 3),
+                "microvia_drill_mm": round(drill, 3),
+                "board_hole_clearance_mm": round(hole_clr, 3),
+                "max_possible_hole_clearance_mm": round(max_possible, 4),
+                "recommended_hole_clearance_mm": rec_clr,
+                "message": (
+                    f"Board hole_clearance ({hole_clr:.3f} mm) exceeds the maximum physically possible "
+                    f"drill-to-adjacent-pad clearance ({max_possible:.3f} mm) for {pitch:.2f} mm pitch BGA "
+                    f"{fp.ref} with {drill:.2f} mm microvias; lower hole_clearance to <= {rec_clr:.2f} mm "
+                    "(or add a .kicad_dru microvia rule) before routing."
+                ),
+            })
+    return conflicts
+
+
 class _BgaContext:
     """Board-wide spatial index built once for fast, DRC-exact BGA escape validation."""
 
@@ -263,6 +313,7 @@ class _BgaContext:
         self.bottom_layer = self.ordered_layers[-1]
         self.outline = board_polygon(board)
         self.edge = float(board.rules.get("copper_edge_clearance") or 0.0)
+        self.hole_clearance = float(board.rules.get("hole_clearance") or 0.0)
         self.hole_to_hole = float(board.rules.get("hole_to_hole") or 0.0)
         self.min_clr = float(board.rules.get("min_clearance") or 0.0)
 
@@ -369,6 +420,7 @@ class _BgaContext:
         vx, vy = round(via_xy[0], 4), round(via_xy[1], 4)
         via_pt = Point(vx, vy)
         via_disc = via_pt.buffer(diameter * 0.5)
+        drill_disc = via_pt.buffer(drill * 0.5) if drill > 0.0 else via_pt
         if not self.outline.covers(via_disc.buffer(self.edge)):
             return None
         if self.via_keepout is not None and self.via_keepout.intersects(via_disc):
@@ -376,7 +428,7 @@ class _BgaContext:
         span_set = frozenset(span_layers)
         if self.pad_tree is not None:
             pad_margin = 0.005
-            search_pad_clr = max(clr, self.max_pad_clr) + 0.02
+            search_pad_clr = max(clr, self.max_pad_clr, self.hole_clearance) + 0.02
             for idx in self.pad_tree.query(via_disc.buffer(search_pad_clr)):
                 p_geom = self.pad_geoms[int(idx)]
                 p_lyrs, p_net, p_kind, p_clr = self.pad_meta[int(idx)]
@@ -390,6 +442,8 @@ class _BgaContext:
                     continue
                 req = max(clr, p_clr) + pad_margin
                 if via_disc.distance(p_geom) < req:
+                    return None
+                if self.hole_clearance > 0.0 and drill_disc.distance(p_geom) < self.hole_clearance + 0.002:
                     return None
         if not self._clears_obstacles(via_disc, span_set, net, clr):
             return None
@@ -530,9 +584,10 @@ class _BgaContext:
             return None
 
         # Check pads via STRtree (only neighboring balls are inspected).
+        drill_disc = via_pt.buffer(drill * 0.5) if drill > 0.0 else via_pt
         if self.pad_tree is not None:
             pad_margin = 0.005  # small safety margin for Specctra DSN integer-grid rounding
-            search_pad_clr = max(clr, self.max_pad_clr) + 0.02
+            search_pad_clr = max(clr, self.max_pad_clr, self.hole_clearance) + 0.02
             for idx in self.pad_tree.query(via_disc.buffer(search_pad_clr)):
                 p_geom = self.pad_geoms[int(idx)]
                 _lyrs, p_net, p_kind, p_clr = self.pad_meta[int(idx)]
@@ -541,6 +596,8 @@ class _BgaContext:
                     continue
                 req = max(clr, p_clr) + pad_margin
                 if via_disc.distance(p_geom) < req:
+                    return None
+                if self.hole_clearance > 0.0 and drill_disc.distance(p_geom) < self.hole_clearance + 0.002:
                     return None
             for idx in self.pad_tree.query(track_copper.buffer(search_pad_clr)):
                 p_geom = self.pad_geoms[int(idx)]
@@ -830,4 +887,4 @@ def plan_bga_escapes(
             "microvia_routed": pkg_microvia,
         })
 
-    return {"copper": new_copper, "rows": rows, "packages": packages}
+    return {"copper": new_copper, "rows": rows, "packages": packages, "hdi_rule_conflicts": check_hdi_rule_conflicts(board)}

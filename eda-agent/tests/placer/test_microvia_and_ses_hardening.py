@@ -735,6 +735,117 @@ def test_4l_hdi_bga_stacked_microvia_to_l3_gnd_plane_and_drc_signoff():
     assert s_bad["fab_ready"] is False and s_bad["drc_unconnected"] == 4
     rep_clean = {**rep_unconn, "metrics": {"route": {"unrouted": 0}}, "failures": []}
     assert _drc_signoff(rep_clean)["fab_ready"] is True
+    # Verify _drc_signoff refuses fab_ready=True when dangling tracks or vias remain
+    rep_dang = {**rep_clean, "metrics": {"route": {"unrouted": 0, "drc_track_dangling": 3, "drc_via_dangling": 0}}}
+    s_dang = _drc_signoff(rep_dang)
+    assert s_dang["fab_ready"] is False and s_dang["drc_track_dangling"] == 3
+
+
+def test_dsn_hole_clearances_stacked_via_merge_hdi_conflict_and_router_flags():
+    """Unit tests for general HDI DSN & Freerouting hardening (no KiCad required)."""
+    from eda_agent.placer.route import bga_escape, dsn
+    from eda_agent.placer.route.freerouting import RouterConfig
+
+    sample_dsn = """(pcb "hdi.dsn"
+  (resolution um 10)
+  (unit um)
+  (structure
+    (layer F.Cu (type signal))
+    (layer In1.Cu (type power))
+    (layer In2.Cu (type signal))
+    (layer B.Cu (type signal))
+    (via "Via[0-3]_200:100_um")
+    (rule
+      (width 90)
+      (clearance 90)
+      (clearance 22.5 (type smd_smd))
+    )
+  )
+  (library
+    (padstack "Via[0-1]_200:100_um"
+      (shape (circle F.Cu 200))
+      (shape (circle In1.Cu 200))
+      (attach off)
+    )
+    (padstack "Via[1-2]_200:100_um"
+      (shape (circle In1.Cu 200))
+      (shape (circle In2.Cu 200))
+      (attach off)
+    )
+  )
+  (wiring
+    (via "Via[0-1]_200:100_um" 117610 -102440(net GND)(type fix))
+    (via "Via[1-2]_200:100_um" 117610 -102440(net GND)(type fix))
+    (via "Via[0-1]_200:100_um" 118010 -102440(net VIO18)(type fix))
+  )
+)
+"""
+    # 1. Typed via clearances injected when hole_clearance > copper_clearance + annular
+    updated, applied = dsn.enforce_via_hole_clearances(
+        sample_dsn,
+        hole_clearance_mm=0.25,
+        hole_to_hole_mm=0.25,
+        via_diameter_mm=0.20,
+        via_drill_mm=0.10,
+        copper_clearance_mm=0.09,
+    )
+    assert "(clearance 205 (type via_wire))" in updated
+    assert "(clearance 205 (type via_smd))" in updated
+    assert "(clearance 205 (type via_via))" in updated
+    assert applied["via_wire_mm"] == pytest.approx(0.205, abs=1e-4)
+
+    # No-op when copper_clearance + annular already satisfies hole_clearance
+    unchanged, none_applied = dsn.enforce_via_hole_clearances(
+        sample_dsn,
+        hole_clearance_mm=0.15,
+        hole_to_hole_mm=0.15,
+        via_diameter_mm=0.50,
+        via_drill_mm=0.20,
+        copper_clearance_mm=0.20,
+    )
+    assert unchanged == sample_dsn and none_applied == {}
+
+    # 2. Stacked fixed microvias at identical (x, y) merge cleanly into Via[0-2] with library padstack
+    merged_dsn, n_merged = dsn.merge_stacked_fixed_vias(sample_dsn, ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"])
+    assert n_merged == 1
+    assert '(padstack "Via[0-2]_200:100_um"' in merged_dsn
+    assert '(shape (circle In2.Cu 200))' in merged_dsn
+    assert '(via "Via[0-2]_200:100_um" 117610 -102440(net GND)(type fix))' in merged_dsn
+    assert '(via "Via[0-1]_200:100_um" 118010 -102440(net VIO18)(type fix))' in merged_dsn
+    assert merged_dsn.count("117610 -102440") == 1
+
+    # 3. HDI rule conflict detector catches impossible m_HoleClearance=0.25 mm on 0.40 mm pitch BGA
+    bga_pads = [
+        Pad(f"P{r}_{c}", "GND" if (r + c) % 2 == 0 else f"S{r}_{c}",
+            ((c - 2) * 0.40, (r - 2) * 0.40), (0.22, 0.22), layers=("F.Cu",))
+        for r in range(5) for c in range(5)
+    ]
+    bga_fp = Footprint("U2", "AG3335M", "BGA:0.40", 10.0, 5.0, 0.0, "F", pads=bga_pads, uuid="u2")
+    mini_hdi = derive(Board(
+        name="hdi_conflict",
+        footprints=[bga_fp],
+        outline=[Outline([(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)])],
+        outline_valid=True,
+        board_area_mm2=200.0,
+        copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("In1.Cu", "In1.Cu", 1),
+                       CopperLayer("In2.Cu", "In2.Cu", 2), CopperLayer("B.Cu", "B.Cu", 3)],
+        netclasses=[NetClass("Default", 0.09, 0.09, 0.20, 0.10, microvia_diameter=0.20, microvia_drill=0.10)],
+        rules={"allow_microvias": True, "min_microvia_diameter": 0.20, "min_microvia_drill": 0.10, "hole_clearance": 0.25},
+    ))
+    conflicts = bga_escape.check_hdi_rule_conflicts(mini_hdi)
+    assert len(conflicts) == 1
+    assert conflicts[0]["ref"] == "U2"
+    assert conflicts[0]["max_possible_hole_clearance_mm"] == pytest.approx(0.24, abs=1e-4)
+    assert conflicts[0]["recommended_hole_clearance_mm"] <= 0.15
+
+    # Lowering hole_clearance to 0.15 mm clears the conflict
+    mini_hdi.rules["hole_clearance"] = 0.15
+    assert bga_escape.check_hdi_rule_conflicts(mini_hdi) == []
+
+    # 4. RouterConfig emits native Freerouting 2.5.0 edge & hole clearance flags
+    flags = RouterConfig(neck_width_um=90, copper_to_edge_clearance_um=150, hole_clearance_um=150).flags()
+    assert "--router.copper_to_edge_clearance_um=150" in flags
+    assert "--router.hole_clearance_um=150" in flags
 
 
 
