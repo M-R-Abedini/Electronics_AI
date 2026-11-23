@@ -65,7 +65,7 @@ render = [
 # degrade to a clear "install kicad-python" reason when it is absent. Needs
 # KiCad 9+ with Preferences > Plugins > KiCad API server enabled.
 kicad = [
-    "kicad-python>=0.7",
+    "kicad-python>=0.8.0",
 ]
 dev = [
     "pytest>=7.0",
