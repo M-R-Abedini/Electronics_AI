@@ -72,7 +72,7 @@ dev = [
     "pytest-asyncio>=0.21",
     # CI runs the suite with -n 4 --dist loadfile; loadfile keeps each
     # test file on one worker so file-local shared state stays ordered.
-    "pytest-xdist>=3.5,<4",
+    "pytest-xdist>=3.8.0,<4",
     # The illustrate render tests exercise the matplotlib path, so dev
     # pulls the render extra (CI installs .[dev] only).
     "matplotlib>=3.11.2,<4",
