@@ -64,7 +64,7 @@ jobs:
             eda-agent/pyproject.toml
       - run: python -m pip install -r requirements.txt
       - name: Cache Rust toolchain and placer-core build artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -107,7 +107,7 @@ jobs:
             eda-agent/pyproject.toml
       - run: python -m pip install -r requirements.txt
       - name: Cache Rust toolchain and placer-core build artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
