@@ -43,7 +43,7 @@ dependencies = [
     # placer/route): imported at module level, so a wheel installed
     # without them dies on first placer import. They were previously
     # only present in the pixi development environment.
-    "shapely>=2.0,<3",
+    "shapely>=2.2.0,<3",
     "scipy>=1.13,<2",
     # Pure-Python OLE/CFB reader for the headless Altium file parsers
     # (fileio/): read .SchDoc/.PcbDoc without a running Altium. Tiny, no
