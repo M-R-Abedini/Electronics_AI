@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import math
 
-from shapely.geometry import Point
+from shapely.geometry import Point, Polygon
+from shapely.ops import unary_union
 from shapely.prepared import prep
 
 from ..ir import ROLE_MIN_NET_FRACTION, ROLE_POUR_FRACTION, Board
@@ -20,6 +21,27 @@ from . import legality, metrics
 CAPACITY_EFFICIENCY = 0.55  # declared: vias, pads, and turns consume ~45% of raw tracks/cell
 MAX_GRID_DIM = 72
 SPLIT_PLANE_WEIGHT = 0.25  # declared: inner split-plane layers carry limited signal capacity
+
+
+def _layer_zone_areas(board: Board, cl) -> dict[str, float]:
+    """Per-net copper pour area on *cl*, falling back to zone outline polygons on unfilled boards."""
+    fills = board.zone_fill_by_layer_mm2.get(cl.name) or board.zone_fill_by_layer_mm2.get(cl.canonical)
+    if fills:
+        return fills
+    by_net: dict[str, list[Polygon]] = {}
+    targets = {cl.name, cl.canonical}
+    for zone in board.zones:
+        net = zone.get("net") or ""
+        if not net or not zone.get("outline"):
+            continue
+        if not (set(zone.get("layers") or ()) & targets):
+            continue
+        poly = Polygon(zone["outline"][0], zone["outline"][1:])
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if not poly.is_empty:
+            by_net.setdefault(net, []).append(poly)
+    return {net: float(unary_union(polys).area) for net, polys in by_net.items()}
 
 
 def _effective_signal_layers(board: Board) -> float:
@@ -34,7 +56,7 @@ def _effective_signal_layers(board: Board) -> float:
         if cl.index == 0 or cl.index == last:
             total += 1.0
             continue
-        fills = board.zone_fill_by_layer_mm2.get(cl.name, {})
+        fills = _layer_zone_areas(board, cl)
         counted = {n: a for n, a in fills.items() if n and area and a / area >= ROLE_MIN_NET_FRACTION}
         frac = sum(counted.values()) / area if area else 0.0
         if frac < ROLE_POUR_FRACTION:
@@ -52,7 +74,7 @@ def _plane_nets(board: Board) -> set[str]:
     last = len(board.copper_layers) - 1
     out: set[str] = set()
     for cl in board.copper_layers:
-        fills = board.zone_fill_by_layer_mm2.get(cl.name, {})
+        fills = _layer_zone_areas(board, cl)
         counted = {n: a for n, a in fills.items() if n and a / area >= ROLE_MIN_NET_FRACTION}
         if not counted or sum(counted.values()) / area < ROLE_POUR_FRACTION:
             continue

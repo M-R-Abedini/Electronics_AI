@@ -21,6 +21,7 @@ from .copper import (
     outward,
     pad_layers,
     pad_polygon,
+    via_layer_span,
 )
 from .pairs import (
     Exits,
@@ -81,7 +82,11 @@ def plan_power_link(board: Board, source: tuple[Footprint, Pad], destination: tu
     rule = PairRule(width, clearance, clearance, rules.via_diameter, rules.via_drill)
     x0, x1 = sorted((start[0], end[0]))
     y0, y1 = sorted((start[1], end[1]))
-    win = Window(board, (x0 - max_length_mm, y0 - max_length_mm, x1 + max_length_mm, y1 + max_length_mm), [layer])
+    link_res = min(0.05, max(0.025, width / 3.0)) if width <= 0.12 else 0.05
+    win = Window(
+        board, (x0 - max_length_mm, y0 - max_length_mm, x1 + max_length_mm, y1 + max_length_mm),
+        [layer], res=link_res,
+    )
     raw = obstacles(board, win, rule, fixed, skip_pad_nets={net}, skip_copper_nets={net})
     keepouts = [
         Polygon(area["polygons"][0], area["polygons"][1:])
@@ -122,11 +127,21 @@ def plan_power_link(board: Board, source: tuple[Footprint, Pad], destination: tu
 
 
 def _candidate_paths(origin: tuple[float, float], angle: float,
-                     max_length_mm: float) -> Iterator[list[tuple[float, float]]]:
+                     max_length_mm: float, *, full_sweep: bool = False) -> Iterator[list[tuple[float, float]]]:
     def advance(point: tuple[float, float], direction: float, steps: int) -> tuple[float, float]:
         return point[0] + steps / 20 * math.cos(direction), point[1] + steps / 20 * math.sin(direction)
 
     max_steps = int(max_length_mm * 20 + 1e-9)
+    if full_sweep:
+        # Fallback when primary +/-60 deg outward sweep is blocked (e.g. pad facing board edge):
+        # try shorter fine-pitch steps (0.25..0.35 mm) and wide/side/back angles (75..180 deg).
+        for steps in range(5, min(8, max_steps + 1)):
+            for turn in (0, 15, -15, 30, -30, 45, -45, 60, -60):
+                yield [origin, advance(origin, angle + math.radians(turn), steps)]
+        for steps in range(5, max_steps + 1):
+            for turn in (75, -75, 90, -90, 105, -105, 120, -120, 135, -135, 150, -150, 165, -165, 180):
+                yield [origin, advance(origin, angle + math.radians(turn), steps)]
+        return
     for steps in range(8, max_steps + 1):
         for turn in (0, 15, -15, 30, -30, 45, -45, 60, -60):
             yield [origin, advance(origin, angle + math.radians(turn), steps)]
@@ -179,7 +194,7 @@ class _Site:
         cache_key = (id(board), net, clearance, round(via_clr, 5))
         cached = static_cache.get(cache_key) if static_cache is not None else None
         if cached is not None:
-            self.outline, self._track, self._via = cached
+            self.outline, self._track, self._via, self._via_layer_obs, self._via_span_cache = cached
             return
 
         self.outline = board_polygon(board)
@@ -190,10 +205,14 @@ class _Site:
         )
         # A via keeps the clearance to SMD pads of its own net as well: the router counts a via
         # closer than that to a same-net SMD pad as a violation (no via on or against a pad).
-        solder_pads = [
-            pad_polygon(fp, pad, clearance if pad.net == net else via_clr)
+        solder_pads_by_layer: list[tuple[frozenset[str], Polygon]] = [
+            (
+                frozenset(pad_layers(fp, pad, self.layers)),
+                pad_polygon(fp, pad, clearance if pad.net == net else via_clr),
+            )
             for fp in board.footprints for pad in fp.pads if pad.kind == "smd"
         ]
+        solder_pads = [g for _, g in solder_pads_by_layer]
         keepouts = [
             (area["layers"], area["keepout"], Polygon(area["polygons"][0], area["polygons"][1:]))
             for area in board.rule_areas if area["polygons"]
@@ -221,8 +240,108 @@ class _Site:
             + [g for _, flags, g in keepouts if flags["vias"]]
             + [g for _, g in graphics]
         ))
+        self._via_layer_obs = (solder_pads_by_layer, via_pad_obstacles, keepouts, graphics)
+        self._via_span_cache: dict[frozenset[str], object] = {}
         if static_cache is not None:
-            static_cache[cache_key] = (self.outline, self._track, self._via)
+            static_cache[cache_key] = (
+                self.outline, self._track, self._via, self._via_layer_obs, self._via_span_cache,
+            )
+
+    def _via_for_span(self, span: frozenset[str]):
+        cached = self._via_span_cache.get(span)
+        if cached is not None:
+            return cached
+        solder_pads_by_layer, via_pad_obstacles, keepouts, graphics = self._via_layer_obs
+        geoms = (
+            [g for lays, g in solder_pads_by_layer if lays & span]
+            + [g for lays, g in via_pad_obstacles if set(lays) & span]
+            + [g for lays, flags, g in keepouts if flags["vias"] and set(lays) & span]
+            + [g for copper, g in graphics if copper in span]
+        )
+        prepared = prep(unary_union(geoms)) if geoms else prep(Polygon())
+        self._via_span_cache[span] = prepared
+        return prepared
+
+    def microvia_tap(
+        self, x: float, y: float, source_layer: str, target_layer: str, inside=None,
+    ) -> list[dict] | None:
+        """Layer-scoped blind/microvia stack from *source_layer* to inner plane *target_layer*.
+
+        Only active when the board allows microvias (HDI). Ignores opposite-side SMD pads
+        outside the microvia's layer span (e.g. backside shields/ICs blocking through-vias).
+        """
+        if not self.board.rules.get("allow_microvias", False) or len(self.layers) < 4:
+            return None
+        ordered = [cl.canonical for cl in sorted(self.board.copper_layers, key=lambda c: c.index)]
+        if source_layer == ordered[0]:
+            adj1, adj2 = ordered[1], ordered[2]
+        elif source_layer == ordered[-1]:
+            adj1, adj2 = ordered[-2], ordered[-3]
+        else:
+            return None
+        if target_layer == adj1:
+            spans = [(source_layer, adj1)]
+            span_set = frozenset({source_layer, adj1})
+        elif target_layer == adj2:
+            spans = [(source_layer, adj1), (adj1, adj2)]
+            span_set = frozenset({source_layer, adj1, adj2})
+        else:
+            return None
+
+        nc = self.board.netclass_of(self.net)
+        ud = max(
+            float(getattr(nc, "microvia_diameter", 0.0) or 0.0),
+            float(self.board.rules.get("min_microvia_diameter") or 0.0),
+            0.20,
+        )
+        udr = max(
+            float(getattr(nc, "microvia_drill", 0.0) or 0.0),
+            float(self.board.rules.get("min_microvia_drill") or 0.0),
+            0.10,
+        )
+        min_ann = float(self.board.rules.get("min_via_annular_width") or 0.0)
+        if 0.5 * (ud - udr) + 1e-6 < min_ann:
+            ud = round(udr + 2.0 * min_ann, 4)
+
+        pt = Point(x, y)
+        vr = ud / 2.0
+        shape = pt.buffer(vr)
+        if (inside is not None and not inside.covers(shape)) or self._via_for_span(span_set).intersects(shape):
+            return None
+        if not self.outline.covers(shape.buffer(self.edge)):
+            return None
+        for v in self.same_vias:
+            if not (via_layer_span(v, ordered) & span_set):
+                continue
+            if math.dist((x, y), (v["x"], v["y"])) < (v["diameter"] + ud) / 2.0 + self.clearance - 1e-9:
+                return None
+        vias = [
+            {
+                "net": self.net,
+                "x": x,
+                "y": y,
+                "diameter": ud,
+                "drill": udr,
+                "layers": [la, lb],
+                "via_type": "micro",
+                "filled": True,
+                "capped": la in ("F.Cu", "B.Cu"),
+            }
+            for la, lb in spans
+        ]
+        # Check hole separation against existing holes (skip self-stack pair check by testing each individually).
+        hth = float(self.board.rules.get("hole_to_hole") or 0.0)
+        for v in vias:
+            if not holes_separated([v], self.holes, hth, ordered_layers=ordered):
+                return None
+        for g, r, lyrs, (ox0, oy0, ox1, oy1), gap in self._other_shapes:
+            if not (span_set & lyrs):
+                continue
+            if x + vr < ox0 or ox1 < x - vr or y + vr < oy0 or oy1 < y - vr:
+                continue
+            if pt.distance(g) < vr + r + gap - 1e-6:
+                return None
+        return vias
 
     def track(self, layer: str, points: list[tuple[float, float]]) -> dict | None:
         """The track, when it clears pads, keep-outs, the board edge and other nets' new copper."""
@@ -295,8 +414,9 @@ def _length(points: list[tuple[float, float]]) -> float:
 def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: str, *,
                    fixed: list[dict], max_length_mm: float = 2.0,
                    share: list[dict] | None = None, share_max_mm: float = 1.5,
-                   site_cache: dict | None = None) -> tuple[dict, dict] | None:
-    """Plan a track polyline and through via. Emit one track per consecutive pair of points.
+                   site_cache: dict | None = None,
+                   allow_microvia: bool = False) -> tuple[dict, dict | list[dict]] | None:
+    """Plan a track polyline and via (or HDI microvia stack). Emit one track per consecutive pair of points.
 
     A via in ``share`` (same net, already tapping the pour) within ``share_max_mm`` of track is
     used instead of drilling another one; the returned via is then that very dict.
@@ -328,13 +448,22 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
         end = (via["x"], via["y"])
         if via["net"] != net or math.dist(origin, end) > share_max_mm or not target.covers(Point(end)):
             continue
+        if via.get("via_type") == "micro" and layer not in set(via.get("layers", ())):
+            continue
         for points in _joins(origin, angle, end):
             if _length(points) <= share_max_mm + 1e-9 and (track := site.track(layer, points)):
                 return track, via
-    for points in _candidate_paths(origin, angle, max_length_mm):
-        via = site.via(*points[-1], inside=target)
-        if via and (track := site.track(layer, points)):
-            return track, via
+    for full_sweep in (False, True):
+        for points in _candidate_paths(origin, angle, max_length_mm, full_sweep=full_sweep):
+            via = site.via(*points[-1], inside=target)
+            if via and (track := site.track(layer, points)):
+                return track, via
+    if allow_microvia and board.rules.get("allow_microvias", False):
+        for full_sweep in (False, True):
+            for points in _candidate_paths(origin, angle, max_length_mm, full_sweep=full_sweep):
+                uvias = site.microvia_tap(*points[-1], layer, target_layer, inside=target)
+                if uvias and (track := site.track(layer, points)):
+                    return track, (uvias[0] if len(uvias) == 1 else uvias)
     return None
 
 
@@ -376,17 +505,13 @@ def plan_cross_link(board: Board, source: tuple[Footprint, Pad], destination: tu
 
 
 def traps_pads(board: Board, fixed: list[dict], tracks: list[dict], vias: list[dict],
-               own_nets: set[str], *, margin_mm: float = 4.5, res: float = 0.075) -> list[str]:
+               own_nets: set[str], *, margin_mm: float = 4.5, res: float | None = None) -> list[str]:
     """Return pad names cut off from the largest free routing region by ``tracks`` + ``vias`` (arch 14 row 2a)."""
     if not tracks and not vias:
         return []
     outer = [cl.canonical for cl in board.copper_layers if cl.canonical in ("F.Cu", "B.Cu")]
     if not outer:
         return []
-    pts = [p for t in tracks for p in t["points"]] + [(v["x"], v["y"]) for v in vias]
-    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-    win = Window(board, (min(xs) - margin_mm, min(ys) - margin_mm, max(xs) + margin_mm, max(ys) + margin_mm),
-                 outer, res=res)
     ref_net = next(iter(own_nets), "")
     rule = rule_for(board, ref_net)
     # Use standard trace width (not wide diff-pair width) when checking general pad escape clearance.
@@ -395,6 +520,11 @@ def traps_pads(board: Board, fixed: list[dict], tracks: list[dict], vias: list[d
     gen_clear = max(board.rules.get("min_clearance", nc.clearance), 1e-3)
     gen_via_d = max(board.rules.get("min_via_diameter", nc.via_diameter), 1e-3)
     gen_drill = max(board.rules.get("min_through_drill", nc.via_drill), 1e-3)
+    eff_res = float(res) if res is not None else min(0.075, max(0.03, gen_width / 3.0))
+    pts = [p for t in tracks for p in t["points"]] + [(v["x"], v["y"]) for v in vias]
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    win = Window(board, (min(xs) - margin_mm, min(ys) - margin_mm, max(xs) + margin_mm, max(ys) + margin_mm),
+                 outer, res=eff_res)
     escape_rule = PairRule(width=gen_width, gap=gen_clear, clearance=gen_clear,
                            via_d=min(rule.via_d, gen_via_d), via_drill=min(rule.via_drill, gen_drill))
     blocked_drills = np.zeros((win.ny, win.nx), bool)

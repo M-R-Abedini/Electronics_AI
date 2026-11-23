@@ -293,7 +293,7 @@ class Exits:
         self.raw = obstacles(board, win, rule, fixed)
         self.grow = _disk(rule.width / 2 / win.res)
         self.via_grow = _disk(rule.via_d / 2 / win.res)
-        reach = rule.clearance + MARGIN_MM + rule.width / 2 + 2 * win.res  # just outside a pad's own halo
+        reach = rule.clearance + MARGIN_MM + rule.width / 2 + 1.2 * win.res  # just outside a pad's own halo
         self.pads: list[tuple[str, dict[str, np.ndarray]]] = []
         for fp in board.footprints:
             for pad in fp.pads:
@@ -696,6 +696,24 @@ def _block_drills(win: Window, mask: np.ndarray, holes: list[tuple],
         mask[area] |= (win.X[area] - x) ** 2 + (win.Y[area] - y) ** 2 < (radius - 1e-6) ** 2
 
 
+def _is_octilinear(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+    return dx < 1e-5 or dy < 1e-5 or abs(dx - dy) < 1e-5
+
+
+def _pad_exit_dogleg(a: tuple[float, float], b: tuple[float, float]) -> list[tuple[float, float]]:
+    """Connect *a* to *b* using strictly 0/45/90-degree segments (no off-angle tilts)."""
+    dx = b[0] - a[0]
+    dy = b[1] - a[1]
+    if math.hypot(dx, dy) < 1e-4:
+        return []
+    if _is_octilinear(a, b):
+        return [a, b]
+    diag = min(abs(dx), abs(dy))
+    knee = (round(a[0] + math.copysign(diag, dx), 6), round(a[1] + math.copysign(diag, dy), 6))
+    return [a, knee, b]
+
+
 def _breakout(win: Window, raw: dict[str, np.ndarray], layers, own_copper: list[dict], start: tuple, end: tuple,
               net: str, rule: PairRule, core, allow_via: bool, *,
               blocked_drills: np.ndarray | None = None) -> tuple[list[dict], list[dict]] | None:
@@ -740,19 +758,29 @@ def _breakout(win: Window, raw: dict[str, np.ndarray], layers, own_copper: list[
         return None
     tracks, vias = _cells_to_copper(win, path, layers, net, rule)
     if not tracks and not vias:
+        lead = _pad_exit_dogleg(start_xy, end_xy)
+        if lead:
+            tracks.append({"layer": sl, "width": rule.width, "net": net, "points": lead})
+    elif len(tracks) == 1 and not vias and len(tracks[0]["points"]) == 2 and sl == el and _is_octilinear(start_xy, end_xy):
         if start_xy != end_xy:
-            tracks.append({"layer": sl, "width": rule.width, "net": net, "points": [start_xy, end_xy]})
+            tracks[0]["points"] = [start_xy, end_xy]
     else:
         first, last = (tracks[0], tracks[-1]) if tracks else (None, None)
-        for track, index, layer, grid_xy, actual in (
-            (first, 0, sl, win.xy(si, sj), start_xy), (last, -1, el, win.xy(ei, ej), end_xy),
+        for track, is_start, layer, grid_xy, actual in (
+            (first, True, sl, win.xy(si, sj), start_xy),
+            (last, False, el, win.xy(ei, ej), end_xy),
         ):
-            if grid_xy == actual:
+            lead = _pad_exit_dogleg(actual, grid_xy) if is_start else _pad_exit_dogleg(grid_xy, actual)
+            if not lead:
                 continue
-            if track is not None and track["layer"] == layer and track["points"][index] == grid_xy:
-                track["points"][index] = actual
+            idx = 0 if is_start else -1
+            if track is not None and track["layer"] == layer and track["points"][idx] == grid_xy:
+                if is_start:
+                    track["points"] = lead[:-1] + track["points"]
+                else:
+                    track["points"] = track["points"] + lead[1:]
             else:
-                tracks.append({"layer": layer, "width": rule.width, "net": net, "points": [grid_xy, actual]})
+                tracks.append({"layer": layer, "width": rule.width, "net": net, "points": lead})
     if not _copper_separated(tracks, vias, own_copper, rule.clearance):
         return None
     return tracks, vias

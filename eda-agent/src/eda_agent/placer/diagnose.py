@@ -49,6 +49,16 @@ def _key(row: dict) -> tuple:
 def _drc_rows(report: dict, board_path: Path, report_path: Path) -> list[dict]:
     run = report_path.parent
     native = board_path.with_suffix(".drc.json")
+    if not native.is_file():
+        # Fall back to route_check's final KiCad DRC JSON (sanitized or routed) so dangling warnings surface.
+        rc_stage = (report.get("stages") or {}).get("route_check") or {}
+        rc_rep_path = Path(rc_stage["run_report"]) if rc_stage.get("run_report") else report_path
+        work_dir = rc_rep_path.parent / "work"
+        if work_dir.is_dir():
+            sanitized = sorted(work_dir.glob("drc_sanitized_*.json"))
+            candidate = sanitized[-1] if sanitized else (work_dir / "drc_routed.json")
+            if candidate.is_file():
+                native = candidate
     comparison = run / f"{board_path.stem.removesuffix('.placed')}.ref_unrouted.drc.json"
     after = _load(native) if native.is_file() else None
     before = _load(comparison) if comparison.is_file() else None
@@ -61,7 +71,7 @@ def _drc_rows(report: dict, board_path: Path, report_path: Path) -> list[dict]:
             key = _key(row)
             if baseline[key]:
                 baseline[key] -= 1
-            elif row["severity"] == "error" or row["type"] == "isolated_copper":
+            elif row["severity"] == "error" or row["type"] in ("isolated_copper", "track_dangling", "via_dangling"):
                 rows.append({**row, "source": str(native), "baseline_drc": str(comparison)})
         # KiCad can select different endpoints for the same disconnected islands.
         # Compare connection counts per net and show a representative current pair.
@@ -83,8 +93,18 @@ def _drc_rows(report: dict, board_path: Path, report_path: Path) -> list[dict]:
                                  "source": str(native), "baseline_drc": str(comparison)})
         return rows + sorted(positive, key=lambda row: row["baseline_count"] - row["measured_count"])
     if after is not None:
-        return [{**row, "source": str(native)} for row in after.get("violations", [])
-                if row["severity"] == "error"]
+        dangling_rows = [
+            {**row, "source": str(native)} for row in after.get("violations", [])
+            if row["type"] in ("track_dangling", "via_dangling")
+        ]
+        # Prefer attributed router/new errors when route_check report already separated baseline errors.
+        if report.get("drc"):
+            err_rows = [{**row, "source": str(report_path)} for key in ("router_caused", "new_non_routing")
+                        for row in report.get("drc", {}).get(key, [])]
+            return err_rows + dangling_rows
+        err_rows = [{**row, "source": str(native)} for row in after.get("violations", [])
+                    if row["severity"] == "error"]
+        return err_rows + dangling_rows
     return [{**row, "source": str(report_path)} for key in ("router_caused", "new_non_routing")
             for row in report.get("drc", {}).get(key, [])]
 
@@ -233,6 +253,37 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
                     entry[k] = sf[k]
             findings.append(entry)
 
+    # Surface critical F6 electrical lint findings and top PathFinder congestion hotspots (below DRC/unrouted priority).
+    lint_block = (report.get("metrics") or {}).get("lint") or {}
+    for lf in lint_block.get("findings") or []:
+        if lf.get("severity") != "critical":
+            continue
+        loc = lf.get("location_mm")
+        pts = ([{"x_mm": float(loc[0]), "y_mm": float(loc[1]), "layer": None,
+                 "ref": (lf.get("refs") or [None])[0], "pad": None, "net": lf.get("net")}]
+               if isinstance(loc, (list, tuple)) and len(loc) == 2 else [])
+        findings.append({
+            "kind": f"lint_{lf['rule']}",
+            "severity": "error",
+            "description": lf.get("message") or f"Critical electrical lint finding ({lf['rule']})",
+            "points": pts,
+            "net": lf.get("net"),
+            "refs": lf.get("refs") or [],
+            "source": source,
+        })
+    pf_block = (report.get("metrics") or {}).get("pathfinder") or {}
+    for hs in (pf_block.get("hotspots") or [])[:3]:
+        if float(hs.get("overflow") or 0.0) <= 0.0:
+            continue
+        findings.append({
+            "kind": "pathfinder_hotspot",
+            "severity": "warning",
+            "description": f"PathFinder routing congestion hotspot (overflow={hs['overflow']:.2f})",
+            "points": [{"x_mm": float(hs["x_mm"]), "y_mm": float(hs["y_mm"]), "layer": None, "ref": None, "pad": None}],
+            "overflow": hs["overflow"],
+            "source": source,
+        })
+
     counts = Counter(row["kind"] for row in findings)
     open_link_deltas = [{"net": row["net"], "before": row["baseline_count"], "after": row["measured_count"]}
                         for row in findings if row["kind"] == "unconnected_items" and "baseline_count" in row]
@@ -252,6 +303,10 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
             return priority[kind]
         if kind in silk_kinds:
             return 7 if row.get("severity") == "error" else 8
+        if kind.startswith("lint_"):
+            return 6
+        if kind == "pathfinder_hotspot":
+            return 9
         return 5 if row.get("severity") == "error" else 6
 
     findings.sort(key=_priority)

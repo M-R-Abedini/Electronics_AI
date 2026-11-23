@@ -210,10 +210,12 @@ class PlacerService:
             ("score",
              ("Evaluate the board's current placement: legality gate (courtyard overlap, outline, keepouts), HPWL, "
              "ratsnest crossings, RUDY, critical loops from the design intent, regularity and Pro Score v1. With "
-             "route=true it also runs the strict Freerouting route check (about 1 to 5 minutes) and reports DRC "
-             "attribution, coverage and every unrouted connection with its cause. Writes run_report.json and an "
-             "HTML gallery to a new run folder; never writes the board."),
-             {"board_path": _STRING, "route": {"type": "boolean", "default": True}, "intent_path": _STRING},
+             "route=true it also runs the strict Freerouting route check (optionally with S6a critical copper when "
+             "s6a=true) and reports DRC attribution, drc_signoff, coverage and every unrouted connection with its "
+             "cause. Writes run_report.json and an HTML gallery to a new run folder; never writes the board."),
+             {"board_path": _STRING, "route": {"type": "boolean", "default": True}, "intent_path": _STRING,
+              "s6a": {"type": "boolean", "default": False},
+              "router_timeout_s": {"type": "integer", "minimum": 15, "maximum": 1800}},
              ["board_path"], True),
             ("intent_draft",
              ("Draft the board's design intent (design_intent.json) from its netlist alone: the role of every part "
@@ -248,6 +250,8 @@ class PlacerService:
               "fab_profile": {"type": "string",
                               "enum": ["ipc_standard", "jlcpcb", "pcbway", "high_precision_lpi"],
                               "default": "ipc_standard"},
+              "keep_placement": {"type": "boolean", "default": False},
+              "router_timeout_s": {"type": "integer", "minimum": 15, "maximum": 1800},
               "intent_path": _STRING, "schematic_path": _STRING, "floorplan": {"type": "boolean", "default": False}},
              ["board_path"], False),
             ("place_cluster",
@@ -363,15 +367,17 @@ class PlacerService:
     def place_board(self, board_path: str, side_policy: str | None = None, seed: int = 0, route: bool = True,
                     intent_path: str | None = None, floorplan: bool = False, schematic_path: str | None = None,
                     s6a: bool = True, silkscreen_policy: str = "auto",
-                    fab_profile: str = "ipc_standard") -> dict:
+                    fab_profile: str = "ipc_standard", keep_placement: bool = False,
+                    router_timeout_s: int | None = None) -> dict:
         from .place.pipeline import place_board
 
         board_name = Path(board_path).stem
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         rep = place_board(board_path, out_dir=self.runs / f"{board_name}-place-{stamp}", side_policy=side_policy,
-                          seed=seed, route=route, intent_path=intent_path, floorplan=floorplan,
+                          seed=seed, route=route, router_timeout_s=router_timeout_s,
+                          intent_path=intent_path, floorplan=floorplan,
                           schematic_path=schematic_path, s6a=s6a, silkscreen_policy=silkscreen_policy,
-                          fab_profile=fab_profile)
+                          fab_profile=fab_profile, keep_placement=keep_placement)
         info = rep["stages"]["place"]
         s6a_info = rep["stages"].get("s6a")
         silk_info = info.get("silkscreen")
@@ -529,27 +535,63 @@ class PlacerService:
             structuredContent=value,
         )
 
-    def score(self, board_path: str, route: bool = True, intent_path: str | None = None) -> dict:
+    def score(self, board_path: str, route: bool = True, intent_path: str | None = None,
+              s6a: bool = False, router_timeout_s: int | None = None) -> dict:
         from . import silkscreen as silk_mod
         from .intent.resolve import resolve
+        from .place import problem
 
-        board = read_board(board_path)
+        src = Path(board_path).resolve()
+        board = read_board(src)
         intent, intent_info = resolve(board, intent_path)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         run_dir = (self.runs / f"{board.name}-{stamp}").resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
-        routed = route_check(board_path, out_dir=run_dir / "route", intent=intent) if route else None
+        s6a_stage: dict | None = None
+        route_input: str | Path = src
+        if route and s6a:
+            from .route import s6a as s6a_mod
+
+            s6a_stage = s6a_mod.apply_to_board(src, intent, run_dir / "s6a")
+            if s6a_stage["applied"] and s6a_stage["s6a_board"]:
+                route_input = Path(s6a_stage["s6a_board"])
+        routed = (
+            route_check(route_input, out_dir=run_dir / "route", reference_board=src,
+                        router_timeout_s=router_timeout_s, intent=intent)
+            if route else None
+        )
+        s6a_summary: dict | None = None
+        if s6a_stage is not None:
+            s6a_summary = {k: v for k, v in s6a_stage.items() if k not in ("live_taps", "report")}
+            if routed and s6a_stage["applied"] and s6a_stage["live_taps"]:
+                from .route import s6a as s6a_mod
+
+                s6a_summary["tap_fill_after_ses"] = s6a_mod.verify_taps_after_route(
+                    routed["artifacts"]["routed_board"], s6a_stage["live_taps"]
+                )
         routed_board = read_board(routed["artifacts"]["routed_board"]) if routed else None
-        evaluation = evaluate(board, routed["metrics"] if routed else None, intent=intent, copper_board=routed_board)
+        fixed_map = problem.fixed_parts(board)
+        evaluation = evaluate(
+            board, routed["metrics"] if routed else None,
+            fixed=set(fixed_map), intent=intent, copper_board=routed_board,
+        )
         page = gallery([Panel(f"{board.name} (current placement)", routed_board if routed_board is not None else board,
                               evaluation, routed["metrics"] if routed else None)], run_dir / "gallery.html",
                        title=f"{board.name}: score")
-        gates = [run_report.gate("legality_violations", evaluation["legality"]["violations"], 0, "==")]
+        gates = [run_report.gate("legality_violations", evaluation["legality"]["strict_violations"], 0, "==")]
         if routed:
             gates += routed["gates"]
+        artifacts = {"run_dir": str(run_dir), "placed_board": str(src), "gallery": str(page)}
+        if routed:
+            artifacts["routed_board"] = routed["artifacts"]["routed_board"]
+        if s6a_summary and s6a_summary.get("s6a_board"):
+            artifacts["s6a_board"] = s6a_summary["s6a_board"]
         rep = run_report.build(
-            kind="score", inputs={"board": board.source, "intent": intent_info}, config={"route": route},
-            stages={"evaluate": {"legality": {k: v for k, v in evaluation["legality"].items() if k != "findings"}},
+            kind="score", inputs={"board": board.source, "intent": intent_info},
+            config={"route": route, "s6a": s6a, "router_timeout_s": router_timeout_s},
+            stages={"evaluate": {"legality": {k: v for k, v in evaluation["legality"].items() if k != "findings"},
+                                 "fixed": fixed_map},
+                    "s6a": s6a_summary,
                     "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
             metrics={**evaluation["metrics"], "pro_score": evaluation["pro_score"],
                      "route": routed["metrics"] if routed else None},
@@ -557,7 +599,7 @@ class PlacerService:
             failures=(routed["failures"] if routed else []) + [
                 {"stage": "legality", "cause": f["kind"], "refs": f["refs"], "waived_by": f["waived_by"]}
                 for f in evaluation["legality"]["findings"] if not f["fixed"]],
-            artifacts={"run_dir": str(run_dir), "gallery": str(page)},
+            artifacts=artifacts,
             unknowns=board.unknowns, warnings=board.warnings,
         )
         path = run_report.write(rep, run_dir / "run_report.json")
@@ -565,9 +607,12 @@ class PlacerService:
         lint = evaluation["metrics"].get("lint")
         return {
             "passed": rep["passed"],
+            "drc_signoff": _drc_signoff(rep),
             "gates": [{k: g[k] for k in ("name", "value", "op", "threshold", "passed")} for g in gates],
             "legality": {k: v for k, v in evaluation["legality"].items() if k != "findings"},
             "unwaived_findings": [f for f in evaluation["legality"]["findings"] if not f["waived_by"] and not f["fixed"]],
+            "s6a": ({k: s6a_summary.get(k) for k in ("applied", "reason", "counts", "copper", "pruned_nets", "tap_fill_after_ses")}
+                    if s6a_summary else None),
             "metrics": {"hpwl_signal_mm": evaluation["metrics"]["hpwl"]["signal_mm"],
                         "crossings": evaluation["metrics"]["crossings"],
                         "rudy": evaluation["metrics"]["rudy"],

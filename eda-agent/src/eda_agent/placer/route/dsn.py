@@ -402,6 +402,82 @@ def merge_stacked_fixed_vias(dsn: str, ordered_layer_names: list[str]) -> tuple[
     return head + new_wiring, merged
 
 
+def enable_vippo_attach(dsn: str, *, layer_count: int) -> tuple[str, int]:
+    """Allow locked non-through (VIPPO micro/blind) fixed vias to sit on same-net SMD pads in Freerouting.
+
+    Freerouting 2.5.0 ``Wiring.readViaScope`` sets ``Via.attachAllowed = viaAtSmdAllowed && padstack.attachAllowed``.
+    By emitting ``(control (via_at_smd on))`` inside ``(structure ...)`` and rewriting ``(attach off)`` to
+    ``(attach on)`` strictly on locked non-through microvia padstacks (while leaving through-via padstacks
+    with ``(attach off)``), locked VIPPO microvias stop triggering same-net ``FixedVia <-> BGA Pad``
+    violations without allowing Freerouting to drop through-vias into SMD pads.
+    """
+    if layer_count < 3:
+        return dsn, 0
+    w_idx = dsn.find("(wiring")
+    if w_idx < 0:
+        return dsn, 0
+    last_idx = layer_count - 1
+    vippo_padstacks: set[str] = set()
+    for m in _FIXED_SPAN_VIA.finditer(dsn[w_idx:]):
+        lo = int(m.group(1))
+        hi = int(m.group(2))
+        if min(lo, hi) == 0 and max(lo, hi) == last_idx:
+            continue
+        vippo_padstacks.add(f"Via[{lo}-{hi}]_{m.group(3)}")
+    if not vippo_padstacks:
+        return dsn, 0
+
+    head = dsn[:w_idx]
+    wiring = dsn[w_idx:]
+
+    # 1. Rewrite (attach off) -> (attach on) strictly for locked non-through VIPPO padstacks in (library ...).
+    lib_start = head.find("(library")
+    lib_end = _sexp_end(head, lib_start) if lib_start >= 0 else -1
+    attached = 0
+    if lib_start >= 0 and lib_end > lib_start:
+        lib = head[lib_start:lib_end]
+        for ps_name in sorted(vippo_padstacks):
+            marker = f'(padstack "{ps_name}"'
+            ps_start = lib.find(marker)
+            if ps_start < 0:
+                continue
+            ps_end = _sexp_end(lib, ps_start)
+            if ps_end < 0:
+                continue
+            ps_block = lib[ps_start:ps_end]
+            if "(attach off)" in ps_block:
+                lib = lib[:ps_start] + ps_block.replace("(attach off)", "(attach on)", 1) + lib[ps_end:]
+                attached += 1
+            elif "(attach on)" in ps_block:
+                attached += 1
+        head = head[:lib_start] + lib + head[lib_end:]
+
+    if attached == 0:
+        return dsn, 0
+
+    # 2. Ensure (control (via_at_smd on)) is present inside (structure ...).
+    struct_start = head.find("(structure")
+    struct_end = _sexp_end(head, struct_start) if struct_start >= 0 else -1
+    if struct_start >= 0 and struct_end > struct_start:
+        header = head[struct_start:struct_end]
+        if "(via_at_smd on)" not in header:
+            ctrl_start = header.find("(control")
+            if ctrl_start >= 0:
+                ctrl_end = _sexp_end(header, ctrl_start)
+                if ctrl_end > ctrl_start:
+                    ctrl_body = header[ctrl_start:ctrl_end]
+                    if "(via_at_smd off)" in ctrl_body:
+                        new_ctrl = ctrl_body.replace("(via_at_smd off)", "(via_at_smd on)", 1)
+                    else:
+                        new_ctrl = ctrl_body[:-1].rstrip() + " (via_at_smd on))"
+                    header = header[:ctrl_start] + new_ctrl + header[ctrl_end:]
+            else:
+                header = header[:-1].rstrip() + "\n    (control (via_at_smd on))\n  )"
+            head = head[:struct_start] + header + head[struct_end:]
+
+    return head + wiring, attached
+
+
 def add_class_via_rule(dsn: str, class_name: str, via_names: list[str]) -> str:
     """Attach an explicit ``(circuit (use_via ...))`` list to one DSN net class (opt-in HDI routing)."""
     if not via_names:

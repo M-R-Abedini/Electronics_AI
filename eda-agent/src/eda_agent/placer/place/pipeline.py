@@ -41,7 +41,7 @@ LEGALIZE_STEP_MM = 0.2
 LEGALIZE_RETRIES = 2
 MAX_CORRIDOR_TRIALS = 24
 MAX_INFLATION_ROUNDS = 3
-INFLATION_TIME_GUARD_S = 220.0
+INFLATION_TIME_GUARD_S = 180.0  # reserve headroom for passive alignment within the 300s S0-S5 gate
 NEAR_SATURATION_UTIL = 0.85  # trigger mild cell inflation on hotspots >= 85% utilization even when overflow == 0
 PARALLEL_MIN_MOVABLE = 15  # skip Windows process-spawn overhead on tiny boards
 PARALLEL_MAX_WORKERS = 5  # run up to 5 floorplan variants in 1 parallel wave on multi-core CPUs
@@ -692,7 +692,7 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
                 or cand_pf["routability_cost"] < cur_pf["routability_cost"] * 0.99
             )
         big_relief = cur_pf["total_overflow"] > 1e-6 and cand_pf["total_overflow"] <= cur_pf["total_overflow"] * 0.75
-        xing_tol = max(0, int(0.01 * cur_metrics["crossings"])) if big_relief else 0
+        xing_tol = max(4, int(0.04 * cur_metrics["crossings"])) if big_relief else 0
         no_regress = cand_metrics["crossings"] <= cur_metrics["crossings"] + xing_tol
         if intent and no_regress:
             no_regress = (
@@ -772,7 +772,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
                 floorplan: bool = False, schematic_path: str | Path | None = None,
                 cluster_refs: list[str] | None = None, s6a: bool = True,
                 preserve_routing: str = "none", silkscreen_policy: str = "auto",
-                fab_profile: str = "ipc_standard") -> dict:
+                fab_profile: str = "ipc_standard", keep_placement: bool = False) -> dict:
     """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""
     from .. import silkscreen as silk_mod
     from ..intent.resolve import resolve
@@ -782,6 +782,8 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
         raise ValueError(f"unsupported preserve_routing mode: {preserve_routing!r}")
     if preserve_routing == "outside_cluster" and cluster_refs is None:
         raise ValueError("preserve_routing='outside_cluster' is only valid with cluster_refs")
+    if keep_placement and (cluster_refs is not None or schematic_path is not None):
+        raise ValueError("keep_placement=True cannot be combined with cluster_refs or schematic_path")
     if silkscreen_policy not in silk_mod.SILKSCREEN_POLICIES:
         raise ValueError(f"unsupported silkscreen_policy: {silkscreen_policy!r}")
     if fab_profile not in silk_mod.FAB_PROFILES:
@@ -789,8 +791,10 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     src = Path(board_path).resolve()
     reference = read_board(src)
     board, cold = reference, None
-    if cluster_refs is not None and (schematic_path is not None or route):
-        raise ValueError("cluster placement requires the existing layout and route=False")
+    if cluster_refs is not None and schematic_path is not None:
+        raise ValueError("cluster placement requires the existing layout (no schematic_path)")
+    if cluster_refs is not None and route and preserve_routing != "outside_cluster":
+        raise ValueError("cluster placement requires route=False unless preserve_routing='outside_cluster'")
     if schematic_path is not None:
         from ..io.schematic_input import cold_input
 
@@ -810,7 +814,29 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = (Path(out_dir) if out_dir else RUNTIME_DIR / "place" / f"{board.name}-{stamp}").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
-    placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=floorplan)
+    if keep_placement:
+        placed = board.copy()
+        fixed_map = problem.fixed_parts(placed)
+        boxes = {fp.ref: problem.local_box(fp) for fp in placed.footprints}
+        info = {
+            "mode": "keep_placement",
+            "fixed": fixed_map,
+            "movable": 0,
+            "seconds_s0_s5": 0.0,
+            "strict_violations": sum(not f.fixed for f in legality.check(placed, fixed=set(fixed_map))),
+            "illegal_after_s5": [],
+            "s4_failed": [],
+            "mechanical_anchors": [],
+            "floorplan": {
+                "selected_variant": "keep_placement",
+                "quality_guard": None,
+                "reservations_used": False,
+                "reserved_pad_count": 0,
+                "escape": escape.audit(placed, escape.envelopes(placed, intent, boxes)),
+            },
+        }
+    else:
+        placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=floorplan)
     if cluster_refs is not None:
         relocates = any(row["mode"] == "region" for row in info["mechanical_anchors"])
         if info["movable"] == 0 and not relocates:
@@ -881,7 +907,19 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
         }
     s6a_stage: dict | None = None
     route_input = out_board
-    if route and s6a:
+    if eco_preserve and route:
+        import shutil
+
+        from ..io.kicad import PROJECT_SIDECARS, run_helper
+
+        locked_eco = run_dir / f"{board.name}.eco_locked.kicad_pcb"
+        run_helper("lock_routing", out_board, locked_eco, run_dir / "eco_lock.json")
+        for suffix in PROJECT_SIDECARS:
+            side = out_board.with_suffix(suffix)
+            if side.is_file():
+                shutil.copyfile(side, locked_eco.with_suffix(suffix))
+        route_input = locked_eco
+    elif route and s6a:
         from ..route import s6a as s6a_mod
 
         s6a_stage = s6a_mod.apply_to_board(out_board, intent, run_dir / "s6a")
@@ -926,9 +964,10 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     rep = run_report.build(
         kind="place_cluster" if cluster_refs is not None else "place_board",
         inputs={"board": board.source, "intent": intent_info},
-        config={"side_policy": side_policy, "mode": mode, "seed": seed, "w_cross": problem.WEIGHT_SIGNAL * W_CROSS,
+        config={"side_policy": side_policy, "mode": info["mode"], "seed": seed, "w_cross": problem.WEIGHT_SIGNAL * W_CROSS,
                 "sa_moves_per_part": SA_MOVES_PER_PART, "floorplan": floorplan, "cluster_refs": cluster_refs,
-                "s6a": s6a, "preserve_routing": preserve_routing,
+                "s6a": s6a, "preserve_routing": preserve_routing, "keep_placement": keep_placement,
+                "router_timeout_s": router_timeout_s,
                 "silkscreen_policy": silkscreen_policy, "fab_profile": fab_profile},
         stages={"place": info, "s6a": s6a_summary,
                 "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},

@@ -56,8 +56,10 @@ def envelopes(board: Board, intent: dict, boxes: dict[str, Box]) -> dict[str, li
             side = min(range(4), key=lambda i: gaps[i])
             ux, uy = _DIRECTIONS[side]
             to_edge = (x - x0, y - y0, x1 - x, y1 - y)[side]
-            # Pads well inside a package need a BGA escape strategy, not an exterior reservation.
-            if gaps[side] > max(pad.size):
+            # Pads well inside a package need a BGA escape strategy, not an exterior reservation;
+            # only relax for tiny fine-pitch BGA outer balls (<= 0.30 mm) where courtyard margin exceeds ball diameter.
+            gap_lim = max(pad.size) * 2.0 if max(pad.size) <= 0.30 else max(pad.size)
+            if gaps[side] > gap_lim:
                 continue
             clearance = max(rule.clearance, 0.0)
             width = rule.track_width + 2 * clearance

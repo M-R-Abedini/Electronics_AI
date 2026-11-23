@@ -32,8 +32,10 @@ from .copper import (
 from .fanout import _obstacle_hits_nets
 
 BGA_MIN_PADS = 16
+WLCSP_MIN_PADS = 9
 BGA_MAX_PADS = 400
 BGA_MIN_GRID = 4
+WLCSP_MIN_GRID = 3
 BGA_MIN_PITCH_MM = 0.35
 BGA_MAX_PITCH_MM = 1.50
 CLUSTER_TOL_MM = 0.08
@@ -65,15 +67,15 @@ def _median(vals: list[float]) -> float:
 
 
 def detect_bga(fp: Footprint) -> dict[str, Any] | None:
-    """Detect a regular 2D SMD ball grid array from pad coordinates alone."""
+    """Detect a regular 2D SMD ball grid array (or fine-pitch WLCSP) from pad coordinates alone."""
     smd = [p for p in fp.pads if p.kind == "smd"]
-    if len(smd) < BGA_MIN_PADS or len(smd) > BGA_MAX_PADS:
+    if len(smd) < WLCSP_MIN_PADS or len(smd) > BGA_MAX_PADS:
         return None
     areas = sorted(p.size[0] * p.size[1] for p in smd)
     med_area = areas[len(areas) // 2]
     # Exclude large exposed thermal pads so only ball pads define the array grid.
     balls = [p for p in smd if p.size[0] * p.size[1] <= max(med_area * 2.5, 0.01)]
-    if len(balls) < BGA_MIN_PADS:
+    if len(balls) < WLCSP_MIN_PADS:
         return None
     # True BGA balls are symmetric (square/circular); reject elongated LGA/QFN perimeter modules.
     symmetric = sum(
@@ -86,7 +88,7 @@ def detect_bga(fp: Footprint) -> dict[str, Any] | None:
 
     cols = _cluster_coords([p.local[0] for p in balls])
     rows = _cluster_coords([p.local[1] for p in balls])
-    if len(cols) < BGA_MIN_GRID or len(rows) < BGA_MIN_GRID:
+    if len(cols) < WLCSP_MIN_GRID or len(rows) < WLCSP_MIN_GRID:
         return None
 
     dx_list = [cols[i + 1] - cols[i] for i in range(len(cols) - 1)]
@@ -97,6 +99,9 @@ def detect_bga(fp: Footprint) -> dict[str, Any] | None:
         return None
     if abs(px - py) > 0.15 * max(px, py):
         return None
+    fine_wlcsp = min(px, py) <= MICROVIA_AUTO_PITCH_MM
+    if not fine_wlcsp and (len(balls) < BGA_MIN_PADS or len(cols) < BGA_MIN_GRID or len(rows) < BGA_MIN_GRID):
+        return None
 
     # Regularity check: at least 75% of adjacent column/row steps match median pitch within 12%.
     good_x = sum(1 for d in dx_list if abs(d - px) <= 0.12 * px)
@@ -104,7 +109,7 @@ def detect_bga(fp: Footprint) -> dict[str, Any] | None:
     if good_x / len(dx_list) < 0.75 or good_y / len(dy_list) < 0.75:
         return None
 
-    # Confirm interior pads exist (distinguishes true 2D BGA from perimeter-only QFN/QFP).
+    # Confirm interior pads exist (distinguishes true 2D BGA/WLCSP from perimeter-only QFN/QFP).
     grid: dict[tuple[int, int], Pad] = {}
     for p in balls:
         ci = min(range(len(cols)), key=lambda i: abs(cols[i] - p.local[0]))
@@ -113,7 +118,8 @@ def detect_bga(fp: Footprint) -> dict[str, Any] | None:
             grid[(ci, ri)] = p
     ncols, nrows = len(cols), len(rows)
     interior = [k for k in grid if 0 < k[0] < ncols - 1 and 0 < k[1] < nrows - 1]
-    if len(interior) < 4:
+    min_interior = 1 if fine_wlcsp else 4
+    if len(interior) < min_interior:
         return None
 
     pad_diam = _median([max(p.size[0], p.size[1]) for p in balls])
@@ -773,29 +779,37 @@ def plan_bga_escapes(
                     stagger_layer = (
                         plane_adj2
                         if (net in plane_nets and adj1 not in net_plane_lyrs and plane_adj2 is not None and plane_adj2 in net_plane_lyrs)
-                        else (adj2 if (adj2 is not None and escape_sig_here and net not in plane_nets and ring >= 2) else None)
+                        else (
+                            adj2
+                            if (adj2 is not None and escape_sig_here and net not in plane_nets
+                                and (ring >= 2 or adj1 in all_plane_lyrs))
+                            else None
+                        )
                     )
                     need_l2_l3 = stagger_layer is not None
                     can_l1_l2 = (
-                        (net not in plane_nets)
+                        (net not in plane_nets and adj1 not in all_plane_lyrs)
                         or (adj1 in net_plane_lyrs)
                         or (ring >= 1 and adj1 not in all_plane_lyrs)
                     )
                     if need_l2_l3 and stagger_layer is not None:
-                        for dx, dy in offsets:
-                            stag_xy = transform((pad.local[0] + dx, pad.local[1] + dy), (fp.x, fp.y), fp.rotation)
-                            if target_plane is not None and not target_plane.covers(Point(round(stag_xy[0], 4), round(stag_xy[1], 4))):
-                                continue
-                            got_u = ctx.validate_staggered_microvia(
-                                net, pad_layer, adj1, stagger_layer, pad_xy, stag_xy, uw, uclr, ud, udr,
-                            )
-                            if got_u is not None:
-                                placed_uvia = got_u
-                                uvia_kind = "microvia_l1_l2_l3_staggered"
-                                break
+                        # Do not draw a foreign-net staggered stub inside a solid plane layer adj1.
+                        if net in plane_nets or adj1 not in all_plane_lyrs:
+                            for dx, dy in offsets:
+                                stag_xy = transform((pad.local[0] + dx, pad.local[1] + dy), (fp.x, fp.y), fp.rotation)
+                                if target_plane is not None and not target_plane.covers(Point(round(stag_xy[0], 4), round(stag_xy[1], 4))):
+                                    continue
+                                got_u = ctx.validate_staggered_microvia(
+                                    net, pad_layer, adj1, stagger_layer, pad_xy, stag_xy, uw, uclr, ud, udr,
+                                )
+                                if got_u is not None:
+                                    placed_uvia = got_u
+                                    uvia_kind = "microvia_l1_l2_l3_staggered"
+                                    break
                         # If tight pitch (e.g. 0.40 mm WLCSP) cannot fit a staggered L2-L3 microvia,
-                        # use an IPC-4761 stacked L1-L2 + L2-L3 microvia-in-pad directly to the inner plane.
-                        if placed_uvia is None and net in plane_nets and (
+                        # or adj1 is a solid plane layer for a signal ball, use an IPC-4761 stacked
+                        # L1-L2 + L2-L3 microvia-in-pad straight through adj1 to stagger_layer.
+                        if placed_uvia is None and (net in plane_nets or adj1 in all_plane_lyrs) and (
                             target_plane is None or target_plane.covers(Point(round(pad_xy[0], 4), round(pad_xy[1], 4)))
                         ):
                             v1 = ctx._validate_microvia(
