@@ -832,6 +832,39 @@ def plan_bga_escapes(
                         if v1 is not None:
                             placed_uvia = [v1]
                             uvia_kind = "microvia_in_pad_l1_l2"
+                    # Deeper inner power/ground plane (e.g. In4.Cu 1V8 on an 8L HDI board):
+                    # when a board-legal VIPPO through-via fits inside the BGA ball pad, drop straight to it.
+                    if (
+                        placed_uvia is None
+                        and net in plane_nets
+                        and net_plane_lyrs
+                        and not (net_plane_lyrs & {adj1, plane_adj2})
+                        and (target_plane is None or target_plane.covers(Point(round(pad_xy[0], 4), round(pad_xy[1], 4))))
+                    ):
+                        nc_t = board.netclass_of(net)
+                        tvd = max(
+                            float(getattr(nc_t, "via_diameter", 0.0) or 0.0) if nc_t else 0.0,
+                            float(board.rules.get("min_via_diameter") or 0.0),
+                        )
+                        tvdr = max(
+                            float(getattr(nc_t, "via_drill", 0.0) or 0.0) if nc_t else 0.0,
+                            float(board.rules.get("min_through_drill") or 0.0),
+                        )
+                        min_ann = float(board.rules.get("min_via_annular_width") or 0.0)
+                        if 0.5 * (tvd - tvdr) + 1e-6 < min_ann:
+                            tvd = round(tvdr + 2.0 * min_ann, 4)
+                        if tvd > 0.0 and tvdr > 0.0 and tvd <= pad_diam + 0.06:
+                            vt = ctx._validate_microvia(
+                                net, pad_xy, tuple(ctx.ordered_layers), uclr, tvd, tvdr,
+                                allow_own_pad_at=pad_xy,
+                            )
+                            if vt is not None:
+                                vt["layers"] = [ctx.top_layer, ctx.bottom_layer]
+                                vt["via_type"] = "through"
+                                vt["filled"] = True
+                                vt["capped"] = True
+                                placed_uvia = [vt]
+                                uvia_kind = "vippo_through_plane"
 
             if placed_uvia is not None:
                 for item in placed_uvia:
@@ -845,7 +878,7 @@ def plan_bga_escapes(
                 row.update(
                     routed=True,
                     kind=uvia_kind,
-                    via_type="micro",
+                    via_type=vias_u[0].get("via_type", "micro"),
                     via_count=len(vias_u),
                     via_diameter_mm=vias_u[0]["diameter"],
                     via_drill_mm=vias_u[0]["drill"],

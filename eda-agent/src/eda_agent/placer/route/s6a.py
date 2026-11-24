@@ -43,6 +43,7 @@ from .check import route_check
 from .copper import pad_layers
 from .fanout import (
     plan_cross_link,
+    plan_plane_stitching,
     plan_power_link,
     plan_power_tap,
     reserve_power_escapes,
@@ -346,11 +347,12 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                         share_via = vias_list[0]
                         target_via = vias_list[-1]
                         shared = id(share_via) in users
-                        closed = traps_pads(board, fixed, [track], [] if shared else vias_list, {pad.net})
+                        new_tracks = [track] if track is not None else []
+                        closed = traps_pads(board, fixed, new_tracks, [] if shared else vias_list, {pad.net})
                         if closed:
                             trapped_reason = f"closes in {closed[0]}"
                             continue
-                        fixed += [track] if shared else [track, *vias_list]
+                        fixed += new_tracks if shared else (new_tracks + vias_list)
                         if not shared:
                             tap_vias.append(share_via)
                         users[id(share_via)] = users.get(id(share_via), 0) + 1
@@ -358,13 +360,20 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                         row.update(routed=True, layer=layer, shared_via=shared,
                                    via_type=target_via.get("via_type", "through"),
                                    length_mm=round(sum(math.dist(p, q) for p, q in
-                                                       itertools.pairwise(track["points"])), 3))
+                                                       itertools.pairwise(track["points"])), 3) if track is not None else 0.0)
                         break
                 if not row["routed"]:
                     row["failed"] = trapped_reason or (
                         f"no via site within {TAP_MAX_MM} mm" if targets else "pour only on the pad's own layer"
                     )
                 report["taps"].append(row)
+        stitch_vias = plan_plane_stitching(board, pours, fixed=fixed)
+        if stitch_vias:
+            fixed.extend(stitch_vias)
+            report["plane_stitching"] = [
+                {"net": v["net"], "x": round(v["x"], 4), "y": round(v["y"], 4), "layers": v["layers"]}
+                for v in stitch_vias
+            ]
     settle_plane_links(report, plane_links)
     if pairs and power_first:
         route_confirmed_pairs()
@@ -482,7 +491,7 @@ def _write_and_verify_taps(src: Path, out: Path, copper: list[dict], live_taps: 
             break
         for row, track, via in dead:
             row.update(routed=False, failed="via is not on filled copper after the refill")
-            if track in copper:
+            if track is not None and track in copper:
                 copper.remove(track)
             if via in copper:  # a shared via goes once, with every tap on it
                 copper.remove(via)

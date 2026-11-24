@@ -14,6 +14,7 @@ from eda_agent.placer.ir import (
     CopperLayer,
     Courtyard,
     Footprint,
+    LayerRole,
     Net,
     NetClass,
     Outline,
@@ -281,3 +282,72 @@ def test_congestion_unfilled_plane_zones_and_intent_lint_honesty(tmp_path):
     assert len({k1, k2, k3}) == 3
     tools = run_report.tools()
     assert tools["placer_core"] is not None
+
+
+def test_fanout_strict_octilinear_and_multiplane_stitching():
+    # Every segment emitted by _candidate_paths and _joins must be strictly 0/45/90 degrees.
+    for full_sweep in (False, True):
+        for ang in (0.0, 0.35, 1.1, 2.2, -0.7):
+            for pts in list(fanout._candidate_paths((10.0, 10.0), ang, 1.2, full_sweep=full_sweep))[:40]:
+                for a, b in itertools.pairwise(pts):
+                    dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+                    assert dx < 1e-3 or dy < 1e-3 or abs(dx - dy) < 1e-3, f"Non-octilinear tap: {a} -> {b}"
+    for end in ((10.8, 10.3), (11.2, 9.7), (10.0, 11.0), (10.5, 10.5)):
+        for pts in list(fanout._joins((10.0, 10.0), 0.25, end))[:8]:
+            for a, b in itertools.pairwise(pts):
+                dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+                assert dx < 1e-3 or dy < 1e-3 or abs(dx - dy) < 1e-3, f"Non-octilinear join: {a} -> {b}"
+
+    # Multi-plane same-net stitching: 6L board with dual GND planes (In2.Cu + In4.Cu) gets stitching through-vias.
+    board = _hdi_6l_board()
+    board.zones = [
+        {"uuid": "z1", "net": "GND", "layers": ["In2.Cu"], "outline": [[(0.5, 0.5), (15.5, 0.5), (15.5, 15.5), (0.5, 15.5)]]},
+        {"uuid": "z2", "net": "GND", "layers": ["In4.Cu"], "outline": [[(0.5, 0.5), (15.5, 0.5), (15.5, 15.5), (0.5, 15.5)]]},
+    ]
+    stitched = fanout.plan_plane_stitching(board, {"GND": {"In2.Cu", "In4.Cu"}}, fixed=[], min_stitch_vias=4)
+    assert len(stitched) == 4
+    assert all(v["net"] == "GND" and v["layers"] == ["F.Cu", "B.Cu"] for v in stitched)
+
+
+def test_bga_escape_deep_inner_plane_vippo_through_via():
+    # 6L HDI board where In1.Cu is GND and In3.Cu is 1V8: inner 0.40 mm BGA ball on 1V8 uses VIPPO through-via.
+    board = _hdi_6l_board()
+    board.rules["min_via_diameter"] = 0.20
+    board.rules["min_through_drill"] = 0.10
+    board.netclasses[0].via_diameter = 0.20
+    board.netclasses[0].via_drill = 0.10
+    board.nets.append(Net("1V8", "Default", []))
+    board.zones = [
+        {"uuid": "z1", "net": "GND", "layers": ["In1.Cu"], "outline": [[(0.2, 0.2), (19.8, 0.2), (19.8, 19.8), (0.2, 19.8)]], "filled": True, "filled_area_mm2": {"In1.Cu": 380.0}},
+        {"uuid": "z2", "net": "1V8", "layers": ["In3.Cu"], "outline": [[(0.2, 0.2), (19.8, 0.2), (19.8, 19.8), (0.2, 19.8)]], "filled": True, "filled_area_mm2": {"In3.Cu": 380.0}},
+    ]
+    board.stackup = Stackup(
+        source="test",
+        roles=[
+            LayerRole("F.Cu", "signal", None, (), 0.0, 1.0),
+            LayerRole("In1.Cu", "plane", "GND", ("GND",), 0.95, 1.0),
+            LayerRole("In2.Cu", "signal", None, (), 0.0, 1.0),
+            LayerRole("In3.Cu", "plane", "1V8", ("1V8",), 0.95, 1.0),
+            LayerRole("In4.Cu", "signal", None, (), 0.0, 1.0),
+            LayerRole("B.Cu", "signal", None, (), 0.0, 1.0),
+        ],
+    )
+    rows = ("A", "B", "C")
+    pads = []
+    for ri, rch in enumerate(rows):
+        for ci in range(3):
+            pnum = f"{rch}{ci + 1}"
+            pnet = "1V8" if pnum == "B2" else ("GND" if pnum == "A1" else "SIG1")
+            pads.append(Pad(pnum, pnet, ((ci - 1) * 0.40, (ri - 1) * 0.40), (0.22, 0.22), kind="smd", layers=("F.Cu",)))
+    board.footprints = [
+        Footprint(
+            ref="U8", value="WLCSP9", lib_id="WLCSP9_0.4", x=10.0, y=10.0, rotation=0.0, side="F",
+            courtyard=Courtyard("file", polygons=[[(-0.7, -0.7), (0.7, -0.7), (0.7, 0.7), (-0.7, 0.7)]]),
+            pads=pads,
+        ),
+    ]
+    res = bga_escape.plan_bga_escapes(board, {"parts": {}, "nets": {}, "diff_pairs": []}, fixed=[], include_signals=False)
+    b2 = [r for r in res["rows"] if r["ref"] == "U8" and r["pad"] == "B2"]
+    assert len(b2) == 1 and b2[0]["routed"] is True
+    assert b2[0]["kind"] == "vippo_through_plane"
+    assert b2[0]["via_type"] == "through"

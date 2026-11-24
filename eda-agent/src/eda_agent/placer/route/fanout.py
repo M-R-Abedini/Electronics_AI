@@ -126,32 +126,87 @@ def plan_power_link(board: Board, source: tuple[Footprint, Pad], destination: tu
     return None
 
 
+_OCT_STEPS: dict[int, tuple[int, int]] = {
+    0: (1, 0),
+    45: (1, 1),
+    90: (0, 1),
+    135: (-1, 1),
+    180: (-1, 0),
+    225: (-1, -1),
+    270: (0, -1),
+    315: (1, -1),
+}
+
+
+def _advance_oct(point: tuple[float, float], deg: int, length_mm: float) -> tuple[float, float]:
+    """Advance strictly along a 0/45/90-degree octilinear ray with exact |dx| == |dy| on diagonals."""
+    sx, sy = _OCT_STEPS[deg % 360]
+    if sx != 0 and sy != 0:
+        d = round(length_mm / math.sqrt(2.0), 4)
+        return (round(point[0] + sx * d, 4), round(point[1] + sy * d, 4))
+    d = round(length_mm, 4)
+    return (round(point[0] + sx * d, 4), round(point[1] + sy * d, 4))
+
+
+def _octilinear_joins(origin: tuple[float, float], end: tuple[float, float]) -> Iterator[list[tuple[float, float]]]:
+    """Yield 1- or 2-segment strict 0/45/90-degree octilinear polylines connecting ``origin`` to ``end``."""
+    dx = end[0] - origin[0]
+    dy = end[1] - origin[1]
+    adx, ady = abs(dx), abs(dy)
+    if adx < 1e-4 or ady < 1e-4 or abs(adx - ady) < 1e-4:
+        yield [origin, end]
+        return
+    diag = min(adx, ady)
+    sx = 1.0 if dx > 0 else -1.0
+    sy = 1.0 if dy > 0 else -1.0
+    # 1. Diagonal first from origin, then cardinal into end.
+    k1 = (round(origin[0] + sx * diag, 4), round(origin[1] + sy * diag, 4))
+    yield [origin, k1, end]
+    # 2. Cardinal first from origin, then diagonal into end.
+    if adx > ady:
+        k2 = (round(origin[0] + sx * (adx - diag), 4), origin[1])
+    else:
+        k2 = (origin[0], round(origin[1] + sy * (ady - diag), 4))
+    if k2 != k1:
+        yield [origin, k2, end]
+
+
 def _candidate_paths(origin: tuple[float, float], angle: float,
                      max_length_mm: float, *, full_sweep: bool = False) -> Iterator[list[tuple[float, float]]]:
-    def advance(point: tuple[float, float], direction: float, steps: int) -> tuple[float, float]:
-        return point[0] + steps / 20 * math.cos(direction), point[1] + steps / 20 * math.sin(direction)
+    """Yield strict 0/45/90-degree octilinear tap paths (1- or 2-segment) up to ``max_length_mm``.
 
+    Strict octilinear geometry prevents Freerouting's PolylineTrace.normalize from oscillating on
+    locked non-45-degree S6a power stubs while reaching every quadrant via 45-degree mitred doglegs.
+    """
+    base_deg = (round(math.degrees(angle) / 45.0) * 45) % 360
     max_steps = int(max_length_mm * 20 + 1e-9)
     if full_sweep:
-        # Fallback when primary +/-60 deg outward sweep is blocked (e.g. pad facing board edge):
-        # try shorter fine-pitch steps (0.25..0.35 mm) and wide/side/back angles (75..180 deg).
+        # Fallback when primary +/-45 deg outward sweep is blocked (e.g. pad facing board edge):
+        # try shorter fine-pitch steps (0.25..0.35 mm) and wide/side/back octilinear rays + doglegs.
         for steps in range(5, min(8, max_steps + 1)):
-            for turn in (0, 15, -15, 30, -30, 45, -45, 60, -60):
-                yield [origin, advance(origin, angle + math.radians(turn), steps)]
+            for turn in (0, 45, -45):
+                yield [origin, _advance_oct(origin, base_deg + turn, steps / 20.0)]
         for steps in range(5, max_steps + 1):
-            for turn in (75, -75, 90, -90, 105, -105, 120, -120, 135, -135, 150, -150, 165, -165, 180):
-                yield [origin, advance(origin, angle + math.radians(turn), steps)]
+            for turn in (90, -90, 135, -135, 180):
+                yield [origin, _advance_oct(origin, base_deg + turn, steps / 20.0)]
+        for steps in range(10, max_steps + 1):
+            for first_steps in range(4, min(20, steps - 3), 2):
+                for departure in (90, -90, 135, -135, 180):
+                    d0 = (base_deg + departure) % 360
+                    knee = _advance_oct(origin, d0, first_steps / 20.0)
+                    for bend in (45, -45):
+                        yield [origin, knee, _advance_oct(knee, d0 + bend, (steps - first_steps) / 20.0)]
         return
     for steps in range(8, max_steps + 1):
-        for turn in (0, 15, -15, 30, -30, 45, -45, 60, -60):
-            yield [origin, advance(origin, angle + math.radians(turn), steps)]
-    for steps in range(14, max_steps + 1):
-        for first_steps in range(8, min(25, steps - 5), 2):
-            for departure in (0, 15, -15, 30, -30):
-                direction = angle + math.radians(departure)
-                knee = advance(origin, direction, first_steps)
+        for turn in (0, 45, -45):
+            yield [origin, _advance_oct(origin, base_deg + turn, steps / 20.0)]
+    for steps in range(10, max_steps + 1):
+        for first_steps in range(4, min(24, steps - 3), 2):
+            for departure in (0, 45, -45):
+                d0 = (base_deg + departure) % 360
+                knee = _advance_oct(origin, d0, first_steps / 20.0)
                 for bend in (45, -45, 90, -90):
-                    yield [origin, knee, advance(knee, direction + math.radians(bend), steps - first_steps)]
+                    yield [origin, knee, _advance_oct(knee, d0 + bend, (steps - first_steps) / 20.0)]
 
 
 class _Site:
@@ -205,14 +260,16 @@ class _Site:
         )
         # A via keeps the clearance to SMD pads of its own net as well: the router counts a via
         # closer than that to a same-net SMD pad as a violation (no via on or against a pad).
-        solder_pads_by_layer: list[tuple[frozenset[str], Polygon]] = [
+        solder_pads_by_layer: list[tuple[frozenset[str], Polygon, tuple[float, float], str | None]] = [
             (
                 frozenset(pad_layers(fp, pad, self.layers)),
                 pad_polygon(fp, pad, clearance if pad.net == net else via_clr),
+                fp.pad_world(pad),
+                pad.net,
             )
             for fp in board.footprints for pad in fp.pads if pad.kind == "smd"
         ]
-        solder_pads = [g for _, g in solder_pads_by_layer]
+        solder_pads = [g for _, g, _, _ in solder_pads_by_layer]
         keepouts = [
             (area["layers"], area["keepout"], Polygon(area["polygons"][0], area["polygons"][1:]))
             for area in board.rule_areas if area["polygons"]
@@ -247,23 +304,32 @@ class _Site:
                 self.outline, self._track, self._via, self._via_layer_obs, self._via_span_cache,
             )
 
-    def _via_for_span(self, span: frozenset[str]):
-        cached = self._via_span_cache.get(span)
-        if cached is not None:
-            return cached
+    def _via_for_span(self, span: frozenset[str], *, skip_own_pad_at: tuple[float, float] | None = None):
+        if skip_own_pad_at is None:
+            cached = self._via_span_cache.get(span)
+            if cached is not None:
+                return cached
         solder_pads_by_layer, via_pad_obstacles, keepouts, graphics = self._via_layer_obs
         geoms = (
-            [g for lays, g in solder_pads_by_layer if lays & span]
+            [
+                g for lays, g, pxy, pnet in solder_pads_by_layer
+                if (lays & span) and not (
+                    skip_own_pad_at is not None and pnet == self.net
+                    and math.hypot(pxy[0] - skip_own_pad_at[0], pxy[1] - skip_own_pad_at[1]) <= 0.05
+                )
+            ]
             + [g for lays, g in via_pad_obstacles if set(lays) & span]
             + [g for lays, flags, g in keepouts if flags["vias"] and set(lays) & span]
             + [g for copper, g in graphics if copper in span]
         )
         prepared = prep(unary_union(geoms)) if geoms else prep(Polygon())
-        self._via_span_cache[span] = prepared
+        if skip_own_pad_at is None:
+            self._via_span_cache[span] = prepared
         return prepared
 
     def microvia_tap(
-        self, x: float, y: float, source_layer: str, target_layer: str, inside=None,
+        self, x: float, y: float, source_layer: str, target_layer: str, inside=None, *,
+        allow_own_pad_at: tuple[float, float] | None = None,
     ) -> list[dict] | None:
         """Layer-scoped blind/microvia stack from *source_layer* to inner plane *target_layer*.
 
@@ -306,7 +372,7 @@ class _Site:
         pt = Point(x, y)
         vr = ud / 2.0
         shape = pt.buffer(vr)
-        if (inside is not None and not inside.covers(shape)) or self._via_for_span(span_set).intersects(shape):
+        if (inside is not None and not inside.covers(shape)) or self._via_for_span(span_set, skip_own_pad_at=allow_own_pad_at).intersects(shape):
             return None
         if not self.outline.covers(shape.buffer(self.edge)):
             return None
@@ -399,12 +465,14 @@ def _outer_layer(board: Board, footprint: Footprint, pad: Pad) -> str | None:
 
 
 def _joins(origin: tuple[float, float], angle: float, end: tuple[float, float]) -> Iterator[list[tuple[float, float]]]:
-    """Straight to ``end``, then with one knee on the pad's outward axis."""
-    yield [origin, end]
-    for steps in range(8, 31, 2):
-        knee = (origin[0] + steps / 20 * math.cos(angle), origin[1] + steps / 20 * math.sin(angle))
-        if math.dist(knee, end) > 1e-6:
-            yield [origin, knee, end]
+    """Strict 0/45/90-degree octilinear joins to ``end``, plus one-knee outward octilinear exits."""
+    yield from _octilinear_joins(origin, end)
+    base_deg = (round(math.degrees(angle) / 45.0) * 45) % 360
+    for steps in range(6, 29, 4):
+        knee = _advance_oct(origin, base_deg, steps / 20.0)
+        if math.dist(knee, end) > 1e-4:
+            for tail in _octilinear_joins(knee, end):
+                yield [origin, *tail]
 
 
 def _length(points: list[tuple[float, float]]) -> float:
@@ -464,6 +532,11 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
                 uvias = site.microvia_tap(*points[-1], layer, target_layer, inside=target)
                 if uvias and (track := site.track(layer, points)):
                     return track, (uvias[0] if len(uvias) == 1 else uvias)
+        # HDI VIPPO fallback: when off-pad dogleg sites are blocked on a dense microvia-enabled board
+        # and the microvia fits inside the SMD pad itself, drop directly in-pad (IPC-4761 Type VII).
+        uvias_inpad = site.microvia_tap(*origin, layer, target_layer, inside=target, allow_own_pad_at=origin)
+        if uvias_inpad and min(pad.size) + 1e-6 >= uvias_inpad[0]["diameter"]:
+            return None, (uvias_inpad[0] if len(uvias_inpad) == 1 else uvias_inpad)
     return None
 
 
@@ -586,3 +659,106 @@ def reserve_power_escapes(board: Board, intent: dict, *, active_roles: tuple[str
             if trk is not None:
                 reserved.append({**trk, "kind": "reserve", "owner": owner, "origin": origin})
     return reserved
+
+
+def plan_plane_stitching(
+    board: Board,
+    pours: dict[str, set[str]],
+    *,
+    fixed: list[dict],
+    min_stitch_vias: int = 8,
+    min_spacing_mm: float = 3.0,
+) -> list[dict]:
+    """Place DRC-checked through-vias stitching same-net inner planes together (e.g. dual GND planes).
+
+    On 6L/8L+ HDI boards with multiple inner planes on the same net (such as In1.Cu and In6.Cu both on GND),
+    blind surface microvias (F.Cu->In1.Cu and B.Cu->In6.Cu) leave those two planes electrically disconnected
+    unless stitched with through-vias. Adding well-distributed through-vias guarantees a unified low-inductance
+    return path and prevents the autorouter from oscillating while trying to bridge split planes.
+    """
+    ordered = [cl.canonical for cl in sorted(board.copper_layers, key=lambda c: c.index)]
+    if len(ordered) < 4:
+        return []
+    by_canon = {cl.name: cl.canonical for cl in board.copper_layers}
+    outer = {ordered[0], ordered[-1]}
+    stitched: list[dict] = []
+    cur_fixed = list(fixed)
+
+    for net in sorted(pours):
+        plane_lyrs = sorted({by_canon.get(n, n) for n in pours[net]} - outer)
+        if len(plane_lyrs) < 2 or board.netclass_of(net) is None:
+            continue
+        plane_set = set(plane_lyrs)
+        existing_stitch = [
+            v for v in cur_fixed
+            if v.get("net") == net and "points" not in v and plane_set <= via_layer_span(v, ordered)
+        ]
+        if len(existing_stitch) >= min_stitch_vias:
+            continue
+        # Intersect the plane outlines across all plane layers of this net so every stitch hits all planes.
+        common = None
+        for lyr in plane_lyrs:
+            polys = [
+                Polygon(z["outline"][0], z["outline"][1:])
+                for z in board.zones
+                if z.get("net") == net and z.get("outline")
+                and lyr in {by_canon.get(n, n) for n in z.get("layers", ())}
+            ]
+            if not polys:
+                common = None
+                break
+            u = unary_union(polys)
+            common = u if common is None else common.intersection(u)
+        if common is None or common.is_empty:
+            continue
+
+        x0, y0, x1, y1 = common.bounds
+        step = max(1.0, min(2.5, min(x1 - x0, y1 - y0) / 10.0))
+        candidates: list[tuple[float, float]] = []
+        y = y0 + step * 0.5
+        while y < y1:
+            x = x0 + step * 0.5
+            while x < x1:
+                if common.contains(Point(x, y)):
+                    candidates.append((round(x, 3), round(y, 3)))
+                x += step
+            y += step
+        if not candidates:
+            continue
+
+        # Prefer spread-out candidates using farthest-point greedy ordering for uniform return-path coverage.
+        placed_xy = [(float(v["x"]), float(v["y"])) for v in existing_stitch]
+        site = _Site(board, net, cur_fixed)
+        needed = min_stitch_vias - len(existing_stitch)
+        # Seed ordering from board center outward, then farthest from already-placed stitch vias.
+        cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+        remaining = list(candidates)
+        while needed > 0 and remaining:
+            if placed_xy:
+                remaining.sort(
+                    key=lambda pt: min(math.dist(pt, q) for q in placed_xy),
+                    reverse=True,
+                )
+            else:
+                remaining.sort(key=lambda pt: math.dist(pt, (cx, cy)))
+            found = False
+            for idx, (px, py) in enumerate(remaining):
+                if placed_xy and min(math.dist((px, py), q) for q in placed_xy) < min_spacing_mm:
+                    remaining = []
+                    break
+                via = site.via(px, py, inside=common)
+                if via is None:
+                    continue
+                if traps_pads(board, cur_fixed, [], [via], {net}):
+                    continue
+                stitched.append(via)
+                cur_fixed.append(via)
+                placed_xy.append((px, py))
+                site = _Site(board, net, cur_fixed)
+                remaining.pop(idx)
+                needed -= 1
+                found = True
+                break
+            if not found:
+                break
+    return stitched
