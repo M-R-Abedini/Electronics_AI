@@ -529,7 +529,7 @@ def _reconcile_fixed(board, fixed):
     copies = [t for t in board.GetTracks() if _signature(t) in originals]
     matched = {_signature(t) for t in copies}
     for t in copies:
-        board.Remove(t)
+        board.Delete(t)
     for t in fixed:
         board.Add(t)
     return {"count": len(fixed), "session_copies_replaced": len(copies),
@@ -1460,13 +1460,13 @@ def _ensure_fab_reference(board, fp):
     return True
 
 
-def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_miniature):
+def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_miniature, *, ref_only_fab=False):
     """Enforce IPC-A-610 Assembly Drawing typography on F.Fab/B.Fab and fix mirror mismatches.
 
     1. Fixes mirrored_text_on_front_layer / nonmirrored_text_on_back_layer on all visible texts.
-    2. On dense miniature boards (is_miniature and > 12 footprints), hides cluttering F.Fab/B.Fab
-       Value strings (keeping crisp body-contained Reference designators only, matching real
-       IPC-A-610 Assembly PDFs). Never touches Silkscreen Value port labels.
+    2. On dense miniature or assembly-only boards (ref_only_fab or (is_miniature and > 12 footprints)),
+       hides cluttering F.Fab/B.Fab Value strings (keeping crisp body-contained Reference designators
+       only, matching real IPC-A-610 Assembly PDFs). Never touches Silkscreen Value port labels.
     3. Sizes every F.Fab/B.Fab Reference strictly inside its component body along the long axis.
     """
     fab_layers = (pcbnew.F_Fab, pcbnew.B_Fab)
@@ -1475,7 +1475,7 @@ def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_minia
     values_hidden = 0
     mirrors_fixed = 0
     footprints = sorted(board.GetFootprints(), key=lambda f: (f.GetReference(), f.m_Uuid.AsString()))
-    dense_miniature_fab = bool(is_miniature and len(footprints) > 12)
+    dense_miniature_fab = bool(ref_only_fab or (is_miniature and len(footprints) > 12))
 
     for fp in footprints:
         # Fix mirror mismatch on ALL visible silkscreen and fab items of this footprint.
@@ -2111,8 +2111,12 @@ def _clean_silkscreen(board, cfg=None):
     fab_values_hidden = 0
     mirrors_fixed = 0
     if normalize_fab_texts:
+        ref_only_fab = bool(
+            policy == "assembly_only"
+            or (visible_ref_count == 0 and len(board.GetFootprints()) >= 40)
+        )
         fab_texts_normalized, fab_values_hidden, mirrors_fixed = _normalize_fab_texts(
-            board, outline_poly, has_outline, fp_body_map, is_miniature
+            board, outline_poly, has_outline, fp_body_map, is_miniature, ref_only_fab=ref_only_fab
         )
 
     return {
