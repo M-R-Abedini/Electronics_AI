@@ -12,6 +12,7 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
+from ...units import MM_PER_MIL, OZ_TO_MILS
 from ..eval.legality import board_polygon
 from ..ir import Board, Footprint, Pad
 from .copper import (
@@ -221,9 +222,9 @@ def ipc2152_track_width(
         return 0.0
     k = 0.024 if internal else 0.048
     area_mils2 = (current_a / (k * (max(1.0, delta_t_c) ** 0.44))) ** (1.0 / 0.725)
-    thickness_mils = max(0.5, copper_oz) * 1.378
+    thickness_mils = max(0.5, copper_oz) * OZ_TO_MILS
     width_mils = area_mils2 / thickness_mils
-    return round(max(0.15, width_mils * 0.0254), 4)
+    return round(max(0.15, width_mils * MM_PER_MIL), 4)
 
 
 class _Site:
