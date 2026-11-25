@@ -258,15 +258,15 @@ def enforce_via_hole_clearances(
     via_diameter_mm: float,
     via_drill_mm: float,
     copper_clearance_mm: float,
+    skip_via_smd: bool = False,
 ) -> tuple[str, dict[str, float]]:
     """Inject Specctra typed via clearances into ``(structure (rule ...))`` when KiCad's
     ``m_HoleClearance`` or ``m_HoleToHoleMin`` is stricter than netclass copper clearance.
 
-    KiCad exports only copper-to-copper ``(clearance C)`` in Specctra DSN, so when a via has
-    a narrow annular ring (e.g., 0.20 mm pad / 0.10 mm drill => 0.05 mm ring) and the board
-    enforces ``hole_clearance = 0.25 mm``, Freerouting routes tracks 0.09 mm from the via pad
-    (0.14 mm from drill edge) and triggers mass ``hole_clearance`` DRC violations. Adding
-    standard Specctra ``(clearance <val> (type via_*))`` rules prevents those violations.
+    When ``skip_via_smd=True`` (boards carrying locked VIPPO microvias-in-pad), ``via_smd``
+    is omitted so locked microvias sitting inside same-net BGA SMD pads do not trip false
+    Freerouting conflicts, while ``via_wire``, ``via_pin``, ``via_area``, and ``via_via``
+    still protect all through-vias from hole_clearance / hole_to_hole DRC meltdowns.
     """
     if via_diameter_mm <= 0.0 or via_drill_mm <= 0.0:
         return dsn, {}
@@ -306,7 +306,8 @@ def enforce_via_hole_clearances(
     applied: dict[str, float] = {}
     if need_cu:
         val_str = _num(req_via_cu * scale)
-        for kind in ("via_wire", "via_smd", "via_pin", "via_area"):
+        kinds = ("via_wire", "via_pin", "via_area") if skip_via_smd else ("via_wire", "via_smd", "via_pin", "via_area")
+        for kind in kinds:
             if f"(type {kind})" not in rule_body:
                 clauses.append(f"\n      (clearance {val_str} (type {kind}))")
                 applied[kind + "_mm"] = round(req_via_cu, 4)
@@ -522,16 +523,16 @@ def add_class_via_rule(dsn: str, class_name: str, via_names: list[str]) -> str:
 
 
 def restrict_fast_net_layers(dsn: str, board: Board, intent: dict | None) -> tuple[str, list[str]]:
-    """Keep high-speed / diff-pair nets strictly on signal layers adjacent to a GND plane.
+    """Keep high-speed / RF / clock / diff-pair nets strictly on signal layers adjacent to a GND plane.
 
-    Active only on >= 6-layer boards when >= 2 signal layers sit adjacent to a GND plane AND
+    Active on >= 4-layer boards when >= 2 signal layers sit adjacent to a GND plane AND
     >= 1 signal layer lacks direct GND adjacency. Only restricts nets whose ALL SMD pads and
     locked S6a routing already lie strictly inside ``gnd_adj_signals`` (so no net can ever be
     locked off its own pad layer).
     """
     ordered = [cl for cl in sorted(board.copper_layers, key=lambda c: c.index)]
     n_layers = len(ordered)
-    if n_layers < 6:
+    if n_layers < 4:
         return dsn, []
 
     from ..ir import is_ground_net, plane_zone_layers
@@ -587,7 +588,7 @@ def restrict_fast_net_layers(dsn: str, board: Board, intent: dict | None) -> tup
                         fast_nets.add(str(val[k]))
         for nname, meta in (intent.get("nets") or {}).items():
             cls_val = str(((meta.get("class") or {}).get("value")) or "").upper()
-            if cls_val in ("HIGH_SPEED", "DIFF_PAIR", "CLOCK"):
+            if cls_val in ("HIGH_SPEED", "DIFF_PAIR", "CLOCK", "RF"):
                 fast_nets.add(nname)
     if not fast_nets:
         return dsn, []

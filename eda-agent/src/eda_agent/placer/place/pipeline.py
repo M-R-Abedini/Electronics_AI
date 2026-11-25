@@ -911,7 +911,12 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
         info["cold_input"] = cold
     write_stats: dict = {}
     eco_preserve = cluster_refs is not None and preserve_routing == "outside_cluster"
-    silk_cfg = silk_mod.build_config(placed, intent, policy=silkscreen_policy, fab_profile=fab_profile)
+    from ..route import dru as dru_mod
+
+    dru_rules = dru_mod.extract_effective_rules(src.with_suffix(".kicad_dru"))
+    silk_cfg = silk_mod.build_config(
+        placed, intent, policy=silkscreen_policy, fab_profile=fab_profile, dru_rules=dru_rules,
+    )
     out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb",
                             strip_routing=not eco_preserve,
                             strip_zones=cold is not None,
@@ -923,7 +928,9 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     silk_raw = write_stats.get("silkscreen")
     if isinstance(silk_raw, dict):
         post_texts = silk_raw.pop("post_texts", [])
-        silk_audit = silk_mod.audit_texts(post_texts, fab_profile=fab_profile, rules=placed.rules, board=placed)
+        silk_audit = silk_mod.audit_texts(
+            post_texts, fab_profile=fab_profile, rules=placed.rules, board=placed, dru_rules=dru_rules,
+        )
         info["silkscreen"] = {
             **silk_raw,
             "density": silk_cfg["density"],
@@ -962,6 +969,29 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     routed = (route_check(route_input, out_dir=run_dir / "route", reference_board=src,
                           router_timeout_s=router_timeout_s, intent=intent)
               if route else None)
+    if routed and silkscreen_policy != "off":
+        routed_pcb = Path(routed["artifacts"]["routed_board"])
+        if routed_pcb.is_file() and routed_pcb.read_bytes()[:32].lstrip().startswith(b"(kicad_pcb"):
+            import json
+
+            from ..io.kicad import run_helper
+
+            pr_cfg = run_dir / "post_route_silk_cfg.json"
+            pr_out = run_dir / "post_route_silk_out.json"
+            pr_cfg.write_text(json.dumps(silk_cfg), encoding="utf-8")
+            run_helper("clean_silkscreen", routed_pcb, pr_cfg, routed_pcb, pr_out)
+            pr_raw = json.loads(pr_out.read_text(encoding="utf-8"))
+            if isinstance(pr_raw, dict) and not pr_raw.get("skipped"):
+                pr_texts = pr_raw.pop("post_texts", [])
+                pr_audit = silk_mod.audit_texts(
+                    pr_texts, fab_profile=fab_profile, rules=placed.rules, board=placed, dru_rules=dru_rules,
+                )
+                info["silkscreen"] = {
+                    **pr_raw,
+                    "post_route_via_fixup": True,
+                    "density": silk_cfg["density"],
+                    "audit": pr_audit,
+                }
     s6a_summary: dict | None = None
     if s6a_stage is not None:
         s6a_summary = {k: v for k, v in s6a_stage.items() if k not in ("live_taps", "report")}

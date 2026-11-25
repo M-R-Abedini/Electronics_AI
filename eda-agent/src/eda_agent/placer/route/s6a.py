@@ -37,7 +37,7 @@ from ..ir import Board, plane_zone_layers
 from ..macro import Instance, MTrack, MVia
 from ..macro_proof import apply_instance
 from ..toolchain import RUNTIME_DIR, sha256_file
-from . import drc
+from . import drc, dru
 from .bga_escape import plan_bga_escapes
 from .check import route_check
 from .copper import pad_layers
@@ -46,6 +46,7 @@ from .fanout import (
     plan_plane_stitching,
     plan_power_link,
     plan_power_tap,
+    plan_qfn_thermal_vias,
     reserve_power_escapes,
     traps_pads,
 )
@@ -185,7 +186,8 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict
 
 def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, taps: bool = True,
          escapes: bool = True, escape_signals: bool = False, microvia: str = "auto",
-         power_first: bool = False, retry_coarse: bool = False) -> dict:
+         power_first: bool = False, retry_coarse: bool = False,
+         dru_eff: dict[str, float] | None = None) -> dict:
     fixed: list[dict] = []
     report: dict = {"pairs": [], "links": [], "taps": [], "escapes": []}
     layers = [cl.canonical for cl in board.copper_layers]
@@ -213,7 +215,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
         confirmed = []
         for claim in intent.get("diff_pairs", []):
             pos, neg = claim["value"]["positive"], claim["value"]["negative"]
-            if claim["value"].get("routing_eligible") is False:
+            if claim["value"].get("routing_eligible") is False and not claim.get("confirmed_by_user"):
                 report["pairs"].append({"pair": [pos, neg], "routed": False,
                                         "failed": "interface identified; routing constraints require separate verification"})
             elif model.is_uncertain(claim):
@@ -232,6 +234,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
         route_confirmed_pairs()
     plane_links: list[tuple[dict, tuple[str, str], tuple[str, str]]] = []  # row, cap pad, IC pin: both tap the pour
     linked: set[tuple[str, str]] = set()  # (cap, net) joined to its pin by surface copper
+    linked_target: dict[tuple[str, str], tuple[str, str]] = {}  # (cap, net) -> (target_ic_ref, pin_num)
     if links:
         for ref in sorted(intent["parts"], key=model.natural_key):
             part = intent["parts"][ref]
@@ -275,6 +278,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                         continue
                     fixed += got
                     linked.add((ref, net))
+                    linked_target[(ref, net)] = (target["ref"], str(pin.number))
                     row.update(routed=True, pin=str(pin.number), kind="surface" if same_side else "one_via",
                                length_mm=round(sum(math.dist(*t["points"]) for t in _segments(cand_tracks)), 3))
                     break
@@ -295,7 +299,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
             if (p.net and p.net in routed_pair_nets) or (p.net and (fp.ref, p.net) in linked)
         }
         esc = plan_bga_escapes(board, intent, fixed=fixed, already_handled=already_handled,
-                               include_signals=escape_signals, microvia=microvia)
+                               include_signals=escape_signals, microvia=microvia, dru_eff=dru_eff)
         fixed.extend(esc["copper"])
         report["escapes"] = esc["rows"]
         if esc["packages"]:
@@ -319,14 +323,20 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
         for ref in sorted(intent["parts"], key=model.natural_key):
             if ref not in already_ordered:
                 order.append((ref, "other"))
+        tapped_pads: set[tuple[str, str]] = set(escaped_pads)
         for ref, kind in order:
             if ref not in board_refs:
                 continue
             fp = board.fp(ref)
             for pad in fp.pads:
-                if (pad.kind != "smd" or pad.net not in pours or (ref, pad.net) in linked
-                        or (ref, str(pad.number)) in escaped_pads):
+                if pad.kind != "smd" or pad.net not in pours or (ref, str(pad.number)) in escaped_pads:
                     continue
+                if (ref, pad.net) in linked:
+                    # Only skip tapping a surface-linked decap when its target IC pin ALREADY tapped
+                    # the inner plane (otherwise tap the decap so the pair is not left floating).
+                    tgt = linked_target.get((ref, pad.net))
+                    if tgt is not None and tgt in tapped_pads:
+                        continue
                 here = pad_layers(fp, pad, layers)
                 here_idx = layers.index(here[0]) if here and here[0] in layers else 0
                 targets = sorted(
@@ -343,7 +353,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                     got = plan_power_tap(
                         board, fp, pad, layer, fixed=fixed, max_length_mm=TAP_MAX_MM,
                         share=share, share_max_mm=SHARE_MAX_MM, site_cache=tap_site_cache,
-                        allow_microvia=(microvia != "off"),
+                        allow_microvia=(microvia != "off"), dru_eff=dru_eff,
                     )
                     if got:
                         track, via_obj = got
@@ -361,6 +371,7 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                             tap_vias.append(share_via)
                         users[id(share_via)] = users.get(id(share_via), 0) + 1
                         tap_items.append((row, track, target_via))
+                        tapped_pads.add((ref, str(pad.number)))
                         row.update(routed=True, layer=layer, shared_via=shared,
                                    via_type=target_via.get("via_type", "through"),
                                    length_mm=round(sum(math.dist(p, q) for p, q in
@@ -371,6 +382,13 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                         f"no via site within {TAP_MAX_MM} mm" if targets else "pour only on the pad's own layer"
                     )
                 report["taps"].append(row)
+        qfn_vias = plan_qfn_thermal_vias(board, pours, fixed=fixed, dru_eff=dru_eff)
+        if qfn_vias:
+            fixed.extend(qfn_vias)
+            report["qfn_thermal_vias"] = [
+                {"ref": v.get("thermal_ep"), "net": v["net"], "x": round(v["x"], 4), "y": round(v["y"], 4)}
+                for v in qfn_vias
+            ]
         stitch_vias = plan_plane_stitching(board, pours, fixed=fixed)
         if stitch_vias:
             fixed.extend(stitch_vias)
@@ -463,6 +481,77 @@ def _drc_touching(rep: dict, copper: list[dict]) -> list[dict]:
     ]
 
 
+def _copper_near(item: dict, x: float, y: float, radius_mm: float = 0.40) -> bool:
+    if "points" in item:
+        pts = item["points"]
+        if any(math.hypot(float(p[0]) - x, float(p[1]) - y) <= radius_mm for p in pts):
+            return True
+        from shapely.geometry import LineString, Point
+
+        return LineString(pts).distance(Point(x, y)) <= radius_mm
+    return math.hypot(float(item["x"]) - x, float(item["y"]) - y) <= radius_mm
+
+
+def _prune_drc_items_from_s6a(
+    copper: list[dict],
+    report: dict,
+    live_taps: list,
+    touching: list[dict],
+) -> tuple[list[dict], list, int]:
+    """Surgically remove ONLY the S6a copper items located at DRC violations (preserving healthy rail taps)."""
+    bad_sites: list[tuple[str | None, float, float]] = []
+    for v in touching:
+        for item in v.get("items", ()):
+            desc = item.get("description", "")
+            if not drc.is_routing_item(desc):
+                continue
+            pos = item.get("pos") or {}
+            if "x" in pos and "y" in pos:
+                bad_sites.append((drc.item_net(desc), float(pos["x"]), float(pos["y"])))
+    if not bad_sites:
+        return copper, live_taps, 0
+
+    drop_ids: set[int] = set()
+    kept_taps: list = []
+    for tap_entry in live_taps:
+        row, track, via = tap_entry
+        tnet = row.get("net")
+        hit = any(
+            (snet is None or snet == tnet)
+            and (
+                (via is not None and _copper_near(via, sx, sy))
+                or (track is not None and _copper_near(track, sx, sy))
+            )
+            for snet, sx, sy in bad_sites
+        )
+        if hit:
+            row.update(routed=False, failed="pruned: s6a surgical DRC violation")
+            if track is not None:
+                drop_ids.add(id(track))
+            if via is not None:
+                drop_ids.add(id(via))
+                # Also drop stacked companion vias at the exact same coordinate/net.
+                vx, vy = float(via["x"]), float(via["y"])
+                for c in copper:
+                    if "points" not in c and c.get("net") == tnet and abs(float(c["x"]) - vx) < 1e-4 and abs(float(c["y"]) - vy) < 1e-4:
+                        drop_ids.add(id(c))
+        else:
+            kept_taps.append(tap_entry)
+
+    # Also match standalone items (thermal vias, stitch vias, escapes, tracks) directly at bad_sites.
+    for c in copper:
+        if id(c) in drop_ids:
+            continue
+        cnet = c.get("net")
+        if any((snet is None or snet == cnet) and _copper_near(c, sx, sy) for snet, sx, sy in bad_sites):
+            drop_ids.add(id(c))
+
+    if not drop_ids:
+        return copper, live_taps, 0
+    kept_copper = [c for c in copper if id(c) not in drop_ids]
+    return kept_copper, kept_taps, len(copper) - len(kept_copper)
+
+
 def _drop_nets_from_s6a(copper: list[dict], report: dict, live_taps: list, bad_nets: set[str]) -> tuple[list[dict], list]:
     """Remove S6a copper and mark report rows for any net implicated in a pre-route DRC violation."""
     kept_copper = [c for c in copper if c.get("net") not in bad_nets]
@@ -547,9 +636,10 @@ def apply_to_board(
     src = Path(board_path).resolve()
     out_root = Path(out_dir).resolve()
     board = read_board(src)
+    dru_eff = dru.extract_effective_rules(src.with_suffix(".kicad_dru"))
     planned = plan(board, intent, pairs=pairs, links=links, taps=taps, escapes=escapes,
                    escape_signals=escape_signals, microvia=microvia,
-                   power_first=power_first, retry_coarse=retry_coarse)
+                   power_first=power_first, retry_coarse=retry_coarse, dru_eff=dru_eff)
     copper, report = list(planned["copper"]), planned["report"]
     live_taps = list(planned["taps"])
     pruned_nets: list[str] = []
@@ -593,23 +683,37 @@ def apply_to_board(
     rep = drc.run(out, out_root / "drc.json")
     touching = _drc_touching(rep, copper)
     if touching and prune_drc:
-        bad_nets = {
-            drc.item_net(i.get("description", ""))
-            for v in touching
-            for i in v.get("items", [])
-        } & {c["net"] for c in copper}
-        if bad_nets:
-            pruned_nets = sorted(bad_nets)
-            copper, live_taps = _drop_nets_from_s6a(copper, report, live_taps, bad_nets)
+        # Pass 1: surgical per-item/per-tap DRC pruning (never wipes 80 healthy GND taps for 1 bad tap).
+        copper, live_taps, removed_n = _prune_drc_items_from_s6a(copper, report, live_taps, touching)
+        if removed_n > 0:
             if copper:
                 copper, live_taps = _write_and_verify_taps(src, out, copper, live_taps, report, planned["plane_links"])
                 if copper:
-                    rep = drc.run(out, out_root / "drc_after_prune.json")
+                    rep = drc.run(out, out_root / "drc_after_surgical_prune.json")
                     touching = _drc_touching(rep, copper)
                 else:
                     touching = []
             else:
                 touching = []
+        # Pass 2 fallback: drop whole remaining offending nets only if surgical prune did not clear DRC.
+        if touching and copper:
+            bad_nets = {
+                drc.item_net(i.get("description", ""))
+                for v in touching
+                for i in v.get("items", [])
+            } & {c["net"] for c in copper}
+            if bad_nets:
+                pruned_nets = sorted(bad_nets)
+                copper, live_taps = _drop_nets_from_s6a(copper, report, live_taps, bad_nets)
+                if copper:
+                    copper, live_taps = _write_and_verify_taps(src, out, copper, live_taps, report, planned["plane_links"])
+                    if copper:
+                        rep = drc.run(out, out_root / "drc_after_prune.json")
+                        touching = _drc_touching(rep, copper)
+                    else:
+                        touching = []
+                else:
+                    touching = []
 
     drc_rows = [{"type": v["type"], "items": [i.get("description", "") for i in v.get("items", [])]} for v in touching]
     if not copper:

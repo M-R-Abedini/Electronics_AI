@@ -745,17 +745,11 @@ def prune_dangling_by_drc(board_path, spec_json, out_board, out_json):
 
 
 def inject_return_vias(board_path, spec_json, out_board, out_json):
-    """Place DRC-clean through GND return stitching vias beside Lint-flagged GND<->GND transition vias."""
+    """Place DRC-clean through return stitching vias beside Lint-flagged layer transition vias."""
     board = pcbnew.LoadBoard(board_path)
     with open(spec_json, encoding="utf-8") as fh:
         spec = json.load(fh)
-    gnd_name = spec.get("gnd_net") or "GND"
-    gnd_net = board.FindNet(gnd_name)
-    if gnd_net is None:
-        with open(out_json, "w", encoding="utf-8") as fh:
-            json.dump({"added": 0, "reason": "no_gnd_net"}, fh)
-        return
-    gnd_nc = gnd_net.GetNetCode()
+    default_gnd_name = spec.get("gnd_net") or "GND"
     vd_mm = float(spec.get("diameter", 0.45))
     vdr_mm = float(spec.get("drill", 0.20))
     clr_mm = float(spec.get("clearance", 0.15))
@@ -782,14 +776,25 @@ def inject_return_vias(board_path, spec_json, out_board, out_json):
             (-1.0, 0.0), (-0.7071, -0.7071), (0.0, -1.0), (0.7071, -0.7071))
     rings = (0.65, 0.95, 1.25, 1.45)
     added = 0
-    for vx, vy in spec.get("points", ()):
+    added_uuids = []
+    for entry in spec.get("points", ()):
         if added >= max_vias:
             break
+        if isinstance(entry, dict):
+            vx, vy = float(entry["x"]), float(entry["y"])
+            target_net_name = str(entry.get("net") or default_gnd_name)
+        else:
+            vx, vy = float(entry[0]), float(entry[1])
+            target_net_name = default_gnd_name
+        ref_net = board.FindNet(target_net_name) or board.FindNet(default_gnd_name)
+        if ref_net is None:
+            continue
+        ref_nc = ref_net.GetNetCode()
         placed = False
         for rad in rings:
             for dx, dy in dirs:
-                cx = round(float(vx) + rad * dx, 4)
-                cy = round(float(vy) + rad * dy, 4)
+                cx = round(vx + rad * dx, 4)
+                cy = round(vy + rad * dy, 4)
                 x_nm, y_nm = pcbnew.FromMM(cx), pcbnew.FromMM(cy)
                 pt = pcbnew.VECTOR2I(x_nm, y_nm)
                 if has_outline and not _box_inside_outline(
@@ -799,7 +804,7 @@ def inject_return_vias(board_path, spec_json, out_board, out_json):
                     continue
                 if any(pad.HitTest(pt, int(req_pad_nm)) for pad in pads):
                     continue
-                if any(t.GetNetCode() != gnd_nc and t.HitTest(pt, int(vr_nm + clr_nm)) for t in existing_tracks):
+                if any(t.GetNetCode() != ref_nc and t.HitTest(pt, int(vr_nm + clr_nm)) for t in existing_tracks):
                     continue
                 via_bad = False
                 for ev in existing_vias:
@@ -821,12 +826,14 @@ def inject_return_vias(board_path, spec_json, out_board, out_json):
                 via.SetLayerPair(f_cu, b_cu)
                 via.SetWidth(pcbnew.FromMM(vd_mm))
                 via.SetDrill(pcbnew.FromMM(vdr_mm))
-                via.SetNet(gnd_net)
+                via.SetNet(ref_net)
                 via.SetLocked(True)
                 ident = uuid5(NAMESPACE_URL, f"electronics-ai/return-via/{added}/{cx:.4f}/{cy:.4f}")
-                via.SetUuidDirect(pcbnew.KIID(str(ident)))
+                uid_str = str(ident)
+                via.SetUuidDirect(pcbnew.KIID(uid_str))
                 board.Add(via)
                 existing_vias.append(via)
+                added_uuids.append(uid_str)
                 added += 1
                 placed = True
                 break
@@ -837,7 +844,7 @@ def inject_return_vias(board_path, spec_json, out_board, out_json):
         pcbnew.ZONE_FILLER(board).Fill(board.Zones())
         pcbnew.SaveBoard(out_board, board)
     with open(out_json, "w", encoding="utf-8") as fh:
-        json.dump({"added": added, "unrouted_final": _unconnected(board)}, fh, indent=1)
+        json.dump({"added": added, "added_uuids": added_uuids, "unrouted_final": _unconnected(board)}, fh, indent=1)
 
 
 def sanitize(board_path, remove_json, out_board, out_json):
@@ -2014,6 +2021,7 @@ def _clean_silkscreen(board, cfg=None):
     fallback_offload = bool(cfg.get("fallback_offload_non_critical", policy in ("auto", "ipc_standard", "dense")))
     fallback_offload_critical = bool(cfg.get("fallback_offload_critical", policy in ("auto", "ipc_standard", "dense")))
     populate_hidden_refs = bool(cfg.get("populate_hidden_refs", False))
+    hide_silk_values = bool(cfg.get("hide_silk_values", policy != "off"))
     normalize_fab_texts = bool(cfg.get("normalize_fab_texts", policy != "off"))
 
     critical_refs = set(cfg.get("critical_refs") or ())
@@ -2070,6 +2078,21 @@ def _clean_silkscreen(board, cfg=None):
         else:
             add_shape_boxes(d, lyr)
 
+    # Post-route via avoidance: treat exposed surface/through vias as silkscreen keepout boxes
+    # so silkscreen ink never prints across open via barrels after routing.
+    via_silk_margin = max(silk_margin, pcbnew.FromMM(0.10))
+    for trk in board.GetTracks():
+        if trk.GetClass() != "PCB_VIA":
+            continue
+        vpos = trk.GetPosition()
+        vrad = max(_via_width_nm(trk) // 2, int(trk.GetDrillValue()) // 2) + via_silk_margin
+        vbox = (vpos.x - vrad, vpos.y - vrad, vpos.x + vrad, vpos.y + vrad)
+        vlyrs = set(trk.GetLayerSet().CuStack())
+        if pcbnew.F_Cu in vlyrs:
+            static_boxes[pcbnew.F_SilkS].append(vbox)
+        if pcbnew.B_Cu in vlyrs:
+            static_boxes[pcbnew.B_SilkS].append(vbox)
+
     movable_texts = []
     hidden_ref_candidates = []
     visible_ref_count = 0
@@ -2105,6 +2128,9 @@ def _clean_silkscreen(board, cfg=None):
                 continue
             fld_name = fld.GetName() if hasattr(fld, "GetName") else ""
             is_ref_field = fld_name == "Reference"
+            if fld_name == "Value" and hide_silk_values and fld.IsVisible():
+                fld.SetVisible(False)
+                continue
             if not fld.IsVisible():
                 if is_ref_field and _item_text(fld):
                     if policy == "assembly_only":
@@ -2815,9 +2841,27 @@ def filled_hits(board_path, points_json, out_json):
         json.dump(out, fh)
 
 
+def clean_silkscreen_cmd(board_path, cfg_json, out_board, out_json):
+    """Run targeted post-route silkscreen cleanup (via-aware, never touching tracks/vias/zones)."""
+    board = pcbnew.LoadBoard(board_path)
+    if board is None:
+        with open(out_json, "w", encoding="utf-8") as fh:
+            json.dump({"skipped": True, "reason": "unreadable_board"}, fh)
+        return
+    cfg = None
+    if cfg_json not in ("0", "1", "", None) and os.path.isfile(cfg_json):
+        with open(cfg_json, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    report = _clean_silkscreen(board, cfg)
+    pcbnew.SaveBoard(out_board, board)
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump(report, fh)
+
+
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
     {"prepare": prepare, "finish": finish, "sanitize": sanitize, "lock_routing": lock_routing,
      "prune_dangling_by_drc": prune_dangling_by_drc, "inject_return_vias": inject_return_vias,
      "heal_thermals": heal_thermals, "heal_mask_bridges": heal_mask_bridges, "dump": dump,
-     "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)
+     "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits,
+     "clean_silkscreen": clean_silkscreen_cmd}[_cmd](*_args)

@@ -470,18 +470,17 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         v.get("locked") and v.get("via_type") == "micro"
         for v in ir.routing.get("vias", ())
     )
-    # When locked VIPPO microvias-in-pad are present, Freerouting natively honors --router.hole_clearance_um
-    # without flagging same-net VIPPO pads via injected DSN via_smd clearances.
-    via_hole_clrs: dict[str, float] = {}
-    if not has_vippo_microvias:
-        text, via_hole_clrs = dsn.enforce_via_hole_clearances(
-            text,
-            hole_clearance_mm=hole_clr_mm,
-            hole_to_hole_mm=hole_to_hole_mm,
-            via_diameter_mm=eff_via_d,
-            via_drill_mm=eff_via_dr,
-            copper_clearance_mm=eff_clr,
-        )
+    # Always protect through-vias with typed DSN via hole clearances; when VIPPO microvias are
+    # present, omit only via_smd so locked microvias inside same-net BGA pads stay legal.
+    text, via_hole_clrs = dsn.enforce_via_hole_clearances(
+        text,
+        hole_clearance_mm=hole_clr_mm,
+        hole_to_hole_mm=hole_to_hole_mm,
+        via_diameter_mm=eff_via_d,
+        via_drill_mm=eff_via_dr,
+        copper_clearance_mm=eff_clr,
+        skip_via_smd=has_vippo_microvias,
+    )
     macro_zone_keepouts = [dsn.Keepout(name=f"macro_zone_{z['uuid'][:8]}_{i}", layer=layer,
                                        outline=tuple(tuple(q) for q in z["outline"][0]))
                            for z in ir.zones if (z.get("name") or "").startswith(MACRO_ZONE_PREFIX)
@@ -604,16 +603,17 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                     rr_text,
                     {cl.name: ("power" if cl.name in pwr_set else "signal") for cl in ir.copper_layers},
                 )
-                if not has_vippo_microvias:
-                    rr_text, _ = dsn.enforce_via_hole_clearances(
-                        rr_text,
-                        hole_clearance_mm=hole_clr_mm,
-                        hole_to_hole_mm=hole_to_hole_mm,
-                        via_diameter_mm=eff_via_d,
-                        via_drill_mm=eff_via_dr,
-                        copper_clearance_mm=eff_clr,
-                    )
                 locked_ir = read_board(locked_board)
+                rr_text, _ = dru.compile_dru_to_dsn(rr_text, dru_sidecar, locked_ir)
+                rr_text, _ = dsn.enforce_via_hole_clearances(
+                    rr_text,
+                    hole_clearance_mm=hole_clr_mm,
+                    hole_to_hole_mm=hole_to_hole_mm,
+                    via_diameter_mm=eff_via_d,
+                    via_drill_mm=eff_via_dr,
+                    copper_clearance_mm=eff_clr,
+                    skip_via_smd=has_vippo_microvias,
+                )
                 rr_text = dsn.restore_wiring_precision(rr_text, locked_ir)
                 rr_text, _ = dsn.merge_stacked_fixed_vias(rr_text, ordered_layer_names)
                 rr_text, _ = dsn.enable_vippo_attach(rr_text, layer_count=len(ir.copper_layers))
@@ -767,7 +767,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             t = tick("dangling_prune", t)
 
     return_via_info: dict = {"attempted": False, "added": 0}
-    if (inject_gnd_return_vias and len(ir.copper_layers) >= 4
+    if (inject_gnd_return_vias and len(ir.copper_layers) >= 2
             and attribution.counts()["router_caused"] == 0):
         from ..eval import lint as lint_mod
 
@@ -779,7 +779,18 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         ]
         if rv_findings:
             gnd_net_obj = next((n.name for n in routed_ir.nets if is_ground_net(n.name)), "GND")
-            cand_pts = [[float(f["location_mm"][0]), float(f["location_mm"][1])] for f in rv_findings]
+            cand_pts = [
+                {
+                    "x": float(f["location_mm"][0]),
+                    "y": float(f["location_mm"][1]),
+                    "net": str(f.get("ref_net") or gnd_net_obj),
+                }
+                for f in rv_findings
+            ]
+            min_vd_board = float(ir.rules.get("min_via_diameter") or 0.0)
+            min_dr_board = float(ir.rules.get("min_through_drill") or 0.0)
+            rv_diam = max(min_vd_board, eff_via_d) if (min_vd_board > 0 or eff_via_d > 0) else 0.45
+            rv_drill = max(min_dr_board, eff_via_dr) if (min_dr_board > 0 or eff_via_dr > 0) else 0.20
             return_via_info["attempted"] = True
             rv_spec = work / "return_vias_spec.json"
             rv_out = work / "return_vias_out.json"
@@ -787,12 +798,12 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             rv_spec.write_text(json.dumps({
                 "gnd_net": gnd_net_obj,
                 "points": cand_pts[:32],
-                "diameter": max(0.35, eff_via_d),
-                "drill": max(0.15, eff_via_dr),
-                "clearance": max(0.10, eff_clr),
-                "hole_clearance": max(0.15, hole_clr_mm),
-                "hole_to_hole": max(0.15, hole_to_hole_mm),
-                "edge_clearance": max(0.25, edge_clr_mm),
+                "diameter": rv_diam,
+                "drill": rv_drill,
+                "clearance": max(0.08, eff_clr),
+                "hole_clearance": max(0.10, hole_clr_mm),
+                "hole_to_hole": max(0.10, hole_to_hole_mm),
+                "edge_clearance": max(0.20, edge_clr_mm),
                 "max_vias": 24,
             }), encoding="utf-8")
             shutil.copyfile(out_board, rv_board)
@@ -802,22 +813,48 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                     shutil.copyfile(side, rv_board.with_suffix(suffix))
             run_helper("inject_return_vias", rv_board, rv_spec, rv_board, rv_out)
             rv_res = _load(rv_out)
-            if int(rv_res.get("added", 0)) > 0:
+            rv_added = int(rv_res.get("added", 0))
+            if rv_added > 0:
                 rv_drc = drc.run(rv_board, work / "drc_return_vias.json")
                 rv_attr = drc.attribute(rv_drc, reference)
                 cur_vd = sum(1 for v in result.get("violations", []) if v.get("type") == "via_dangling")
+                # Per-via surgical recovery: if only a subset of injected return vias tripped DRC
+                # or via_dangling, drop ONLY those offending injected UUIDs instead of discarding all.
+                injected_uuids = set(rv_res.get("added_uuids") or ())
+                bad_injected: set[str] = set()
+                if injected_uuids:
+                    for v in rv_attr.router:
+                        for item in v.get("items", ()):
+                            if item.get("uuid") in injected_uuids:
+                                bad_injected.add(str(item["uuid"]))
+                    for v in rv_drc.get("violations", ()):
+                        if v.get("type") == "via_dangling":
+                            for item in v.get("items", ()):
+                                if item.get("uuid") in injected_uuids:
+                                    bad_injected.add(str(item["uuid"]))
+                if bad_injected and len(bad_injected) < len(injected_uuids):
+                    prune_file = work / "rv_prune.json"
+                    prune_out = work / "rv_prune_out.json"
+                    prune_file.write_text(json.dumps({"uuids": sorted(bad_injected), "points": []}), encoding="utf-8")
+                    run_helper("prune_dangling_by_drc", rv_board, prune_file, rv_board, prune_out)
+                    p_res = _load(prune_out)
+                    rv_added = max(0, rv_added - int(p_res.get("pruned_vias", 0)))
+                    rv_res["unrouted_final"] = int(p_res.get("unrouted_final", rv_res.get("unrouted_final", 999999)))
+                    rv_drc = drc.run(rv_board, work / "drc_return_vias_pruned.json")
+                    rv_attr = drc.attribute(rv_drc, reference)
                 new_vd = sum(1 for v in rv_drc.get("violations", []) if v.get("type") == "via_dangling")
-                if (rv_attr.counts()["router_caused"] == 0
+                if (rv_added > 0
+                        and rv_attr.counts()["router_caused"] == 0
                         and rv_attr.counts()["new_non_routing"] <= attribution.counts()["new_non_routing"]
                         and int(rv_res.get("unrouted_final", 999999)) <= finished["unrouted_final"]
                         and new_vd <= cur_vd):
                     shutil.copyfile(rv_board, out_board)
                     result = rv_drc
                     attribution = rv_attr
-                    return_via_info["added"] = int(rv_res["added"])
+                    return_via_info["added"] = rv_added
                     finished["unrouted_final"] = int(rv_res["unrouted_final"])
                     if isinstance(finished.get("routing"), dict) and "vias" in finished["routing"]:
-                        finished["routing"]["vias"] = int(finished["routing"]["vias"]) + int(rv_res["added"])
+                        finished["routing"]["vias"] = int(finished["routing"]["vias"]) + rv_added
             t = tick("return_vias", t)
 
     unrouted_items = [u for u in result.get("unconnected_items", [])]

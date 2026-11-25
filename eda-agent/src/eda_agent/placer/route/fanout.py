@@ -12,6 +12,7 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
+from ...units import MM_PER_MIL, OZ_TO_MILS
 from ..eval.legality import board_polygon
 from ..ir import Board, Footprint, Pad
 from .copper import (
@@ -209,20 +210,50 @@ def _candidate_paths(origin: tuple[float, float], angle: float,
                     yield [origin, knee, _advance_oct(knee, d0 + bend, (steps - first_steps) / 20.0)]
 
 
+def ipc2152_track_width(
+    current_a: float,
+    *,
+    copper_oz: float = 1.0,
+    delta_t_c: float = 20.0,
+    internal: bool = False,
+) -> float:
+    """IPC-2221 / IPC-2152 conservative track width estimate (mm) for DC current ``current_a``."""
+    if current_a <= 0.0:
+        return 0.0
+    k = 0.024 if internal else 0.048
+    area_mils2 = (current_a / (k * (max(1.0, delta_t_c) ** 0.44))) ** (1.0 / 0.725)
+    thickness_mils = max(0.5, copper_oz) * OZ_TO_MILS
+    width_mils = area_mils2 / thickness_mils
+    return round(max(0.15, width_mils * MM_PER_MIL), 4)
+
+
 class _Site:
     """What a short power track or via of one net must clear on a board."""
 
-    def __init__(self, board: Board, net: str, fixed: list[dict], *, static_cache: dict | None = None):
+    def __init__(
+        self,
+        board: Board,
+        net: str,
+        fixed: list[dict],
+        *,
+        static_cache: dict | None = None,
+        dru_eff: dict[str, float] | None = None,
+    ):
+        eff = dru_eff or {}
         rules = board.netclass_of(net)
         self.board, self.net = board, net
         self.layers = [layer.canonical for layer in board.copper_layers]
         self.width = max(rules.track_width, board.rules.get("min_track_width", 0))
-        self.diameter = max(rules.via_diameter, board.rules.get("min_via_diameter", 0))
-        self.drill = max(rules.via_drill, board.rules.get("min_through_drill", 0))
+        min_vd = max(float(board.rules.get("min_via_diameter", 0) or 0.0), float(eff.get("min_via_diameter_mm") or 0.0))
+        min_dr = max(float(board.rules.get("min_through_drill", 0) or 0.0), float(eff.get("min_via_drill_mm") or 0.0))
+        min_ann = max(float(board.rules.get("min_via_annular_width", 0) or 0.0), float(eff.get("min_via_annular_width_mm") or 0.0))
+        self.drill = max(rules.via_drill, min_dr)
+        self.diameter = max(rules.via_diameter, min_vd, round(self.drill + 2.0 * min_ann, 4) if min_ann > 0 else 0.0)
         self.clearance = clearance = max(rules.clearance, board.rules.get("min_clearance", 0))
-        self.edge = board.rules.get("copper_edge_clearance", 0)
+        self.edge = max(float(board.rules.get("copper_edge_clearance", 0) or 0.0), float(eff.get("edge_clearance_mm") or 0.0))
+        self.hole_to_hole = max(float(board.rules.get("hole_to_hole", 0) or 0.0), float(eff.get("hole_to_hole_mm") or 0.0))
         self.holes = existing_holes(board, fixed)
-        hole_clr = float(board.rules.get("hole_clearance") or 0.0)
+        hole_clr = max(float(board.rules.get("hole_clearance") or 0.0), float(eff.get("hole_clearance_mm") or 0.0))
         self.other = []
         self._other_shapes = []
         for item in fixed:
@@ -444,7 +475,7 @@ class _Site:
             return None
         via = {"net": self.net, "x": x, "y": y, "diameter": self.diameter, "drill": self.drill,
                "layers": ["F.Cu", "B.Cu"]}
-        if not holes_separated([via], self.holes, self.board.rules.get("hole_to_hole", 0)):
+        if not holes_separated([via], self.holes, self.hole_to_hole):
             return None
         # The writer needs the two end layers, but a through via crosses every
         # copper layer when checking its clearance to existing routing.
@@ -486,7 +517,8 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
                    fixed: list[dict], max_length_mm: float = 2.0,
                    share: list[dict] | None = None, share_max_mm: float = 1.5,
                    site_cache: dict | None = None,
-                   allow_microvia: bool = False) -> tuple[dict, dict | list[dict]] | None:
+                   allow_microvia: bool = False,
+                   dru_eff: dict[str, float] | None = None) -> tuple[dict, dict | list[dict]] | None:
     """Plan a track polyline and via (or HDI microvia stack). Emit one track per consecutive pair of points.
 
     A via in ``share`` (same net, already tapping the pour) within ``share_max_mm`` of track is
@@ -511,7 +543,7 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
     ])
     if target.is_empty or board_polygon(board) is None:
         return None
-    site = _Site(board, net, fixed, static_cache=site_cache)
+    site = _Site(board, net, fixed, static_cache=site_cache, dru_eff=dru_eff)
     origin = footprint.pad_world(pad)
     dx, dy = outward(footprint, pad)
     angle = math.atan2(dy, dx)
@@ -784,3 +816,139 @@ def plan_plane_stitching(
             if not found:
                 break
     return stitched
+
+
+def plan_qfn_thermal_vias(
+    board: Board,
+    pours: dict[str, set[str]],
+    *,
+    fixed: list[dict],
+    dru_eff: dict[str, float] | None = None,
+    max_per_pad: int = 9,
+) -> list[dict]:
+    """Place deterministic DRC-checked thermal/GND via arrays inside QFN/IC exposed pads (EP).
+
+    Activates on >= 4-layer boards when an IC (>= 8 pads) has an exposed SMD pad (>= 3.5 mm^2)
+    on a net that owns an inner plane. Uses strictly legal via/drill/hole clearances and keeps
+    every via strictly inside the EP copper polygon while clearing all foreign pads and holes.
+    """
+    ordered = [cl.canonical for cl in sorted(board.copper_layers, key=lambda c: c.index)]
+    if len(ordered) < 4:
+        return []
+    eff = dru_eff or {}
+    by_canon = {cl.name: cl.canonical for cl in board.copper_layers}
+    outer = {ordered[0], ordered[-1]}
+    cur_fixed = list(fixed)
+    placed: list[dict] = []
+
+    for fp in sorted(board.footprints, key=lambda f: f.ref):
+        if len(fp.pads) < 8:
+            continue
+        smd_areas = sorted(p.size[0] * p.size[1] for p in fp.pads if p.kind == "smd")
+        if not smd_areas:
+            continue
+        med_area = smd_areas[len(smd_areas) // 2]
+        for pad in fp.pads:
+            if pad.kind != "smd" or not pad.net or pad.net not in pours:
+                continue
+            area = pad.size[0] * pad.size[1]
+            if area < 3.5 or area < med_area * 4.0 or min(pad.size) < 1.6:
+                continue
+            layer = _outer_layer(board, fp, pad)
+            if layer is None or board.netclass_of(pad.net) is None:
+                continue
+            plane_lyrs = {by_canon.get(n, n) for n in pours[pad.net]} - outer
+            if not plane_lyrs:
+                continue
+
+            nc = board.netclass_of(pad.net)
+            min_dr = max(float(board.rules.get("min_through_drill") or 0.0), float(eff.get("min_via_drill_mm") or 0.0), 0.25)
+            min_ann = max(float(board.rules.get("min_via_annular_width") or 0.0), float(eff.get("min_via_annular_width_mm") or 0.0), 0.10)
+            min_vd = max(float(board.rules.get("min_via_diameter") or 0.0), float(eff.get("min_via_diameter_mm") or 0.0), round(min_dr + 2.0 * min_ann, 4))
+            vd = min(max(min_vd, 0.50), max(min_vd, float(nc.via_diameter)))
+            vdr = min(max(min_dr, 0.25), max(min_dr, float(nc.via_drill)))
+            if 0.5 * (vd - vdr) + 1e-6 < min_ann:
+                vd = round(vdr + 2.0 * min_ann, 4)
+            clr = max(float(nc.clearance), float(board.rules.get("min_clearance") or 0.0))
+            hth = max(float(board.rules.get("hole_to_hole") or 0.0), float(eff.get("hole_to_hole_mm") or 0.0))
+            pitch = max(1.10, vd + clr + 0.10, vdr + hth + 0.10)
+
+            pad_poly = pad_polygon(fp, pad, 0.0)
+            inner_safe = pad_poly.buffer(-(0.5 * vd + 0.10))
+            if inner_safe.is_empty:
+                continue
+            # Intersect with target inner plane outline so every thermal via actually hits the plane.
+            plane_polys = [
+                Polygon(z["outline"][0], z["outline"][1:])
+                for z in board.zones
+                if z.get("net") == pad.net and z.get("outline")
+                and (plane_lyrs & {by_canon.get(n, n) for n in z.get("layers", ())})
+            ]
+            if not plane_polys:
+                continue
+            valid_area = inner_safe.intersection(unary_union(plane_polys))
+            if valid_area.is_empty:
+                continue
+
+            x0, y0, x1, y1 = valid_area.bounds
+            nx = min(3, max(1, math.floor((x1 - x0) / pitch) + 1))
+            ny = min(3, max(1, math.floor((y1 - y0) / pitch) + 1))
+            cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+            xs = [cx] if nx == 1 else [cx + (i - 0.5 * (nx - 1)) * pitch for i in range(nx)]
+            ys = [cy] if ny == 1 else [cy + (j - 0.5 * (ny - 1)) * pitch for j in range(ny)]
+
+            site = _Site(board, pad.net, cur_fixed, dru_eff=dru_eff)
+            # Build obstacle geometry excluding THIS exposed pad (since thermal vias intentionally sit in-pad).
+            other_pads = [
+                pad_polygon(ofp, opad, max(clr, site.clearance) + 0.02)
+                for ofp in board.footprints for opad in ofp.pads
+                if not (ofp is fp and opad is pad)
+                and (opad.net != pad.net or opad.kind in ("smd", "np_thru_hole"))
+            ]
+            other_pad_union = prep(unary_union(other_pads)) if other_pads else None
+            keepouts_v = [
+                Polygon(a["polygons"][0], a["polygons"][1:])
+                for a in board.rule_areas if a.get("polygons") and a.get("keepout", {}).get("vias")
+            ]
+            via_ko = prep(unary_union(keepouts_v)) if keepouts_v else None
+            holes = existing_holes(board, cur_fixed)
+
+            pad_added = 0
+            for px in xs:
+                for py in ys:
+                    if pad_added >= max_per_pad:
+                        break
+                    rx, ry = round(px, 4), round(py, 4)
+                    pt = Point(rx, ry)
+                    if not valid_area.covers(pt):
+                        continue
+                    vshape = pt.buffer(0.5 * vd)
+                    if site.outline is None or not site.outline.covers(vshape.buffer(site.edge)):
+                        continue
+                    if other_pad_union is not None and other_pad_union.intersects(vshape):
+                        continue
+                    if via_ko is not None and via_ko.intersects(vshape):
+                        continue
+                    via = {
+                        "net": pad.net,
+                        "x": rx,
+                        "y": ry,
+                        "diameter": vd,
+                        "drill": vdr,
+                        "layers": [ordered[0], ordered[-1]],
+                        "via_type": "through",
+                        "thermal_ep": fp.ref,
+                    }
+                    if not holes_separated([via], holes, hth, ordered_layers=ordered):
+                        continue
+                    all_lyrs = set(ordered)
+                    if any(
+                        (all_lyrs & lyrs) and pt.distance(g) < 0.5 * vd + r + gap - 1e-6
+                        for g, r, lyrs, _bbox, gap in site._other_shapes
+                    ):
+                        continue
+                    placed.append(via)
+                    cur_fixed.append(via)
+                    holes.append((rx, ry, vdr, frozenset(ordered)))
+                    pad_added += 1
+    return placed

@@ -18,6 +18,9 @@ _RULE_START = re.compile(r'\(rule\s+("[^"]+"|[^\s()]+)')
 _COND_RE = re.compile(r'\(condition\s+"([^"]*)"\)')
 _LAYER_RE = re.compile(r'\(layer\s+"?([^"\s()]+)"?\)')
 _NETCLASS_COND = re.compile(r"^\(?A\.NetClass\s*==\s*['\"]([^'\"]+)['\"]\)?$")
+_NETCLASS_PAIR_COND = re.compile(
+    r"^\(?A\.NetClass\s*==\s*['\"]([^'\"]+)['\"]\s*(?:&&|\|\|)\s*B\.NetClass\s*==\s*['\"]([^'\"]+)['\"]\)?$"
+)
 _CLEARANCE_RE = re.compile(r"\(constraint\s+clearance\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _WIDTH_RE = re.compile(r"\(constraint\s+track_width\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _HOLE_CLR_RE = re.compile(r"\(constraint\s+hole_clearance\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
@@ -25,13 +28,17 @@ _HOLE_TO_HOLE_RE = re.compile(r"\(constraint\s+hole_to_hole\b([^()]*(?:\([^()]*\
 _EDGE_CLR_RE = re.compile(r"\(constraint\s+edge_clearance\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _HOLE_SIZE_RE = re.compile(r"\(constraint\s+hole_size\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _VIA_DIAM_RE = re.compile(r"\(constraint\s+via_diameter\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
+_ANNULAR_RE = re.compile(r"\(constraint\s+annular_width\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
+_SILK_CLR_RE = re.compile(r"\(constraint\s+silk_clearance\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
+_TEXT_H_RE = re.compile(r"\(constraint\s+text_height\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
+_TEXT_T_RE = re.compile(r"\(constraint\s+text_thickness\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _OTHER_CONSTRAINT_RE = re.compile(r"\(constraint\s+([a-zA-Z0-9_]+)\b")
 _MIN_VAL_RE = re.compile(r"\(min\s+([0-9.]+)\s*(mm|mil|um)?\)")
 _OPT_VAL_RE = re.compile(r"\(opt\s+([0-9.]+)\s*(mm|mil|um)?\)")
 
 _SUPPORTED_CONSTRAINTS = frozenset({
     "clearance", "track_width", "hole_clearance", "hole_to_hole",
-    "edge_clearance", "hole_size", "via_diameter",
+    "edge_clearance", "hole_size", "via_diameter", "annular_width",
 })
 
 
@@ -229,12 +236,63 @@ def _is_global_copper_cond(cond: str) -> bool:
     return "a.netclass" not in c and any(p in c for p in allowed_patterns)
 
 
+def extract_effective_rules(dru_path: Path) -> dict[str, float]:
+    """Extract board-wide numeric constraint floors from ``.kicad_dru`` for S6a, routing, and silkscreen.
+
+    Includes copper/drill/annular floors plus silkscreen text/clearance floors (which Specctra DSN
+    cannot represent natively, so they remain in ``untranslated`` for DSN P5 honesty while being
+    honored directly by ``silkscreen.build_config`` and ``s6a``).
+    """
+    if not dru_path.is_file():
+        return {}
+    text = dru_path.read_text(encoding="utf-8", errors="replace")
+    eff: dict[str, float] = {}
+
+    def _raise(key: str, val: float | None) -> None:
+        if val is not None and val > 0:
+            eff[key] = max(eff.get(key, 0.0), round(val, 6))
+
+    for _rule_name, block in _iter_rules(text):
+        cond_m = _COND_RE.search(block)
+        cond = cond_m.group(1).strip() if cond_m else ""
+        cond_low = re.sub(r"\s+", " ", cond).lower()
+        lyr_m = _LAYER_RE.search(block)
+        lyr_spec = (lyr_m.group(1).strip() if lyr_m else "")
+        lyr_low = lyr_spec.lower()
+        if any(tok in cond_low for tok in ("intersectsarea", "fromto", "indiffpair", "netname", "castellated")):
+            continue
+        is_silk = "silk" in lyr_low or "silk" in cond_low
+        if (m := _SILK_CLR_RE.search(block)):
+            _raise("silk_clearance_mm", _extract_mm(m.group(1)))
+        if is_silk:
+            if (m := _TEXT_H_RE.search(block)):
+                _raise("min_silk_text_height_mm", _extract_mm(m.group(1)))
+            if (m := _TEXT_T_RE.search(block)):
+                _raise("min_silk_text_thickness_mm", _extract_mm(m.group(1)))
+            continue
+        if any(tok in cond_low for tok in ("zone", "text", "graphic")):
+            continue
+        if (m := _HOLE_CLR_RE.search(block)) and "!a.isplated()" not in cond_low:
+            _raise("hole_clearance_mm", _extract_mm(m.group(1)))
+        if (m := _HOLE_TO_HOLE_RE.search(block)) and "a.net == b.net" not in cond_low:
+            _raise("hole_to_hole_mm", _extract_mm(m.group(1)))
+        if (m := _EDGE_CLR_RE.search(block)) and "'zone'" not in cond_low:
+            _raise("edge_clearance_mm", _extract_mm(m.group(1)))
+        if (m := _VIA_DIAM_RE.search(block)) and "!a.isplated()" not in cond_low:
+            _raise("min_via_diameter_mm", _extract_mm(m.group(1)))
+        if (m := _HOLE_SIZE_RE.search(block)) and ("'via'" in cond_low or (not cond_low and not lyr_spec)):
+            _raise("min_via_drill_mm", _extract_mm(m.group(1)))
+        if (m := _ANNULAR_RE.search(block)) and ("'via'" in cond_low or not cond_low):
+            _raise("min_via_annular_width_mm", _extract_mm(m.group(1)))
+    return eff
+
+
 def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dict]:
     """Translate supported ``.kicad_dru`` constraints to Specctra DSN and effective router floors.
 
     Returns ``(updated_dsn, meta)`` where ``meta["effective_rules"]`` carries raised
     ``hole_clearance_mm``, ``hole_to_hole_mm``, ``edge_clearance_mm``, ``min_via_diameter_mm``,
-    and ``min_via_drill_mm`` floors for ``route_check`` and ``dsn.enforce_via_hole_clearances``.
+    ``min_via_drill_mm``, ``min_via_annular_width_mm``, and silkscreen floors for downstream stages.
     """
     empty = {"translated": [], "untranslated": [], "applied_rules": 0, "effective_rules": {}}
     if not dru_path.is_file():
@@ -258,16 +316,30 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
 
     for rule_name, block in _iter_rules(text):
         found_constraints = {m.group(1) for m in _OTHER_CONSTRAINT_RE.finditer(block)}
-        if not found_constraints or not (found_constraints & _SUPPORTED_CONSTRAINTS):
-            untranslated.append(rule_name)
-            continue
-        has_unsupported_extra = bool(found_constraints - _SUPPORTED_CONSTRAINTS)
-
         cond_m = _COND_RE.search(block)
         cond = cond_m.group(1).strip() if cond_m else ""
         cond_low = re.sub(r"\s+", " ", cond).lower()
         lyr_m = _LAYER_RE.search(block)
         lyr_spec = lyr_m.group(1).strip() if lyr_m else None
+        lyr_low = (lyr_spec or "").lower()
+
+        # Harvest silkscreen floors into effective_rules for silkscreen.build_config, while
+        # keeping silkscreen rules in untranslated (Specctra DSN cannot enforce silk rules).
+        if "silk" in lyr_low or "silk" in cond_low or found_constraints & {"silk_clearance", "text_height", "text_thickness"}:
+            if (m := _SILK_CLR_RE.search(block)):
+                _raise_eff("silk_clearance_mm", _extract_mm(m.group(1)))
+            if "silk" in lyr_low or "silk" in cond_low:
+                if (m := _TEXT_H_RE.search(block)):
+                    _raise_eff("min_silk_text_height_mm", _extract_mm(m.group(1)))
+                if (m := _TEXT_T_RE.search(block)):
+                    _raise_eff("min_silk_text_thickness_mm", _extract_mm(m.group(1)))
+            untranslated.append(rule_name)
+            continue
+
+        if not found_constraints or not (found_constraints & _SUPPORTED_CONSTRAINTS):
+            untranslated.append(rule_name)
+            continue
+        has_unsupported_extra = bool(found_constraints - _SUPPORTED_CONSTRAINTS)
 
         # Reject complex spatial / pair / zone / silk conditions cleanly (P5 honesty)
         if any(tok in cond_low for tok in ("intersectsarea", "fromto", "indiffpair", "netname", "zone", "silk", "text", "graphic", "castellated")):
@@ -281,6 +353,7 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
         ecm = _EDGE_CLR_RE.search(block)
         hsm = _HOLE_SIZE_RE.search(block)
         vdm = _VIA_DIAM_RE.search(block)
+        anm = _ANNULAR_RE.search(block)
 
         clr_mm = _extract_mm(cm.group(1)) if cm else None
         wid_mm = _extract_mm(wm.group(1), allow_opt=True) if wm else None
@@ -289,9 +362,10 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
         ec_mm = _extract_mm(ecm.group(1)) if ecm else None
         hs_mm = _extract_mm(hsm.group(1)) if hsm else None
         vd_mm = _extract_mm(vdm.group(1)) if vdm else None
+        an_mm = _extract_mm(anm.group(1)) if anm else None
 
         applied = False
-        # 1) Router floor rules (hole_clearance, hole_to_hole, edge_clearance, via size)
+        # 1) Router floor rules (hole_clearance, hole_to_hole, edge_clearance, via size, annular width)
         if hc_mm and ("!a.isplated()" not in cond_low):
             applied |= _raise_eff("hole_clearance_mm", hc_mm)
         if hth_mm and ("a.net == b.net" not in cond_low):
@@ -302,16 +376,30 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
             applied |= _raise_eff("min_via_diameter_mm", vd_mm)
         if hs_mm and ("'via'" in cond_low or (not cond_low and not lyr_spec)):
             applied |= _raise_eff("min_via_drill_mm", hs_mm)
+        if an_mm and ("'via'" in cond_low or not cond_low):
+            applied |= _raise_eff("min_via_annular_width_mm", an_mm)
 
         # 2) DSN class or layer width/clearance rules
         if clr_mm is not None or wid_mm is not None:
             nc_m = _NETCLASS_COND.match(cond)
+            nc_pair_m = _NETCLASS_PAIR_COND.match(cond)
             if nc_m:
                 pattern = nc_m.group(1)
                 matched_classes = [c for c in dsn_classes if fnmatch.fnmatchcase(c, pattern)]
                 if not matched_classes and "*" not in pattern and "?" not in pattern:
                     matched_classes = [pattern]
                 for cname in matched_classes:
+                    dsn, ok = _update_class_rule(dsn, cname, scale, width_mm=wid_mm, clearance_mm=clr_mm)
+                    applied |= ok
+            elif nc_pair_m:
+                patterns = (nc_pair_m.group(1), nc_pair_m.group(2))
+                matched_classes = []
+                for pat in patterns:
+                    hits = [c for c in dsn_classes if fnmatch.fnmatchcase(c, pat)]
+                    if not hits and "*" not in pat and "?" not in pat:
+                        hits = [pat]
+                    matched_classes.extend(hits)
+                for cname in dict.fromkeys(matched_classes):
                     dsn, ok = _update_class_rule(dsn, cname, scale, width_mm=wid_mm, clearance_mm=clr_mm)
                     applied |= ok
             elif _is_global_copper_cond(cond):

@@ -264,3 +264,137 @@ def closed(g: Geometry) -> float | None:
             and (g.Er2 is None or g.Er2 == g.Er1):
         return round(stripline_closed(g.W1, g.H1 + g.H2, g.T1, g.Er1), 2)
     return None
+
+
+def solve_width_for_target(
+    structure: str,
+    target_ohms: float,
+    *,
+    H1: float,
+    T1: float = 0.035,
+    Er1: float = 4.5,
+    H2: float | None = None,
+    Er2: float | None = None,
+    S1: float | None = None,
+    w_min: float = 0.08,
+    w_max: float = 2.0,
+    tol_ohms: float = 0.5,
+    max_iter: int = 12,
+) -> dict | None:
+    """Monotone bisection inverse solver: find trace width W1 (mm) hitting ``target_ohms``.
+
+    Impedance decreases monotonically as W1 increases. Uses fast closed-form evaluation when
+    available for single-ended microstrip/symmetric stripline, and the 2D field solver for
+    coated microstrip, offset stripline, and edge-coupled differential pairs.
+    """
+    if target_ohms <= 0.0 or H1 <= 0.0 or w_min <= 0.0 or w_max <= w_min:
+        return None
+    coupled = structure.startswith("edge_coupled")
+    if coupled and (S1 is None or S1 <= 0.0):
+        return None
+
+    def _eval(w: float) -> float:
+        g = Geometry(structure=structure, H1=H1, W1=w, T1=T1, Er1=Er1, H2=H2, Er2=Er2, S1=S1)
+        if not coupled:
+            c = closed(g)
+            if c is not None:
+                return c
+        res = solve(g)
+        return float(res["zdiff"] if coupled else res["z0"])
+
+    z_hi = _eval(w_min)
+    z_lo = _eval(w_max)
+    if target_ohms > z_hi + tol_ohms or target_ohms < z_lo - tol_ohms:
+        return None
+    lo, hi = w_min, w_max
+    best_w, best_z = lo, z_hi
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        z_mid = _eval(mid)
+        if abs(z_mid - target_ohms) < abs(best_z - target_ohms):
+            best_w, best_z = mid, z_mid
+        if abs(z_mid - target_ohms) <= tol_ohms:
+            best_w, best_z = mid, z_mid
+            break
+        if z_mid > target_ohms:
+            lo = mid
+        else:
+            hi = mid
+    return {
+        "width_mm": round(best_w, 4),
+        "gap_mm": round(S1, 4) if S1 is not None else None,
+        "achieved_ohms": round(best_z, 2),
+        "target_ohms": round(target_ohms, 2),
+        "structure": structure,
+    }
+
+
+def pair_rule_from_stackup(
+    board,
+    layer_canon: str,
+    *,
+    target_zdiff: float = 90.0,
+    min_width_mm: float = 0.10,
+    gap_mm: float | None = None,
+) -> tuple[float, float] | None:
+    """Compute stackup-matched ``(width_mm, gap_mm)`` for an outer/inner differential pair.
+
+    Returns ``None`` cleanly whenever ``board.stackup.source != 'file'`` or dielectric
+    thickness cannot be determined, allowing callers to fall back to netclass rules.
+    """
+    stackup = getattr(board, "stackup", None)
+    if stackup is None or getattr(stackup, "source", "missing") != "file" or not stackup.layers:
+        return None
+    ordered_cu = [cl for cl in sorted(board.copper_layers, key=lambda c: c.index)]
+    by_canon = {cl.canonical: cl.name for cl in ordered_cu}
+    target_name = by_canon.get(layer_canon, layer_canon)
+    cu_indices = [i for i, sl in enumerate(stackup.layers) if sl.type == "copper"]
+    target_si = next((i for i in cu_indices if stackup.layers[i].name in (target_name, layer_canon)), None)
+    if target_si is None:
+        return None
+    t_cu = float(stackup.layers[target_si].thickness_mm or 0.035)
+    pos_in_cu = cu_indices.index(target_si)
+    is_outer = pos_in_cu in (0, len(cu_indices) - 1)
+
+    def _diel_between(a: int, b: int) -> tuple[float, float] | None:
+        lo, hi = min(a, b), max(a, b)
+        thicks = []
+        ers = []
+        for sl in stackup.layers[lo + 1 : hi]:
+            if sl.type in ("core", "prepreg") and sl.thickness_mm:
+                thicks.append(float(sl.thickness_mm))
+                ers.append(float(sl.epsilon_r or 4.5))
+        if not thicks:
+            return None
+        total = sum(thicks)
+        er = sum(t * e for t, e in zip(thicks, ers, strict=True)) / total
+        return total, er
+
+    s_gap = max(float(gap_mm or 0.0), float(board.rules.get("min_clearance") or 0.10), 0.10)
+    if is_outer:
+        adj_cu = cu_indices[1] if pos_in_cu == 0 else cu_indices[-2]
+        d1 = _diel_between(target_si, adj_cu)
+        if d1 is None:
+            return None
+        h1, er1 = d1
+        sol = solve_width_for_target(
+            "edge_coupled_surface_microstrip", target_zdiff,
+            H1=h1, T1=t_cu, Er1=er1, S1=s_gap, w_min=max(0.08, min_width_mm), w_max=1.5,
+        )
+    else:
+        if pos_in_cu - 1 < 0 or pos_in_cu + 1 >= len(cu_indices):
+            return None
+        d_below = _diel_between(target_si, cu_indices[pos_in_cu - 1])
+        d_above = _diel_between(target_si, cu_indices[pos_in_cu + 1])
+        if d_below is None or d_above is None:
+            return None
+        h1, er1 = d_below
+        h2, er2 = d_above
+        sol = solve_width_for_target(
+            "edge_coupled_offset_stripline", target_zdiff,
+            H1=h1, H2=h2 + t_cu, T1=t_cu, Er1=er1, Er2=er2, S1=s_gap,
+            w_min=max(0.08, min_width_mm), w_max=1.5,
+        )
+    if sol is None:
+        return None
+    return (float(sol["width_mm"]), round(s_gap, 4))
