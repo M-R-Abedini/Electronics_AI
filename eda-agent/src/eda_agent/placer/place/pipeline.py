@@ -78,11 +78,12 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         start, priority, seeded = blocks.seed(pb, intent, start)
         s3_info["block_seeded_parts"] = seeded
     timings["s3"] = round(time.monotonic() - t, 2)
-    core = problem.rust_problem(solver_pb, w_cross=W_CROSS)
+    diag = problem.board_diag(pb)
+    w_cross = W_CROSS * max(1.0, min(2.5, diag / 90.0))
+    core = problem.rust_problem(solver_pb, w_cross=w_cross)
     core.set_positions([pose if not part[5] else (part[7], part[8], part[9]) for pose, part in zip(start, solver_pb.parts,
                                                                                                 strict=True)])
     t = time.monotonic()
-    diag = problem.board_diag(pb)
     start_poses = core.positions()
     failed = core.legalize(LEGALIZE_STEP_MM, diag, priority)
     retries = 0
@@ -194,6 +195,20 @@ def _resolve_movable_th_collisions(placed, pb, solver_pb, core, retained, macros
                     holes.extend(
                         legality.thru_hole_hole_rings(fp, margin_mm=margin, thru_hole_only=False, layer_map=lmap)
                     )
+        # Also block the full courtyard of any opposite-side part directly hit by a movable TH part's pads.
+        hit_opp = {
+            r for f in cur_th_findings
+            if not f.fixed and f.detail.startswith("thru_hole_pads:")
+            for r in f.refs if pb.sides.get(r) == opp
+        }
+        for r_opp in sorted(hit_opp):
+            poly = legality.courtyard_polygon(cur_placed.fp(r_opp))
+            if poly is not None and not poly.is_empty:
+                grown = poly.buffer(base_margin)
+                geoms = [grown] if grown.geom_type == "Polygon" else list(getattr(grown, "geoms", ()))
+                for g in geoms:
+                    if not g.is_empty:
+                        holes.append([(round(x, 6), round(y, 6)) for x, y in list(g.exterior.coords)[:-1]])
         return holes
 
     for pass_idx in range(2):
@@ -227,7 +242,7 @@ def _resolve_edge_copper_clearances(placed, pb, solver_pb, core, retained, macro
     if edge_clear <= 0:
         return placed, core, findings
     idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
-    member_to_anchor = {p.ref: anchor for anchor, m in (macros or {}).items() for p in m.parts}
+    member_to_anchor = {p.ref: pb.refs[anchor] for anchor, m in (macros or {}).items() for p in m.parts}
     inset_outers: list[list[tuple[float, float]]] = []
     for ring in solver_pb.outers:
         shrunk = Polygon(ring).buffer(-(edge_clear + 0.05))
@@ -415,10 +430,15 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             modes.extend([("reserve", False, True), ("combined", True, True)])
     fixed_guess = problem.fixed_parts(board)
     movable_est = sum(1 for fp in board.footprints if fp.ref not in fixed_guess and not fp.locked)
-    # Full 100% S3/S5 iteration budget for all normal/medium boards (< 175 movable parts);
-    # for very large (>= 175 movable) multi-variant boards (e.g. video, openair_max), use divisor=4
-    # (25% deeper than legacy //5) so S0-S5 stays safely within the 300s architecture budget.
-    divisor = 4 if (len(modes) >= 3 and movable_est >= 175) else 1
+    # Full 100% S3/S5 iteration budget for normal/medium boards (< 175 movable parts).
+    # For large (>= 175 movable) boards, drop redundant variants (keep baseline + blocks + combined/rigid)
+    # and run at divisor=2 (2x deeper SA than legacy divisor=4) while staying within the 300s S0-S5 budget.
+    if len(modes) >= 3 and movable_est >= 175:
+        keep_names = {"blocks", "combined"} if selected else {"blocks", "rigid"}
+        modes = [m for m in modes if m[0] in keep_names]
+        divisor = 4 if movable_est >= 300 else 2
+    else:
+        divisor = 1
     budget = {"budget_divisor": divisor}
 
     def blocked_exits(escape_audit):
@@ -528,7 +548,7 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
 
         placed, passive_alignment = decap.align_passives(
             placed, intent, refine_fixed, preserve_escapes=preserve_align,
-            max_trials=400, extend=True,
+            max_trials=max(400, 3 * movable_est), extend=True,
         )
         if passive_alignment["moved"]:
             audit = measure(placed)
@@ -742,8 +762,22 @@ def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, inte
     """Prefer the baseline when an equally legal trial worsens a measured objective."""
     trial = _floorplan_metrics(candidate, intent)
     base = base_metrics if base_metrics is not None else _floorplan_metrics(baseline, intent)
-    regressions = [key for key in ("crossings", "decap_p90_mm", "all_decap_p90_mm")
-                   if base.get(key) is not None and (trial.get(key) is None or trial[key] > base[key])]
+    big_xing_win = (
+        base.get("crossings") is not None
+        and trial.get("crossings") is not None
+        and base["crossings"] > 0
+        and trial["crossings"] <= int(base["crossings"] * 0.95)
+    )
+    p90_tol = 0.05 if big_xing_win else 0.0
+    regressions = []
+    for key in ("crossings", "decap_p90_mm", "all_decap_p90_mm"):
+        bval = base.get(key)
+        tval = trial.get(key)
+        if bval is None:
+            continue
+        tol = p90_tol if key != "crossings" else 0.0
+        if tval is None or tval > bval + tol:
+            regressions.append(key)
     if trial["resolved_decaps"] < base["resolved_decaps"]:
         regressions.append("resolved_decap_coverage")
     trial_key, base_key = _legality_key(candidate_info), _legality_key(baseline_info)

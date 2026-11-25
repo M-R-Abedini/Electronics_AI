@@ -87,10 +87,18 @@ def collapse(pb: PlaceProblem, macros: dict[int, Macro]) -> tuple[PlaceProblem, 
     retained = [i for i in range(len(pb.parts)) if i not in owner or i in macros]
     indexes = {i: j for j, i in enumerate(retained)}
     parts = [pb.parts[i] for i in retained]
+    sub_rects = [list(pb.sub_rects[i]) if i < len(pb.sub_rects) else [] for i in retained]
+    cavity_eligible = [pb.cavity_eligible[i] if i < len(pb.cavity_eligible) else True for i in retained]
     for root, macro in macros.items():
         boxes = [rotated_box(pb.parts[by_ref[p.ref]][:4], (p.x, p.y), p.rotation) for p in macro.parts]
         bounds = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-        parts[indexes[root]] = (*bounds, *pb.parts[root][4:])
+        r_idx = indexes[root]
+        parts[r_idx] = (*bounds, *pb.parts[root][4:])
+        sub_rects[r_idx] = []
+        cavity_eligible[r_idx] = all(
+            pb.cavity_eligible[by_ref[p.ref]] if by_ref[p.ref] < len(pb.cavity_eligible) else True
+            for p in macro.parts
+        )
     pins = []
     for i, x, y in pb.pins:
         if i in owner:
@@ -98,7 +106,11 @@ def collapse(pb: PlaceProblem, macros: dict[int, Macro]) -> tuple[PlaceProblem, 
             x, y = transform((x, y), (part.x, part.y), part.rotation)
             i = root
         pins.append((indexes[i], x, y))
-    return replace(pb, parts=parts, pins=pins, refs=[pb.refs[i] for i in retained]), retained
+    return replace(
+        pb, parts=parts, pins=pins, refs=[pb.refs[i] for i in retained],
+        sub_rects=sub_rects, cavity_eligible=cavity_eligible,
+        clusters=[], repulsions=[],
+    ), retained
 
 
 def expand(pb: PlaceProblem, poses: list, retained: list[int], macros: dict[int, Macro]) -> list:

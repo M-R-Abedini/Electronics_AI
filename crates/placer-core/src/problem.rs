@@ -323,6 +323,10 @@ pub struct Problem {
     pub w_cross: f64,
     pub part_nets: Vec<Vec<usize>>,
     part_cross_nets: Vec<Vec<usize>>,
+    pub clusters: Vec<Vec<usize>>,
+    pub repulsions: Vec<(usize, usize, f64, f64)>, // (part_a, part_b, min_dist_mm, weight)
+    part_repulsions: Vec<Vec<usize>>,
+    repulsion_cost: f64,
     pub placed: Vec<bool>, // parts present in the overlap index (all, except during legalization)
     bounds: Rect,
     index: PartIndex,
@@ -418,6 +422,10 @@ impl Problem {
             w_cross,
             part_nets,
             part_cross_nets,
+            clusters: Vec::new(),
+            repulsions: Vec::new(),
+            part_repulsions: vec![Vec::new(); n_parts],
+            repulsion_cost: 0.0,
             placed: vec![true; n_parts],
             bounds,
             index: PartIndex::new(bounds, cell),
@@ -464,6 +472,46 @@ impl Problem {
         // each crossing seen from both edges: count against the index, then halve
         let skip: Vec<usize> = Vec::new();
         self.crossings = self.edges.crossings_against(&all, &skip) / 2;
+        self.repulsion_cost = self.recompute_repulsion();
+    }
+
+    pub fn set_clusters(&mut self, clusters: Vec<Vec<usize>>) {
+        self.clusters = clusters;
+    }
+
+    pub fn set_repulsions(&mut self, repulsions: Vec<(usize, usize, f64, f64)>) {
+        self.part_repulsions = vec![Vec::new(); self.parts.len()];
+        for (ri, &(a, b, _, _)) in repulsions.iter().enumerate() {
+            if a < self.parts.len() && b < self.parts.len() && a != b {
+                self.part_repulsions[a].push(ri);
+                self.part_repulsions[b].push(ri);
+            }
+        }
+        self.repulsions = repulsions;
+        self.repulsion_cost = self.recompute_repulsion();
+    }
+
+    #[inline]
+    fn part_center(&self, i: usize) -> (f64, f64) {
+        let r = placed_rect(&self.parts[i].local, self.parts[i].x, self.parts[i].y, self.parts[i].r);
+        (0.5 * (r.x0 + r.x1), 0.5 * (r.y0 + r.y1))
+    }
+
+    #[inline]
+    fn repulsion_term(&self, ri: usize) -> f64 {
+        let (a, b, min_dist, weight) = self.repulsions[ri];
+        let (ax, ay) = self.part_center(a);
+        let (bx, by) = self.part_center(b);
+        let d = (ax - bx).hypot(ay - by);
+        if d < min_dist {
+            weight * (min_dist - d)
+        } else {
+            0.0
+        }
+    }
+
+    fn recompute_repulsion(&self) -> f64 {
+        (0..self.repulsions.len()).map(|ri| self.repulsion_term(ri)).sum()
     }
 
     fn crossing_net(&self, n: usize) -> bool {
@@ -622,7 +670,7 @@ impl Problem {
     }
 
     pub fn cost(&self) -> f64 {
-        self.w_hpwl * self.hpwl_total + self.w_cross * self.crossings as f64
+        self.w_hpwl * self.hpwl_total + self.w_cross * self.crossings as f64 + self.repulsion_cost
     }
 
     // ------------------------------------------------------------- legality
@@ -714,6 +762,76 @@ impl Problem {
         true
     }
 
+    /// Check whether moving all parts in `moves` simultaneously is legal (outline, external parts, and pairwise).
+    pub fn can_place_group(&mut self, moves: &[(usize, f64, f64, u8)]) -> bool {
+        let half_gap = self.gap / 2.0;
+        for &(i, x, y, r) in moves {
+            let inner = placed_rect(&self.parts[i].local, x, y, r);
+            if !self.parts[i].fixed {
+                if self.parts[i].sub_rects.is_empty() {
+                    if !self.outline.contains_rect(&inner) {
+                        return false;
+                    }
+                } else {
+                    for sr in &self.parts[i].sub_rects {
+                        if !self.outline.contains_rect(&placed_rect(sr, x, y, r)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            let rect = inner.expand(half_gap);
+            let side = self.parts[i].side;
+            let mut cand = std::mem::take(&mut self.scratch);
+            self.index.candidates(side, &rect, &mut cand);
+            let mut ok = true;
+            for &j in &cand {
+                let j = j as usize;
+                if j == i || !self.placed[j] || moves.iter().any(|&(m, _, _, _)| m == j) {
+                    continue;
+                }
+                if self.parts[j].fixed && self.parts[i].fixed {
+                    continue;
+                }
+                let pj = &self.parts[j];
+                let rj = placed_rect(&pj.local, pj.x, pj.y, pj.r).expand(half_gap);
+                if rect.overlap(&rj) <= 1e-9 {
+                    continue;
+                }
+                if parts_collide(&self.parts[i], (x, y, r), pj, (pj.x, pj.y, pj.r), half_gap) {
+                    ok = false;
+                    break;
+                }
+            }
+            self.scratch = cand;
+            if !ok {
+                return false;
+            }
+        }
+        for a in 0..moves.len() {
+            let (ia, xa, ya, ra) = moves[a];
+            if !self.placed[ia] {
+                continue;
+            }
+            let rect_a = placed_rect(&self.parts[ia].local, xa, ya, ra).expand(half_gap);
+            for &(ib, xb, yb, rb) in &moves[a + 1..] {
+                if !self.placed[ib]
+                    || self.parts[ia].side != self.parts[ib].side
+                    || (self.parts[ia].fixed && self.parts[ib].fixed)
+                {
+                    continue;
+                }
+                let rect_b = placed_rect(&self.parts[ib].local, xb, yb, rb).expand(half_gap);
+                if rect_a.overlap(&rect_b) > 1e-9
+                    && parts_collide(&self.parts[ia], (xa, ya, ra), &self.parts[ib], (xb, yb, rb), half_gap)
+                {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// Is part `i` legal at its current pose (inside the board, no same-side overlap), ignoring `skip`?
     pub fn legal_at(&mut self, i: usize, skip: Option<usize>) -> bool {
         let (x, y, r) = (self.parts[i].x, self.parts[i].y, self.parts[i].r);
@@ -731,6 +849,11 @@ impl Problem {
     /// updating all caches.  `undo` restores the previous caches exactly.
     pub fn apply_pose(&mut self, i: usize, x: f64, y: f64, r: u8) -> Undo {
         let old = (self.parts[i].x, self.parts[i].y, self.parts[i].r);
+        let rep_before: f64 = if self.part_repulsions[i].is_empty() {
+            0.0
+        } else {
+            self.part_repulsions[i].iter().map(|&ri| self.repulsion_term(ri)).sum()
+        };
         let old_rect = self.rect(i);
         if self.placed[i] {
             self.index.remove(self.parts[i].side, &old_rect, i as u32);
@@ -742,6 +865,14 @@ impl Problem {
             let new_rect = self.rect(i);
             self.index.insert(self.parts[i].side, &new_rect, i as u32);
         }
+        let rep_delta = if self.part_repulsions[i].is_empty() {
+            0.0
+        } else {
+            let rep_after: f64 = self.part_repulsions[i].iter().map(|&ri| self.repulsion_term(ri)).sum();
+            let d = rep_after - rep_before;
+            self.repulsion_cost += d;
+            d
+        };
         let n_nets = self.part_nets[i].len();
         let mut net_old = Vec::with_capacity(n_nets);
         for idx in 0..n_nets {
@@ -786,6 +917,7 @@ impl Problem {
             cross_nets,
             old_edges,
             cross_delta,
+            rep_delta,
         }
     }
 
@@ -802,6 +934,7 @@ impl Problem {
             let r = self.rect(i);
             self.index.insert(self.parts[i].side, &r, i as u32);
         }
+        self.repulsion_cost -= u.rep_delta;
         for (n, h) in u.net_old {
             self.hpwl_total += self.nets[n].weight * (h - self.net_hpwl[n]);
             self.net_hpwl[n] = h;
@@ -843,6 +976,7 @@ pub struct Undo {
     cross_nets: Vec<usize>,
     old_edges: Vec<(Seg, u32)>,
     cross_delta: isize,
+    rep_delta: f64,
 }
 
 #[inline]

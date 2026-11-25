@@ -73,7 +73,7 @@ struct PlacementProblem {
 #[pymethods]
 impl PlacementProblem {
     #[new]
-    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None, sub_rects=None, cavity_eligible=None))]
+    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None, sub_rects=None, cavity_eligible=None, clusters=None, repulsions=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parts: Vec<PartRow>,
@@ -87,6 +87,8 @@ impl PlacementProblem {
         affinities: Option<Vec<(Vec<usize>, f64)>>,
         sub_rects: Option<Vec<Vec<SubRectRow>>>,
         cavity_eligible: Option<Vec<bool>>,
+        clusters: Option<Vec<Vec<usize>>>,
+        repulsions: Option<Vec<(usize, usize, f64, f64)>>,
     ) -> PyResult<Self> {
         let n = parts.len();
         if let Some(bad) = pins.iter().find(|p| p.0 >= n) {
@@ -167,17 +169,22 @@ impl PlacementProblem {
                 nearest: true,
             }))
             .collect();
-        Ok(PlacementProblem {
-            inner: Problem::new(
-                parts,
-                pins,
-                nets,
-                Outline { outers, holes },
-                gap,
-                w_hpwl,
-                w_cross,
-            ),
-        })
+        let mut inner = Problem::new(
+            parts,
+            pins,
+            nets,
+            Outline { outers, holes },
+            gap,
+            w_hpwl,
+            w_cross,
+        );
+        if let Some(cl) = clusters {
+            inner.set_clusters(cl);
+        }
+        if let Some(rep) = repulsions {
+            inner.set_repulsions(rep);
+        }
+        Ok(PlacementProblem { inner })
     }
 
     fn positions(&self) -> Vec<(f64, f64, u8)> {

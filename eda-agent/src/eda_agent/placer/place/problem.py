@@ -152,12 +152,43 @@ def fixed_parts(board: Board) -> dict[str, str]:
     return dict(sorted(out.items()))
 
 
-def assign_sides(board: Board, policy: str, fixed: dict[str, str]) -> dict[str, str]:
-    """S2b: side of every part.  ``expert`` keeps the input sides; ``top_only`` = assembly level 1."""
+def assign_sides(board: Board, policy: str, fixed: dict[str, str], intent: dict | None = None) -> dict[str, str]:
+    """S2b: side of every part.
+
+    ``expert`` keeps input sides (P2); ``top_only`` is assembly level 1;
+    ``level2_passives_back`` puts low-profile SMD decaps/passives onto B when top utilization is high;
+    ``level3_two_sided`` balances movable SMD parts across F and B.
+    """
     if policy == "expert":
         return {fp.ref: fp.side for fp in board.footprints}
     if policy == "top_only":
         return {fp.ref: (fp.side if fp.ref in fixed else "F") for fp in board.footprints}
+    if policy in ("level2_passives_back", "level3_two_sided"):
+        parts_meta = (intent or {}).get("parts", {})
+        area = board.board_area_mm2 or 0.0
+        top_used = sum(fp.courtyard_area for fp in board.footprints if fp.ref in fixed and fp.side == "F")
+        sides: dict[str, str] = {}
+        for fp in board.footprints:
+            if fp.ref in fixed:
+                sides[fp.ref] = fp.side
+                continue
+            role = ((parts_meta.get(fp.ref, {}).get("role") or {}).get("value")) or ""
+            is_low_smd = is_shield_cavity_eligible(fp) and not fp.is_through_hole
+            if policy == "level2_passives_back":
+                if is_low_smd and role in ("decap", "pull_up", "pull_down", "series_resistor", "signal_passive", "test_point") and (
+                    area > 0 and top_used > 0.50 * area
+                ):
+                    sides[fp.ref] = "B"
+                else:
+                    sides[fp.ref] = "F"
+                    top_used += fp.courtyard_area
+            else:
+                if is_low_smd and area > 0 and top_used > 0.55 * area:
+                    sides[fp.ref] = "B"
+                else:
+                    sides[fp.ref] = "F"
+                    top_used += fp.courtyard_area
+        return sides
     raise ValueError(f"unknown side policy {policy!r}")
 
 
@@ -179,6 +210,8 @@ class PlaceProblem:
     exits: dict[str, list[escape.Escape]] = field(default_factory=dict)
     sub_rects: list[list[tuple[float, float, float, float]]] = field(default_factory=list)
     cavity_eligible: list[bool] = field(default_factory=list)
+    clusters: list[list[int]] = field(default_factory=list)
+    repulsions: list[tuple[int, int, float, float]] = field(default_factory=list)
     local_block_links: int = 0
     sheet_cohesion_links: int = 0
 
@@ -195,7 +228,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
           inflations: dict[str, float] | None = None,
           fixed_override: dict[str, str] | None = None) -> PlaceProblem:
     fixed = dict(fixed_override) if fixed_override is not None else fixed_parts(board)
-    sides = assign_sides(board, side_policy, fixed)
+    sides = assign_sides(board, side_policy, fixed, intent=intent)
     planes = zone_nets(board)
     pb = PlaceProblem(board=board, refs=[fp.ref for fp in board.footprints], fixed=fixed, sides=sides)
     pin_of: dict[str, list[int]] = {}
@@ -256,13 +289,18 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
             pin_of.setdefault(pad.net, []).append(len(pb.pins))
             part_pins.setdefault((fp.ref, pad.net), []).append((str(pad.number), len(pb.pins)))
             pb.pins.append((i, lx, ly))
+    intent_nets = (intent or {}).get("nets", {})
+    _PRIORITY_NET_CLASSES = frozenset({"DIFF_PAIR", "RF", "CLOCK", "SW_NODE"})
     for net, pins in sorted(pin_of.items()):
         if len(pins) < 2 or is_ground_net(net):
             continue
         plane = net in planes
-        pb.nets.append((pins, WEIGHT_PLANE_NET if plane else WEIGHT_SIGNAL, not plane))
+        net_cls = ((intent_nets.get(net, {}).get("class") or {}).get("value")) or "GENERAL"
+        w = WEIGHT_PLANE_NET if plane else (1.5 * WEIGHT_SIGNAL if (floorplan and net_cls in _PRIORITY_NET_CLASSES) else WEIGHT_SIGNAL)
+        pb.nets.append((pins, w, not plane))
         pb.net_names.append(net)
     parts = (intent or {}).get("parts", {})
+    ref_to_idx = {ref: idx for idx, ref in enumerate(pb.refs)}
     for ref, part in sorted(parts.items()):
         role, claim = part.get("role"), part.get("target")
         if model.is_uncertain(role) or not claim:
@@ -300,35 +338,89 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
             if len(source) == 1 and pins:
                 pb.affinities.append(([source[0][1], *pins], DECAP_AFFINITY_WEIGHT if kind == "decap" else LOCAL_BLOCK_WEIGHT))
                 pb.local_block_links += kind != "decap"
+                # Inline Connector -> ESD -> IC pull: gently attract ESD toward the downstream IC too.
+                if floorplan and kind == "esd":
+                    ic_pins = [
+                        pi for pi in pin_of.get(common_net, [])
+                        if pb.refs[pb.pins[pi][0]] not in (ref, target_ref)
+                        and ((parts.get(pb.refs[pb.pins[pi][0]], {}).get("role") or {}).get("value")) in (
+                            "ic", "converter_ic", "linear_regulator", "power_switch",
+                        )
+                    ]
+                    if ic_pins:
+                        pb.affinities.append(([source[0][1], *ic_pins], 0.6 * LOCAL_BLOCK_WEIGHT))
     if floorplan:
+        # FB/COMP vs SW inductor repulsion (matches Hartley lint fb_near_sw / fb_under_inductor).
+        conv_inductors: dict[str, list[int]] = {}
+        conv_controls: dict[str, list[int]] = {}
+        for ref, part in sorted(parts.items()):
+            rval = ((part.get("role") or {}).get("value")) or ""
+            tref = ((part.get("target") or {}).get("value") or {}).get("ref")
+            if tref and ref in ref_to_idx:
+                if rval == "converter_inductor":
+                    conv_inductors.setdefault(tref, []).append(ref_to_idx[ref])
+                elif rval == "converter_control":
+                    conv_controls.setdefault(tref, []).append(ref_to_idx[ref])
+        for conv_ref, ctrl_idxs in sorted(conv_controls.items()):
+            for ci in ctrl_idxs:
+                for li in conv_inductors.get(conv_ref, ()):
+                    if ci != li:
+                        pb.repulsions.append((ci, li, 3.0, 4.0))
+        # Build disjoint movable same-side clusters for atomic Rust SA translate/rotate moves.
+        used_in_cluster: set[int] = set()
+        for bclaim in (intent or {}).get("blocks", []):
+            if model.is_uncertain(bclaim):
+                continue
+            bval = bclaim.get("value") or {}
+            anchor_ref = bval.get("anchor")
+            if not anchor_ref or anchor_ref not in ref_to_idx:
+                continue
+            ai = ref_to_idx[anchor_ref]
+            if pb.parts[ai][5] or ai in used_in_cluster:
+                continue
+            a_side = pb.parts[ai][4]
+            members = [
+                ref_to_idx[m] for m in bval.get("members", [])
+                if m in ref_to_idx and m != anchor_ref
+                and not pb.parts[ref_to_idx[m]][5]
+                and pb.parts[ref_to_idx[m]][4] == a_side
+                and ref_to_idx[m] not in used_in_cluster
+            ]
+            if 1 <= len(members) <= 10:
+                cl = [ai, *members]
+                pb.clusters.append(cl)
+                used_in_cluster.update(cl)
         sheets_map: dict[str, list[Footprint]] = {}
         for fp in board.footprints:
-            if fp.sheet and fp.sheet != "/":
-                sheets_map.setdefault(fp.sheet, []).append(fp)
+            sh = fp.sheet.strip("/") if fp.sheet else ""
+            if sh:
+                sheets_map.setdefault(sh, []).append(fp)
         if len(sheets_map) >= 2:
-            # Build a quick first-pin index per footprint so sheet cohesion uses valid pin indices
-            first_pin: dict[str, int] = {}
-            for pin_idx, (part_idx, _lx, _ly) in enumerate(pb.pins):
+            # Pick the pin closest to each footprint's centroid (0, 0) to avoid artificial rotational torque.
+            center_pin: dict[str, int] = {}
+            best_d2: dict[str, float] = {}
+            for pin_idx, (part_idx, lx, ly) in enumerate(pb.pins):
                 ref_i = pb.refs[part_idx]
-                if ref_i not in first_pin:
-                    first_pin[ref_i] = pin_idx
-            for sheet_name, members in sorted(sheets_map.items()):
-                # Pick the highest-pad-count IC (or largest multi-pad part) on this sheet as anchor
+                d2 = lx * lx + ly * ly
+                if ref_i not in best_d2 or d2 < best_d2[ref_i]:
+                    best_d2[ref_i] = d2
+                    center_pin[ref_i] = pin_idx
+            for _sheet_name, members in sorted(sheets_map.items()):
                 anchors = sorted(
-                    (fp for fp in members if fp.ref in first_pin and len(fp.pads) >= 4),
+                    (fp for fp in members if fp.ref in center_pin and len(fp.pads) >= 4),
                     key=lambda f: (-len(f.pads), f.ref),
                 )
                 if not anchors:
                     continue
                 anchor = anchors[0]
-                anchor_pin = first_pin[anchor.ref]
+                anchor_pin = center_pin[anchor.ref]
                 for fp in members:
-                    if fp.ref == anchor.ref or fp.ref in fixed or fp.ref not in first_pin:
+                    if fp.ref == anchor.ref or fp.ref in fixed or fp.ref not in center_pin:
                         continue
                     role_v = ((parts.get(fp.ref, {}).get("role") or {}).get("value")) or ""
                     if role_v in ("decap", "test_point", "mechanical"):
                         continue
-                    pb.affinities.append(([first_pin[fp.ref], anchor_pin], SHEET_COHESION_WEIGHT))
+                    pb.affinities.append(([center_pin[fp.ref], anchor_pin], SHEET_COHESION_WEIGHT))
                     pb.sheet_cohesion_links += 1
     for o in board.outline:
         pb.outers.append([tuple(p) for p in o.outer])
@@ -356,6 +448,10 @@ def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0,
         kwargs["sub_rects"] = pb.sub_rects
         if pb.cavity_eligible:
             kwargs["cavity_eligible"] = pb.cavity_eligible
+    if pb.clusters:
+        kwargs["clusters"] = pb.clusters
+    if pb.repulsions:
+        kwargs["repulsions"] = pb.repulsions
     return PlacementProblem(*args, **kwargs)
 
 

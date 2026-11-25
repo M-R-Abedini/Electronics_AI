@@ -264,7 +264,18 @@ pub fn anneal(
             }
         }
     }
-    let mut undos = Vec::with_capacity(2);
+    let mut part_cluster: Vec<Option<usize>> = vec![None; n_parts];
+    for (ci, cl) in p.clusters.iter().enumerate() {
+        if let Some(&anchor) = cl.first()
+            && anchor < n_parts
+            && !p.parts[anchor].fixed
+            && cl.len() >= 2
+        {
+            part_cluster[anchor] = Some(ci);
+        }
+    }
+    let mut group_moves: Vec<(usize, f64, f64, u8)> = Vec::with_capacity(16);
+    let mut undos = Vec::with_capacity(16);
     for k in 0..iters {
         let f = k as f64 / iters as f64;
         let t = t0 * (t_end / t0).powf(f);
@@ -274,7 +285,53 @@ pub fn anneal(
         let kind = rng.random_range(0..10u8);
         let (x, y, r) = (p.parts[i].x, p.parts[i].y, p.parts[i].r);
         undos.clear();
-        if kind == 5 && !affinity_nets[i].is_empty() {
+        if kind == 4 && part_cluster[i].is_some() {
+            // Soft cluster move: translate or rigid-rotate anchor + tightly coupled movable children atomically.
+            let cid = part_cluster[i].unwrap();
+            group_moves.clear();
+            let do_rotate = p.parts[i].can_rotate && rng.random_bool(0.5);
+            if do_rotate {
+                let dr = rng.random_range(1..4u8);
+                let (acx, acy) = body_center(&p.parts[i]);
+                let mut valid_rot = true;
+                for &m in &p.clusters[cid] {
+                    if p.parts[m].fixed {
+                        continue;
+                    }
+                    if !p.parts[m].can_rotate {
+                        valid_rot = false;
+                        break;
+                    }
+                    let (mcx, mcy) = body_center(&p.parts[m]);
+                    let (rdx, rdy) = crate::geom::rot90(mcx - acx, mcy - acy, dr);
+                    let nr = (p.parts[m].r + dr) & 3;
+                    let (nx, ny) = pose_for_center(&p.parts[m], acx + rdx, acy + rdy, nr);
+                    group_moves.push((m, nx, ny, nr));
+                }
+                if !valid_rot || group_moves.is_empty() {
+                    continue;
+                }
+            } else {
+                let dx = round3(rng.random_range(-radius..=radius));
+                let dy = round3(rng.random_range(-radius..=radius));
+                for &m in &p.clusters[cid] {
+                    if !p.parts[m].fixed {
+                        group_moves.push((m, round3(p.parts[m].x + dx), round3(p.parts[m].y + dy), p.parts[m].r));
+                    }
+                }
+                if group_moves.is_empty() {
+                    continue;
+                }
+            }
+            stats.iterations += 1;
+            if !p.can_place_group(&group_moves) {
+                stats.illegal += 1;
+                continue;
+            }
+            for &(m, nx, ny, nr) in &group_moves {
+                undos.push(p.apply_pose(m, nx, ny, nr));
+            }
+        } else if kind == 5 && !affinity_nets[i].is_empty() {
             // Connected-target affinity jump: lets trapped decaps/crystals hop over IC bodies.
             let affs = &affinity_nets[i];
             let ni = affs[rng.random_range(0..affs.len())];
