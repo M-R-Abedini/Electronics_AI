@@ -222,6 +222,7 @@ class _Site:
         self.clearance = clearance = max(rules.clearance, board.rules.get("min_clearance", 0))
         self.edge = board.rules.get("copper_edge_clearance", 0)
         self.holes = existing_holes(board, fixed)
+        hole_clr = float(board.rules.get("hole_clearance") or 0.0)
         self.other = []
         self._other_shapes = []
         for item in fixed:
@@ -236,13 +237,15 @@ class _Site:
                 else:
                     g = Point(item["x"], item["y"])
                     r = item["diameter"] / 2.0
+                    other_drill = float(item.get("drill") or 0.0)
+                    if hole_clr > 0.0 and other_drill > 0.0:
+                        gap = max(gap, 0.5 * other_drill + hole_clr - r + 0.005)
                     lyrs = set(item["layers"])
                 x0, y0, x1, y1 = g.bounds
                 pad_b = r + gap + 1e-4
                 self._other_shapes.append((g, r, lyrs, (x0 - pad_b, y0 - pad_b, x1 + pad_b, y1 + pad_b), gap))
         self.same_vias = [v for v in fixed if v["net"] == net and "points" not in v]
 
-        hole_clr = float(board.rules.get("hole_clearance") or 0.0)
         via_annular = max(0.0, 0.5 * (self.diameter - self.drill))
         via_clr = max(clearance, (hole_clr - via_annular + 0.005) if hole_clr > 0.0 else 0.0)
 

@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ...units import MM_PER_MIL
 from .dsn import _SCALE, _UNIT, _num, _quote, _sexp_end, _token
 
 if TYPE_CHECKING:
@@ -53,7 +54,7 @@ def _strip_comments(text: str) -> str:
 def _to_mm(val: str, unit: str | None) -> float:
     num = float(val)
     if unit == "mil":
-        return num * 0.0254
+        return num * MM_PER_MIL
     if unit == "um":
         return num / 1000.0
     return num

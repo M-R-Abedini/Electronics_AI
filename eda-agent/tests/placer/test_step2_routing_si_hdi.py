@@ -140,3 +140,17 @@ def test_plan_power_tap_prefers_adjacent_blind_microvia_on_hdi_board():
     _, via_b = got_b
     assert isinstance(via_b, dict) and via_b.get("via_type") == "micro"
     assert tuple(via_b["layers"]) == ("B.Cu", "In6.Cu")
+
+
+def test_site_track_enforces_hole_clearance_to_other_net_vias():
+    b = _make_8l_hdi_board()
+    b.rules["hole_clearance"] = 0.15
+    b.rules["min_clearance"] = 0.09
+    b.netclasses[0].clearance = 0.09
+    b.netclasses[0].track_width = 0.09
+    other_via = {"net": "1V8", "x": 15.0, "y": 10.0, "diameter": 0.30, "drill": 0.20, "layers": ["F.Cu", "B.Cu"]}
+    site = fanout._Site(b, "GND", [other_via])
+    # Center-to-track distance 0.292 mm -> 0.292 - 0.045 - 0.10 = 0.147 mm from drill (< 0.15 mm hole_clearance!)
+    assert site.track("F.Cu", [(14.0, 10.292), (16.0, 10.292)]) is None
+    # Center-to-track distance 0.310 mm -> 0.310 - 0.045 - 0.10 = 0.165 mm (>= 0.15 mm) -> allowed
+    assert site.track("F.Cu", [(14.0, 10.310), (16.0, 10.310)]) is not None
