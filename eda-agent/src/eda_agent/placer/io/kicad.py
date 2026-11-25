@@ -96,8 +96,12 @@ def _footprint(row: dict) -> Footprint:
         ref=row["ref"], value=row["value"], lib_id=row["lib_id"], x=row["x"], y=row["y"],
         rotation=row["rotation"], side=row["side"], locked=row["locked"],
         pads=[_pad(p) for p in row["pads"]],
-        courtyard=Courtyard(source=cy["source"], polygons=[[tuple(p) for p in poly] for poly in cy["polygons"]],
-                            margin_mm=cy.get("margin_mm")),
+        courtyard=Courtyard(
+            source=cy["source"],
+            polygons=[[tuple(p) for p in poly] for poly in cy["polygons"]],
+            margin_mm=cy.get("margin_mm"),
+            holes=[[[tuple(p) for p in hole] for hole in poly_holes] for poly_holes in cy.get("holes", [])],
+        ),
         uuid=row["uuid"], sheet=row["sheet"], description=row["description"], attributes=tuple(row["attributes"]),
     )
 

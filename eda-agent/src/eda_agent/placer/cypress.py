@@ -56,7 +56,10 @@ def to_cypress(board: Board, fixed: set[str]) -> dict:
     xs, ys = [], []
     for fp in board.footprints:
         shape = courtyard_polygon(fp)
-        ring = [list(map(float, p)) for p in shape.exterior.coords[:-1]] if shape is not None else []
+        outer = shape.exterior if (shape is not None and shape.geom_type == "Polygon") else (
+            shape.convex_hull.exterior if (shape is not None and not shape.is_empty) else None
+        )
+        ring = [list(map(float, p)) for p in outer.coords[:-1]] if outer is not None else []
         if not ring:
             x0, y0, x1, y1 = local_box(fp)
             ring = [list(transform(c, (fp.x, fp.y), fp.rotation)) for c in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]

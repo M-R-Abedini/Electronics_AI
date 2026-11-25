@@ -1006,19 +1006,70 @@ def _courtyard(fp, ox, oy, rot, max_error):
         fp.BuildCourtyardCaches()
     poly = fp.GetCourtyard(pcbnew.B_CrtYd if fp.IsFlipped() else pcbnew.F_CrtYd)
     if poly.OutlineCount():
-        rings = [[list(_to_local(x, y, ox, oy, rot)) for x, y in ring] for ring in _world_outlines(poly)]
-        return {"source": "file", "polygons": rings}
+        rings = []
+        holes = []
+        for i in range(poly.OutlineCount()):
+            chain = poly.Outline(i)
+            rings.append([
+                list(_to_local(pcbnew.ToMM(chain.CPoint(j).x), pcbnew.ToMM(chain.CPoint(j).y), ox, oy, rot))
+                for j in range(chain.PointCount())
+            ])
+            poly_holes = []
+            for h in range(poly.HoleCount(i)):
+                hchain = poly.Hole(i, h)
+                poly_holes.append([
+                    list(_to_local(pcbnew.ToMM(hchain.CPoint(j).x), pcbnew.ToMM(hchain.CPoint(j).y), ox, oy, rot))
+                    for j in range(hchain.PointCount())
+                ])
+            holes.append(poly_holes)
+        out = {"source": "file", "polygons": rings}
+        if any(holes):
+            out["holes"] = holes
+        return out
     pts = []
+    pad_boxes = []
     for pad in fp.Pads():
         stack = list(pad.GetLayerSet().CuStack())
+        ppts = []
         for ring in _world_outlines(_item_poly(pad, stack[0] if stack else pcbnew.F_Cu, max_error)):
-            pts += [_to_local(x, y, ox, oy, rot) for x, y in ring]
+            ppts += [_to_local(x, y, ox, oy, rot) for x, y in ring]
+        if ppts:
+            pts += ppts
+            net = pad.GetNetname() or ""
+            pad_boxes.append((
+                min(p[0] for p in ppts), min(p[1] for p in ppts),
+                max(p[0] for p in ppts), max(p[1] for p in ppts),
+                net,
+            ))
     if not pts:
         return {"source": "none", "polygons": []}
     m = DERIVED_COURTYARD_MARGIN_MM
     x0, y0 = min(p[0] for p in pts) - m, min(p[1] for p in pts) - m
     x1, y1 = max(p[0] for p in pts) + m, max(p[1] for p in pts) + m
     rect = [[round(a, 6), round(b, 6)] for a, b in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+    bw, bh = x1 - x0, y1 - y0
+    bbox_area = bw * bh
+    if bw >= 6.0 and bh >= 6.0 and len(pad_boxes) >= 3 and bbox_area > 0:
+        pad_area = sum((px1 - px0 + 2 * m) * (py1 - py0 + 2 * m) for px0, py0, px1, py1, _ in pad_boxes)
+        max_pad_span = max(max(px1 - px0, py1 - py0) for px0, py0, px1, py1, _ in pad_boxes)
+        pad_limit = min(max_pad_span + m, 0.22 * min(bw, bh)) + 0.02
+        lx0, ly0, lx1, ly1 = x0 + pad_limit, y0 + pad_limit, x1 - pad_limit, y1 - pad_limit
+        wall = min(max(max_pad_span, 0.8) + 2.0 * m, 0.24 * min(bw, bh))
+        ix0, iy0, ix1, iy1 = x0 + wall, y0 + wall, x1 - wall, y1 - wall
+        if ix1 - ix0 >= 2.0 and iy1 - iy0 >= 2.0 and pad_area < 0.28 * bbox_area:
+            interior_clear = not any(
+                px1 > lx0 and px0 < lx1 and py1 > ly0 and py0 < ly1
+                for px0, py0, px1, py1, _ in pad_boxes
+            )
+            all_gnd_or_nc = all(
+                net == "" or net.lower().startswith("unconnected-") or "gnd" in net.lower() or "vss" in net.lower()
+                for *_, net in pad_boxes
+            )
+            desc = (fp.GetReference() + " " + fp.GetValue() + " " + str(fp.GetFPID().GetUniStringLibId())).lower()
+            shield_hint = "shield" in desc
+            if interior_clear and (shield_hint or all_gnd_or_nc):
+                hole = [[round(a, 6), round(b, 6)] for a, b in ((ix0, iy0), (ix0, iy1), (ix1, iy1), (ix1, iy0))]
+                return {"source": "derived", "margin_mm": m, "polygons": [rect], "holes": [[hole]]}
     return {"source": "derived", "margin_mm": m, "polygons": [rect]}
 
 

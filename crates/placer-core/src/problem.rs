@@ -12,6 +12,8 @@ use crate::geom::{Outline, Rect, placed_rect, rot90, segments_cross};
 #[derive(Clone, Debug)]
 pub struct Part {
     pub local: Rect,
+    pub sub_rects: Vec<Rect>,
+    pub cavity_eligible: bool,
     pub side: u8,
     pub fixed: bool,
     pub can_rotate: bool,
@@ -628,9 +630,20 @@ impl Problem {
     /// without mutating `parts`, `index`, or `edges` (exact match to `legal_at`).
     pub fn can_place_at(&mut self, i: usize, x: f64, y: f64, r: u8, skip: Option<usize>) -> bool {
         let inner = placed_rect(&self.parts[i].local, x, y, r);
-        let rect = inner.expand(self.gap / 2.0);
-        if !self.parts[i].fixed && !self.outline.contains_rect(&inner) {
-            return false;
+        let half_gap = self.gap / 2.0;
+        let rect = inner.expand(half_gap);
+        if !self.parts[i].fixed {
+            if self.parts[i].sub_rects.is_empty() {
+                if !self.outline.contains_rect(&inner) {
+                    return false;
+                }
+            } else {
+                for sr in &self.parts[i].sub_rects {
+                    if !self.outline.contains_rect(&placed_rect(sr, x, y, r)) {
+                        return false;
+                    }
+                }
+            }
         }
         let side = self.parts[i].side;
         let mut cand = std::mem::take(&mut self.scratch);
@@ -644,7 +657,12 @@ impl Problem {
             if self.parts[j].fixed && self.parts[i].fixed {
                 continue;
             }
-            if rect.overlap(&self.rect(j)) > 1e-9 {
+            let pj = &self.parts[j];
+            let rj = placed_rect(&pj.local, pj.x, pj.y, pj.r).expand(half_gap);
+            if rect.overlap(&rj) <= 1e-9 {
+                continue;
+            }
+            if parts_collide(&self.parts[i], (x, y, r), pj, (pj.x, pj.y, pj.r), half_gap) {
                 ok = false;
                 break;
             }
@@ -678,9 +696,18 @@ impl Problem {
             && self.placed[j]
             && !(self.parts[i].fixed && self.parts[j].fixed)
         {
-            let rect_i = placed_rect(&self.parts[i].local, xi, yi, ri).expand(self.gap / 2.0);
-            let rect_j = placed_rect(&self.parts[j].local, xj, yj, rj).expand(self.gap / 2.0);
-            if rect_i.overlap(&rect_j) > 1e-9 {
+            let half_gap = self.gap / 2.0;
+            let rect_i = placed_rect(&self.parts[i].local, xi, yi, ri).expand(half_gap);
+            let rect_j = placed_rect(&self.parts[j].local, xj, yj, rj).expand(half_gap);
+            if rect_i.overlap(&rect_j) > 1e-9
+                && parts_collide(
+                    &self.parts[i],
+                    (xi, yi, ri),
+                    &self.parts[j],
+                    (xj, yj, rj),
+                    half_gap,
+                )
+            {
                 return false;
             }
         }
@@ -818,6 +845,51 @@ pub struct Undo {
     cross_delta: isize,
 }
 
+#[inline]
+fn parts_collide(
+    pa: &Part,
+    pose_a: (f64, f64, u8),
+    pb: &Part,
+    pose_b: (f64, f64, u8),
+    half_gap: f64,
+) -> bool {
+    if pa.sub_rects.is_empty() && pb.sub_rects.is_empty() {
+        return true;
+    }
+    // Tall/TH/external parts cannot enter a hollow shield cavity: treat the shield as its full AABB.
+    if (!pa.sub_rects.is_empty() && !pb.cavity_eligible)
+        || (!pb.sub_rects.is_empty() && !pa.cavity_eligible)
+    {
+        return true;
+    }
+    let a_slice: &[Rect] = if pa.sub_rects.is_empty() {
+        std::slice::from_ref(&pa.local)
+    } else {
+        &pa.sub_rects
+    };
+    let b_slice: &[Rect] = if pb.sub_rects.is_empty() {
+        std::slice::from_ref(&pb.local)
+    } else {
+        &pb.sub_rects
+    };
+    for sa in a_slice {
+        let ra_w = placed_rect(sa, pose_a.0, pose_a.1, pose_a.2).expand(half_gap);
+        for sb in b_slice {
+            let rb_w = placed_rect(sb, pose_b.0, pose_b.1, pose_b.2).expand(half_gap);
+            if ra_w.overlap(&rb_w) > 1e-9 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Edge-grid cell: about 1/40 of the board's longer side, at least 2 mm.
+/// A fixed 2 mm cell made long edges on a 300 mm board walk hundreds of cells per query.
+fn edge_cell(bounds: &Rect) -> f64 {
+    ((bounds.x1 - bounds.x0).max(bounds.y1 - bounds.y0) / 40.0).max(2.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,6 +936,8 @@ mod tests {
                 x1: 1.0,
                 y1: 0.5,
             },
+            sub_rects: Vec::new(),
+            cavity_eligible: true,
             side: 0,
             fixed: false,
             can_rotate: true,
@@ -984,10 +1058,34 @@ mod tests {
         assert_eq!(pred_bad, act_bad);
         assert!(!pred_bad);
     }
-}
 
-/// Edge-grid cell: about 1/40 of the board's longer side, at least 2 mm.
-/// A fixed 2 mm cell made long edges on a 300 mm board walk hundreds of cells per query.
-fn edge_cell(bounds: &Rect) -> f64 {
-    ((bounds.x1 - bounds.x0).max(bounds.y1 - bounds.y0) / 40.0).max(2.0)
+    #[test]
+    fn hollow_sub_rects_allow_eligible_interior_and_block_walls_and_tall() {
+        let mut tall = part(10.0, 10.0);
+        tall.cavity_eligible = false;
+        let wall_parts = vec![
+            Part {
+                local: Rect { x0: -5.5, y0: -5.5, x1: 5.5, y1: 5.5 },
+                sub_rects: vec![
+                    Rect { x0: -5.5, y0: -5.5, x1: 5.5, y1: -4.5 },
+                    Rect { x0: -5.5, y0: 4.5, x1: 5.5, y1: 5.5 },
+                    Rect { x0: -5.5, y0: -4.5, x1: -4.5, y1: 4.5 },
+                    Rect { x0: 4.5, y0: -4.5, x1: 5.5, y1: 4.5 },
+                ],
+                cavity_eligible: false,
+                side: 0,
+                fixed: true,
+                can_rotate: false,
+                x: 10.0,
+                y: 10.0,
+                r: 0,
+            },
+            part(10.0, 10.0), // cavity_eligible SMD inside hollow window
+            tall,             // tall/TH part blocked from hollow window
+        ];
+        let mut p = Problem::new(wall_parts, vec![], vec![], square(), 0.1, 1.0, 10.0);
+        assert!(p.can_place_at(1, 10.0, 10.0, 0, Some(2)));
+        assert!(!p.can_place_at(1, 15.0, 10.0, 0, Some(2))); // hits right wall
+        assert!(!p.can_place_at(2, 10.0, 10.0, 0, Some(1))); // tall part barred from cavity
+    }
 }
