@@ -25,7 +25,7 @@ from ..eval import legality
 from ..io.kicad import KiCadAdapterError, read_board, run_helper
 from ..ir import Board, is_ground_net, plane_zone_layers, power_layers
 from ..toolchain import RUNTIME_DIR, sha256_file
-from . import drc, dsn
+from . import drc, dru, dsn
 from .freerouting import RouterConfig, route
 from .freerouting import settled as freerouting_settled
 
@@ -419,10 +419,6 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     source, inputs = stage_input(board, run_dir)
     warnings: list[str] = []
     dru_sidecar = source.with_suffix(".kicad_dru")
-    if dru_sidecar.is_file():
-        dru_rules = _dru_rule_names(dru_sidecar)
-        names_str = ", ".join(dru_rules) if dru_rules else dru_sidecar.name
-        warnings.append(f"custom .kicad_dru rules are not translated to Specctra DSN: {names_str}")
     reference = drc.run_cached(Path(reference_board) if reference_board else Path(board), work / "drc_input.json")
     inputs["reference_board"] = str(Path(reference_board).resolve()) if reference_board else inputs["board"]["path"]
     t = tick("drc_input", t)
@@ -445,13 +441,31 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         text,
         {cl.name: ("power" if cl.name in pwr_set else "signal") for cl in ir.copper_layers},
     )
+    text, dru_compiled = dru.compile_dru_to_dsn(text, dru_sidecar, ir)
+    if dru_compiled["untranslated"]:
+        warnings.append(
+            f"custom .kicad_dru rules are not translated to Specctra DSN: {', '.join(dru_compiled['untranslated'])}"
+        )
+    elif dru_sidecar.is_file() and not dru_compiled["translated"]:
+        dru_rules = _dru_rule_names(dru_sidecar)
+        names_str = ", ".join(dru_rules) if dru_rules else dru_sidecar.name
+        warnings.append(f"custom .kicad_dru rules are not translated to Specctra DSN: {names_str}")
+    dru_eff = dru_compiled.get("effective_rules") or {}
     default_nc = next((c for c in ir.netclasses if c.name == "Default"), ir.netclasses[0] if ir.netclasses else None)
-    eff_via_d = max(float(getattr(default_nc, "via_diameter", 0.0) or 0.0), float(ir.rules.get("min_via_diameter") or 0.0))
-    eff_via_dr = max(float(getattr(default_nc, "via_drill", 0.0) or 0.0), float(ir.rules.get("min_through_drill") or 0.0))
+    eff_via_d = max(
+        float(getattr(default_nc, "via_diameter", 0.0) or 0.0),
+        float(ir.rules.get("min_via_diameter") or 0.0),
+        float(dru_eff.get("min_via_diameter_mm") or 0.0),
+    )
+    eff_via_dr = max(
+        float(getattr(default_nc, "via_drill", 0.0) or 0.0),
+        float(ir.rules.get("min_through_drill") or 0.0),
+        float(dru_eff.get("min_via_drill_mm") or 0.0),
+    )
     eff_clr = max(float(getattr(default_nc, "clearance", 0.0) or 0.0), float(ir.rules.get("min_clearance") or 0.0))
-    hole_clr_mm = float(ir.rules.get("hole_clearance") or 0.0)
-    hole_to_hole_mm = float(ir.rules.get("hole_to_hole") or 0.0)
-    edge_clr_mm = float(ir.rules.get("copper_edge_clearance") or 0.0)
+    hole_clr_mm = max(float(ir.rules.get("hole_clearance") or 0.0), float(dru_eff.get("hole_clearance_mm") or 0.0))
+    hole_to_hole_mm = max(float(ir.rules.get("hole_to_hole") or 0.0), float(dru_eff.get("hole_to_hole_mm") or 0.0))
+    edge_clr_mm = max(float(ir.rules.get("copper_edge_clearance") or 0.0), float(dru_eff.get("edge_clearance_mm") or 0.0))
     has_vippo_microvias = any(
         v.get("locked") and v.get("via_type") == "micro"
         for v in ir.routing.get("vias", ())
@@ -867,6 +881,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "prepare": {k: v for k, v in prepared.items() if k != "obstacles"},
             "layer_roles": [asdict(r) for r in ir.stackup.roles],
             "dsn_power_layers": power_layers(ir),
+            "dsn_dru_compiled": dru_compiled,
             "dsn_fast_layer_nets": fast_layer_nets,
             "dsn_via_hole_clearances": via_hole_clrs,
             "dsn_stacked_vias_merged": stacked_vias_merged,
