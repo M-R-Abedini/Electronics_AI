@@ -82,19 +82,49 @@ def _pad_union(
     return res
 
 
+_TALL_CAVITY_BLOCKED_PREFIXES = frozenset({
+    "J", "P", "CN", "CON", "USB", "SW", "BTN", "BAT", "BT", "ANT",
+    "LS", "M", "BZ", "SPK", "F", "XF", "T", "K", "RLY",
+})
+_TALL_CAVITY_BLOCKED_KEYWORDS = (
+    "connector", "switch", "battery", "shield", "antenna", "button", "usb", "speaker", "buzzer",
+)
+
+
+def is_shield_cavity_eligible(fp: Footprint) -> bool:
+    """Return True when a footprint is low-profile SMD and safe inside a hollow RF shield cavity."""
+    if any(p.kind in ("thru_hole", "np_thru_hole") or p.drill for p in fp.pads):
+        return False
+    if fp.prefix in _TALL_CAVITY_BLOCKED_PREFIXES:
+        return False
+    desc = f"{fp.lib_id} {fp.value}".lower()
+    return not any(kw in desc for kw in _TALL_CAVITY_BLOCKED_KEYWORDS)
+
+
 def courtyard_polygon(fp: Footprint) -> Polygon | None:
     first_pt = fp.courtyard.polygons[0][0] if fp.courtyard.polygons and fp.courtyard.polygons[0] else None
-    pose = (fp.ref, fp.lib_id, fp.x, fp.y, fp.rotation, len(fp.courtyard.polygons), first_pt)
+    n_holes = sum(len(h) for h in fp.courtyard.holes)
+    pose = (fp.ref, fp.lib_id, fp.x, fp.y, fp.rotation, len(fp.courtyard.polygons), n_holes, first_pt)
     if pose in _CY_POLY_CACHE:
         return _CY_POLY_CACHE[pose]
-    polys = [Polygon(p) for p in fp.courtyard_world() if len(p) >= 3]
-    polys = [p if p.is_valid else p.buffer(0) for p in polys]
-    polys = [p for p in polys if not p.is_empty]
+    polys_w = fp.courtyard_world()
+    holes_w = fp.courtyard_holes_world()
+    polys = []
+    for idx, shell in enumerate(polys_w):
+        if len(shell) < 3:
+            continue
+        poly_holes = [h for h in (holes_w[idx] if idx < len(holes_w) else []) if len(h) >= 3]
+        p = Polygon(shell, poly_holes) if poly_holes else Polygon(shell)
+        if not p.is_valid:
+            p = p.buffer(0)
+        if not p.is_empty:
+            polys.append(p)
     if not polys:
         res = None
+    elif len(polys) == 1:
+        res = polys[0]
     else:
-        shape = unary_union(polys)
-        res = shape if shape.geom_type == "Polygon" else shape.convex_hull
+        res = unary_union(polys)
     if len(_CY_POLY_CACHE) > 8192:
         _CY_POLY_CACHE.clear()
     _CY_POLY_CACHE[pose] = res
@@ -367,16 +397,46 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
         if len(geoms) < 2:
             continue
         tree = STRtree(geoms)
+        reported_pairs: set[tuple[str, str]] = set()
         for i, j in zip(*tree.query(geoms, predicate="intersects")):
             if i >= j:
                 continue
             area = geoms[i].intersection(geoms[j]).area
             if area > OVERLAP_TOL_MM2:
                 pair = sorted((refs[i], refs[j]))
+                reported_pairs.add((pair[0], pair[1]))
                 derived = [r for r in pair if board.fp(r).courtyard.source != "file"]
                 findings.append(Finding("courtyard_overlap", pair, round(area, 4), side,
                                         detail=("derived courtyard: " + ", ".join(derived)) if derived else "",
                                         fixed=all(r in fixed for r in pair), waived_by=overlap_waiver))
+
+        # Cavity height/profile guard: tall/TH/external parts may not sit inside a hollow shield cavity.
+        fp_by_ref = {fp.ref: fp for fp in board.footprints}
+        hollow_refs = [r for r in refs if fp_by_ref[r].courtyard.holes]
+        for h_ref in hollow_refs:
+            h_fp = fp_by_ref[h_ref]
+            outer_polys = [Polygon(shell) for shell in h_fp.courtyard_world() if len(shell) >= 3]
+            if not outer_polys:
+                continue
+            outer_solid = unary_union([p if p.is_valid else p.buffer(0) for p in outer_polys])
+            if clearance:
+                outer_solid = outer_solid.buffer(clearance / 2)
+            for idx_o, o_ref in enumerate(refs):
+                if o_ref == h_ref:
+                    continue
+                pair_key = (min(h_ref, o_ref), max(h_ref, o_ref))
+                if pair_key in reported_pairs:
+                    continue
+                o_fp = fp_by_ref[o_ref]
+                if is_shield_cavity_eligible(o_fp):
+                    continue
+                area = outer_solid.intersection(geoms[idx_o]).area
+                if area > OVERLAP_TOL_MM2:
+                    findings.append(Finding(
+                        "courtyard_overlap", list(pair_key), round(area, 4), side,
+                        detail=f"tall_part_inside_shield_cavity:{o_ref}",
+                        fixed=all(r in fixed for r in pair_key), waived_by=overlap_waiver,
+                    ))
 
     outline = board_polygon(board)
     edge_clear = float(board.rules.get("copper_edge_clearance") or 0.0)

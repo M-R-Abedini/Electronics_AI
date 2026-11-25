@@ -14,7 +14,7 @@ from . import report as run_report
 from .eval import legality, metrics, score
 from .intent.resolve import resolve
 from .io.kicad import read_board, write_board
-from .place import escape, problem
+from .place import decap, escape, problem
 from .route import drc
 from .route.check import PROJECT_SIDECARS, RouteCheckError, route_check
 from .toolchain import ToolchainError, sha256_file
@@ -117,13 +117,30 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
         if angle not in (0, 90, 180, 270):
             raise ValueError("Refinement rotation must be orthogonal")
         fp.rotation = angle
+    swap_ref = change.get("swap_with_ref")
+    if swap_ref and (change.get("toward_ref") or change.get("away_from_ref")):
+        raise ValueError("swap_with_ref cannot be combined with toward_ref or away_from_ref")
+    if swap_ref == ref:
+        raise ValueError("swap_with_ref must name a different footprint")
     if change.get("toward_ref") and change.get("away_from_ref"):
         raise ValueError("Choose one movement direction")
     if change.get("away_from_ref") == ref or change.get("toward_ref") == ref:
         raise ValueError("Movement target must be on a different footprint")
     if ("target_pad" in change or "step_mm" in change) and not (change.get("toward_ref") or change.get("away_from_ref")):
         raise ValueError("A target pad or step requires a movement direction")
-    if target_ref := change.get("toward_ref") or change.get("away_from_ref"):
+    if swap_ref:
+        if sum(other.ref == swap_ref for other in after.footprints) != 1:
+            raise ValueError("swap_with_ref must identify a unique existing footprint")
+        if swap_ref in protected:
+            return {**delta, "status": "rejected", "reason": "Swap peer has a fixed or mechanical placement"}
+        peer = after.fp(swap_ref)
+        if peer.side != fp.side:
+            return {**delta, "status": "rejected", "reason": "swap_with_ref requires both footprints on the same side"}
+        c1 = decap._body_center_world(fp)
+        c2 = decap._body_center_world(peer)
+        decap._set_body_center_pose(fp, c2[0], c2[1], fp.rotation)
+        decap._set_body_center_pose(peer, c1[0], c1[1], peer.rotation)
+    elif target_ref := change.get("toward_ref") or change.get("away_from_ref"):
         if sum(other.ref == target_ref for other in after.footprints) != 1:
             raise ValueError("Refinement target must be a unique existing footprint")
         target = after.fp(target_ref)
@@ -141,7 +158,12 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
             fraction = -step / distance if change.get("away_from_ref") else min(step, distance) / distance
             fp.x += (target_xy[0] - fp.x) * fraction
             fp.y += (target_xy[1] - fp.y) * fraction
-    if before.fp(ref).position == fp.position and before.fp(ref).rotation == fp.rotation:
+    changed_ref = before.fp(ref).position != fp.position or before.fp(ref).rotation != fp.rotation
+    changed_swap = bool(swap_ref) and (
+        before.fp(swap_ref).position != after.fp(swap_ref).position
+        or before.fp(swap_ref).rotation != after.fp(swap_ref).rotation
+    )
+    if not changed_ref and not changed_swap:
         return {**delta, "status": "rejected", "reason": "Proposal produced no placement change"}
 
     findings = [f for f in legality.check(after, fixed=protected) if not f.fixed]
@@ -171,10 +193,20 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
                   "baseline_crossings": metrics.crossings(before)["count"],
                   "candidate_crossings": metrics.crossings(after)["count"]}
     if preview:
-        return {**delta, "status": "preview", **comparison,
-                "pose_before": {"x_mm": before.fp(ref).x, "y_mm": before.fp(ref).y,
-                                "rotation_deg": before.fp(ref).rotation, "side": before.fp(ref).side},
-                "pose_after": {"x_mm": fp.x, "y_mm": fp.y, "rotation_deg": fp.rotation, "side": fp.side}}
+        out = {**delta, "status": "preview", **comparison,
+               "pose_before": {"x_mm": before.fp(ref).x, "y_mm": before.fp(ref).y,
+                               "rotation_deg": before.fp(ref).rotation, "side": before.fp(ref).side},
+               "pose_after": {"x_mm": fp.x, "y_mm": fp.y, "rotation_deg": fp.rotation, "side": fp.side}}
+        if swap_ref:
+            out["swap_pose_before"] = {
+                "ref": swap_ref, "x_mm": before.fp(swap_ref).x, "y_mm": before.fp(swap_ref).y,
+                "rotation_deg": before.fp(swap_ref).rotation, "side": before.fp(swap_ref).side,
+            }
+            out["swap_pose_after"] = {
+                "ref": swap_ref, "x_mm": after.fp(swap_ref).x, "y_mm": after.fp(swap_ref).y,
+                "rotation_deg": after.fp(swap_ref).rotation, "side": after.fp(swap_ref).side,
+            }
+        return out
 
     work = out_root.resolve() / f"{src.stem}-refine-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}"
     candidate = write_board(src, after, work / src.name, strip_routing=True, unfill_zones=True)
@@ -185,7 +217,7 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
         mask_after = candidate.with_suffix(".drc.json")
         old_mask = drc.run(original, mask_before)
         new_mask = drc.run(candidate, mask_after)
-        added = drc.new_mask_bridges(old_mask, new_mask, {ref})
+        added = drc.new_mask_bridges(old_mask, new_mask, {ref, swap_ref} if swap_ref else {ref})
         if added:
             return {**delta, "status": "rejected", "reason": "New solder mask bridges before routing",
                     "new_mask_bridge_count": len(added), "new_mask_bridges": added[:12],

@@ -38,6 +38,9 @@ try:
 except Exception:  # noqa: BLE001  # pragma: no cover - wx always ships with KiCad
     _LOG_NULL = None
 
+# Module-level store obeying the KiCad 10 SWIG Ownership rule across helper subroutines.
+_KEEP_ALIVE: list = []
+
 
 def _mm(v):
     return round(pcbnew.ToMM(v), 6)
@@ -607,6 +610,236 @@ def lock_routing(board_path, out_board, out_json):
         json.dump({"newly_locked": locked, "total_items": len(list(board.GetTracks()))}, fh, indent=1)
 
 
+def prune_dangling_by_drc(board_path, spec_json, out_board, out_json):
+    """Surgically remove ONLY DRC-flagged dangling tracks/vias and newly orphaned stubs."""
+    board = pcbnew.LoadBoard(board_path)
+    with open(spec_json, encoding="utf-8") as fh:
+        spec = json.load(fh)
+    target_uuids = set(spec.get("uuids") or ())
+    target_pts = [
+        (float(p["x"]), float(p["y"]), str(p.get("kind") or ""))
+        for p in (spec.get("points") or ())
+    ]
+    all_tracks = list(board.GetTracks())
+    removed_idxs = set()
+    affected_nets = set()
+    for idx, item in enumerate(all_tracks):
+        is_via = item.GetClass() == "PCB_VIA"
+        matched = item.m_Uuid.AsString() in target_uuids
+        if not matched and target_pts:
+            if is_via:
+                pos = item.GetPosition()
+                vx, vy = _mm(pos.x), _mm(pos.y)
+                matched = any(
+                    k in ("via", "") and math.hypot(vx - px, vy - py) <= 0.05
+                    for px, py, k in target_pts
+                )
+            else:
+                st, en = item.GetStart(), item.GetEnd()
+                mx, my = 0.5 * (_mm(st.x) + _mm(en.x)), 0.5 * (_mm(st.y) + _mm(en.y))
+                sx, sy, ex, ey = _mm(st.x), _mm(st.y), _mm(en.x), _mm(en.y)
+                matched = any(
+                    k in ("track", "")
+                    and min(math.hypot(mx - px, my - py), math.hypot(sx - px, sy - py), math.hypot(ex - px, ey - py)) <= 0.05
+                    for px, py, k in target_pts
+                )
+        if matched:
+            removed_idxs.add(idx)
+            affected_nets.add(item.GetNetCode())
+
+    # Iteratively prune newly dead-ended tracks (and zero-connection orphan vias) on affected nets
+    # caused by removing a DRC-flagged dangling via/stub, using real HitTestFilledArea for zones.
+    if affected_nets:
+        pads_by_net = {}
+        for fp in board.GetFootprints():
+            for pad in fp.Pads():
+                nc = pad.GetNetCode()
+                if nc in affected_nets:
+                    pads_by_net.setdefault(nc, []).append(pad)
+        zones_by_net = {}
+        for z in board.Zones():
+            if not z.GetIsRuleArea() and z.GetNetCode() in affected_nets:
+                zones_by_net.setdefault(z.GetNetCode(), []).append(z)
+        alive_by_net = {}
+        for idx, item in enumerate(all_tracks):
+            nc = item.GetNetCode()
+            if nc in affected_nets and idx not in removed_idxs:
+                alive_by_net.setdefault(nc, set()).add(idx)
+
+        def _hits_pad(nc, lyr, pt):
+            return any(p.IsOnLayer(lyr) and p.HitTest(pt, 0) for p in pads_by_net.get(nc, ()))
+
+        def _hits_zone(nc, lyr, pt):
+            return any(lyr in z.GetLayerSet().CuStack() and z.HitTestFilledArea(lyr, pt) for z in zones_by_net.get(nc, ()))
+
+        def _hits_other(nc, lyr, pt, self_idx):
+            for oidx in alive_by_net.get(nc, ()):
+                if oidx == self_idx:
+                    continue
+                other = all_tracks[oidx]
+                if other.GetClass() == "PCB_VIA":
+                    if lyr in other.GetLayerSet().CuStack() and other.HitTest(pt, 0):
+                        return True
+                elif other.GetLayer() == lyr and other.HitTest(pt, 0):
+                    return True
+            return False
+
+        changed = True
+        while changed:
+            changed = False
+            for nc, alive in list(alive_by_net.items()):
+                drop = set()
+                for idx in alive:
+                    item = all_tracks[idx]
+                    if item.GetClass() == "PCB_VIA":
+                        pos = item.GetPosition()
+                        v_lyrs = list(item.GetLayerSet().CuStack())
+                        conn = {
+                            lyr for lyr in v_lyrs
+                            if _hits_pad(nc, lyr, pos) or _hits_other(nc, lyr, pos, idx) or _hits_zone(nc, lyr, pos)
+                        }
+                        if len(conn) < 2:
+                            drop.add(idx)
+                    else:
+                        lyr = item.GetLayer()
+                        for pt in (item.GetStart(), item.GetEnd()):
+                            if not _hits_pad(nc, lyr, pt) and not _hits_other(nc, lyr, pt, idx) and not _hits_zone(nc, lyr, pt):
+                                drop.add(idx)
+                                break
+                if drop:
+                    alive -= drop
+                    removed_idxs |= drop
+                    changed = True
+
+    pruned_tracks = pruned_vias = 0
+    for idx in sorted(removed_idxs):
+        item = all_tracks[idx]
+        if item.GetClass() == "PCB_VIA":
+            pruned_vias += 1
+        else:
+            pruned_tracks += 1
+        _KEEP_ALIVE.append(item)
+        board.Remove(item)
+
+    zones = list(board.Zones())
+    copper = [z for z in zones if not z.GetIsRuleArea()]
+    for z in copper:
+        board.Remove(z)
+    unrouted_tracks_only = _unconnected(board)
+    stats = _routing_stats(board)
+    pads = _pad_rows(board)
+    for z in copper:
+        board.Add(z)
+    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    unrouted_final = _unconnected(board)
+    pcbnew.SaveBoard(out_board, board)
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump({
+            "pruned_tracks": pruned_tracks,
+            "pruned_vias": pruned_vias,
+            "unrouted_tracks_only": unrouted_tracks_only,
+            "unrouted_final": unrouted_final,
+            "routing": stats,
+            "pads": pads,
+        }, fh, indent=1)
+
+
+def inject_return_vias(board_path, spec_json, out_board, out_json):
+    """Place DRC-clean through GND return stitching vias beside Lint-flagged GND<->GND transition vias."""
+    board = pcbnew.LoadBoard(board_path)
+    with open(spec_json, encoding="utf-8") as fh:
+        spec = json.load(fh)
+    gnd_name = spec.get("gnd_net") or "GND"
+    gnd_net = board.FindNet(gnd_name)
+    if gnd_net is None:
+        with open(out_json, "w", encoding="utf-8") as fh:
+            json.dump({"added": 0, "reason": "no_gnd_net"}, fh)
+        return
+    gnd_nc = gnd_net.GetNetCode()
+    vd_mm = float(spec.get("diameter", 0.45))
+    vdr_mm = float(spec.get("drill", 0.20))
+    clr_mm = float(spec.get("clearance", 0.15))
+    hole_clr_mm = float(spec.get("hole_clearance", 0.20))
+    hth_mm = float(spec.get("hole_to_hole", 0.20))
+    edge_clr_mm = float(spec.get("edge_clearance", 0.30))
+    max_vias = int(spec.get("max_vias", 24))
+
+    vr_nm = pcbnew.FromMM(0.5 * vd_mm)
+    req_pad_nm = pcbnew.FromMM(max(0.5 * vd_mm + clr_mm, 0.5 * vdr_mm + hole_clr_mm) + 0.02)
+    req_edge_nm = pcbnew.FromMM(0.5 * vd_mm + edge_clr_mm + 0.02)
+    clr_nm = pcbnew.FromMM(clr_mm + 0.02)
+
+    outline_poly = pcbnew.SHAPE_POLY_SET()
+    has_outline = bool(board.GetBoardPolygonOutlines(outline_poly, False))
+    pads = [pad for fp in board.GetFootprints() for pad in fp.Pads()]
+    tracks_and_vias = list(board.GetTracks())
+    existing_vias = [t for t in tracks_and_vias if t.GetClass() == "PCB_VIA"]
+    existing_tracks = [t for t in tracks_and_vias if t.GetClass() != "PCB_VIA"]
+    rule_areas = [z for z in board.Zones() if z.GetIsRuleArea()]
+    f_cu, b_cu = pcbnew.F_Cu, pcbnew.B_Cu
+
+    dirs = ((1.0, 0.0), (0.7071, 0.7071), (0.0, 1.0), (-0.7071, 0.7071),
+            (-1.0, 0.0), (-0.7071, -0.7071), (0.0, -1.0), (0.7071, -0.7071))
+    rings = (0.65, 0.95, 1.25, 1.45)
+    added = 0
+    for vx, vy in spec.get("points", ()):
+        if added >= max_vias:
+            break
+        placed = False
+        for rad in rings:
+            for dx, dy in dirs:
+                cx = round(float(vx) + rad * dx, 4)
+                cy = round(float(vy) + rad * dy, 4)
+                x_nm, y_nm = pcbnew.FromMM(cx), pcbnew.FromMM(cy)
+                pt = pcbnew.VECTOR2I(x_nm, y_nm)
+                if has_outline and not _box_inside_outline(
+                    (x_nm - req_edge_nm, y_nm - req_edge_nm, x_nm + req_edge_nm, y_nm + req_edge_nm),
+                    outline_poly, 0,
+                ):
+                    continue
+                if any(pad.HitTest(pt, int(req_pad_nm)) for pad in pads):
+                    continue
+                if any(t.GetNetCode() != gnd_nc and t.HitTest(pt, int(vr_nm + clr_nm)) for t in existing_tracks):
+                    continue
+                via_bad = False
+                for ev in existing_vias:
+                    ev_pos = ev.GetPosition()
+                    d_centers = math.hypot(cx - _mm(ev_pos.x), cy - _mm(ev_pos.y))
+                    ev_d = _mm(_via_width_nm(ev))
+                    ev_dr = _mm(int(ev.GetDrillValue()))
+                    min_sep = max(0.5 * (vd_mm + ev_d) + clr_mm, 0.5 * (vdr_mm + ev_dr) + hth_mm) + 0.02
+                    if d_centers < min_sep:
+                        via_bad = True
+                        break
+                if via_bad:
+                    continue
+                if any(ra.GetDoNotAllowVias() and ra.HitTest(pt, int(vr_nm)) for ra in rule_areas if hasattr(ra, "GetDoNotAllowVias")):
+                    continue
+                via = pcbnew.PCB_VIA(board)
+                via.SetViaType(pcbnew.VIATYPE_THROUGH)
+                via.SetPosition(pt)
+                via.SetLayerPair(f_cu, b_cu)
+                via.SetWidth(pcbnew.FromMM(vd_mm))
+                via.SetDrill(pcbnew.FromMM(vdr_mm))
+                via.SetNet(gnd_net)
+                via.SetLocked(True)
+                ident = uuid5(NAMESPACE_URL, f"electronics-ai/return-via/{added}/{cx:.4f}/{cy:.4f}")
+                via.SetUuidDirect(pcbnew.KIID(str(ident)))
+                board.Add(via)
+                existing_vias.append(via)
+                added += 1
+                placed = True
+                break
+            if placed:
+                break
+
+    if added > 0:
+        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+        pcbnew.SaveBoard(out_board, board)
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump({"added": added, "unrouted_final": _unconnected(board)}, fh, indent=1)
+
+
 def sanitize(board_path, remove_json, out_board, out_json):
     """Deterministically remove unlocked routing items implicated in router DRC violations (plan F0a).
 
@@ -1006,19 +1239,70 @@ def _courtyard(fp, ox, oy, rot, max_error):
         fp.BuildCourtyardCaches()
     poly = fp.GetCourtyard(pcbnew.B_CrtYd if fp.IsFlipped() else pcbnew.F_CrtYd)
     if poly.OutlineCount():
-        rings = [[list(_to_local(x, y, ox, oy, rot)) for x, y in ring] for ring in _world_outlines(poly)]
-        return {"source": "file", "polygons": rings}
+        rings = []
+        holes = []
+        for i in range(poly.OutlineCount()):
+            chain = poly.Outline(i)
+            rings.append([
+                list(_to_local(pcbnew.ToMM(chain.CPoint(j).x), pcbnew.ToMM(chain.CPoint(j).y), ox, oy, rot))
+                for j in range(chain.PointCount())
+            ])
+            poly_holes = []
+            for h in range(poly.HoleCount(i)):
+                hchain = poly.Hole(i, h)
+                poly_holes.append([
+                    list(_to_local(pcbnew.ToMM(hchain.CPoint(j).x), pcbnew.ToMM(hchain.CPoint(j).y), ox, oy, rot))
+                    for j in range(hchain.PointCount())
+                ])
+            holes.append(poly_holes)
+        out = {"source": "file", "polygons": rings}
+        if any(holes):
+            out["holes"] = holes
+        return out
     pts = []
+    pad_boxes = []
     for pad in fp.Pads():
         stack = list(pad.GetLayerSet().CuStack())
+        ppts = []
         for ring in _world_outlines(_item_poly(pad, stack[0] if stack else pcbnew.F_Cu, max_error)):
-            pts += [_to_local(x, y, ox, oy, rot) for x, y in ring]
+            ppts += [_to_local(x, y, ox, oy, rot) for x, y in ring]
+        if ppts:
+            pts += ppts
+            net = pad.GetNetname() or ""
+            pad_boxes.append((
+                min(p[0] for p in ppts), min(p[1] for p in ppts),
+                max(p[0] for p in ppts), max(p[1] for p in ppts),
+                net,
+            ))
     if not pts:
         return {"source": "none", "polygons": []}
     m = DERIVED_COURTYARD_MARGIN_MM
     x0, y0 = min(p[0] for p in pts) - m, min(p[1] for p in pts) - m
     x1, y1 = max(p[0] for p in pts) + m, max(p[1] for p in pts) + m
     rect = [[round(a, 6), round(b, 6)] for a, b in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+    bw, bh = x1 - x0, y1 - y0
+    bbox_area = bw * bh
+    if bw >= 6.0 and bh >= 6.0 and len(pad_boxes) >= 3 and bbox_area > 0:
+        pad_area = sum((px1 - px0 + 2 * m) * (py1 - py0 + 2 * m) for px0, py0, px1, py1, _ in pad_boxes)
+        max_pad_span = max(max(px1 - px0, py1 - py0) for px0, py0, px1, py1, _ in pad_boxes)
+        pad_limit = min(max_pad_span + m, 0.22 * min(bw, bh)) + 0.02
+        lx0, ly0, lx1, ly1 = x0 + pad_limit, y0 + pad_limit, x1 - pad_limit, y1 - pad_limit
+        wall = min(max(max_pad_span, 0.8) + 2.0 * m, 0.24 * min(bw, bh))
+        ix0, iy0, ix1, iy1 = x0 + wall, y0 + wall, x1 - wall, y1 - wall
+        if ix1 - ix0 >= 2.0 and iy1 - iy0 >= 2.0 and pad_area < 0.28 * bbox_area:
+            interior_clear = not any(
+                px1 > lx0 and px0 < lx1 and py1 > ly0 and py0 < ly1
+                for px0, py0, px1, py1, _ in pad_boxes
+            )
+            all_gnd_or_nc = all(
+                net == "" or net.lower().startswith("unconnected-") or "gnd" in net.lower() or "vss" in net.lower()
+                for *_, net in pad_boxes
+            )
+            desc = (fp.GetReference() + " " + fp.GetValue() + " " + str(fp.GetFPID().GetUniStringLibId())).lower()
+            shield_hint = "shield" in desc
+            if interior_clear and (shield_hint or all_gnd_or_nc):
+                hole = [[round(a, 6), round(b, 6)] for a, b in ((ix0, iy0), (ix0, iy1), (ix1, iy1), (ix1, iy0))]
+                return {"source": "derived", "margin_mm": m, "polygons": [rect], "holes": [[hole]]}
     return {"source": "derived", "margin_mm": m, "polygons": [rect]}
 
 
@@ -2521,5 +2805,6 @@ def filled_hits(board_path, points_json, out_json):
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
     {"prepare": prepare, "finish": finish, "sanitize": sanitize, "lock_routing": lock_routing,
+     "prune_dangling_by_drc": prune_dangling_by_drc, "inject_return_vias": inject_return_vias,
      "heal_thermals": heal_thermals, "heal_mask_bridges": heal_mask_bridges, "dump": dump,
      "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits}[_cmd](*_args)

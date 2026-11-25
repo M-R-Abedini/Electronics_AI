@@ -57,6 +57,7 @@ class Courtyard:
     source: str  # file | derived | none
     polygons: list[list[Point]] = field(default_factory=list)  # footprint frame
     margin_mm: float | None = None
+    holes: list[list[list[Point]]] = field(default_factory=list)  # per-polygon interior cutouts (footprint frame)
 
 
 @dataclass
@@ -93,6 +94,15 @@ class Footprint:
         o = (self.x if x is None else x, self.y if y is None else y)
         r = self.rotation if rotation is None else rotation
         return [[transform(p, o, r) for p in poly] for poly in self.courtyard.polygons]
+
+    def courtyard_holes_world(self, x: float | None = None, y: float | None = None,
+                              rotation: float | None = None) -> list[list[list[Point]]]:
+        o = (self.x if x is None else x, self.y if y is None else y)
+        r = self.rotation if rotation is None else rotation
+        return [
+            [[transform(p, o, r) for p in hole] for hole in poly_holes]
+            for poly_holes in self.courtyard.holes
+        ]
 
     def box(self, x: float | None = None, y: float | None = None, rotation: float | None = None) -> Box:
         ox = self.x if x is None else x

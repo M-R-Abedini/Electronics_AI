@@ -126,18 +126,34 @@ class CrossingTracker:
 
 def _find_blockers(board: Board, fp: Footprint, outline_bounds: Box | None,
                    box: Callable[[Footprint], Box] = Footprint.box) -> list | None:
-    """Return same-side AABB blockers for ``fp``, or None if outside ``outline_bounds``."""
+    """Return same-side blockers for ``fp``, or None if outside ``outline_bounds``."""
     ax0, ay0, ax1, ay1 = box(fp)
     if outline_bounds is not None:
         bx0, by0, bx1, by1 = outline_bounds
         if ax0 < bx0 or ay0 < by0 or ax1 > bx1 or ay1 > by1:
             return None
+    fp_shape = None
+    fp_elig = legality.is_shield_cavity_eligible(fp)
     out = []
     for other in board.footprints:
         if other is fp or other.side != fp.side:
             continue
         ox0, oy0, ox1, oy1 = box(other)
         if max(ax0, ox0) < min(ax1, ox1) - 0.01 and max(ay0, oy0) < min(ay1, oy1) - 0.01:
+            is_hollow_pair = (
+                (bool(other.courtyard.holes) and fp_elig)
+                or (bool(fp.courtyard.holes) and legality.is_shield_cavity_eligible(other))
+                or (len(fp.courtyard.polygons) > 1 and not fp.courtyard.holes)
+                or (len(other.courtyard.polygons) > 1 and not other.courtyard.holes)
+            )
+            if is_hollow_pair:
+                if fp_shape is None:
+                    fp_shape = legality.courtyard_polygon(fp)
+                other_shape = legality.courtyard_polygon(other)
+                if (fp_shape is not None and other_shape is not None
+                        and (not fp_shape.intersects(other_shape)
+                             or fp_shape.intersection(other_shape).area <= legality.OVERLAP_TOL_MM2)):
+                    continue
             out.append(other)
     return out
 
@@ -183,9 +199,18 @@ def _poses_for_targets(result: Board, fp, target_refs: list[str], req_net: str |
     lx0, ly0, rx0, ry0 = fp.box(0.0, 0.0, orot)
     fp_area = (rx0 - lx0) * (ry0 - ly0)
     target_set = set(target_refs)
+    from ..geometry import rotated_box
+    from .problem import local_sub_boxes
+
+    fp_elig = legality.is_shield_cavity_eligible(fp)
     other_boxes = []
     for other in result.footprints:
         if other is fp or other.side != fp.side:
+            continue
+        if other.courtyard.holes and fp_elig and (subs := local_sub_boxes(other)):
+            for sr in subs:
+                sbx0, sby0, sbx1, sby1 = rotated_box(sr, (other.x, other.y), other.rotation)
+                other_boxes.append((sbx0, sby0, sbx1, sby1, False))
             continue
         obx0, oby0, obx1, oby1 = other.box()
         other_Area = (obx1 - obx0) * (oby1 - oby0)
@@ -220,6 +245,12 @@ def _poses_for_targets(result: Board, fp, target_refs: list[str], req_net: str |
                                          (right - lx + gap, ty - py + shift),
                                          (tx - px + shift, top - ry - gap),
                                          (tx - px + shift, bottom - ly + gap)):
+                                pose = round(x, 4), round(y, 4), rotation
+                                distance = math.dist(transform(pad.local, pose[:2], rotation), (tx, ty))
+                                ic_cands[pose] = min(distance, ic_cands.get(pose, math.inf))
+                    if fp.side != ic.side:
+                        for shift in (0.0, -0.4, 0.4):
+                            for x, y in ((tx - px + shift, ty - py), (tx - px, ty - py + shift)):
                                 pose = round(x, 4), round(y, 4), rotation
                                 distance = math.dist(transform(pad.local, pose[:2], rotation), (tx, ty))
                                 ic_cands[pose] = min(distance, ic_cands.get(pose, math.inf))

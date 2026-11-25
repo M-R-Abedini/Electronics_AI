@@ -25,7 +25,7 @@ from ..eval import legality
 from ..io.kicad import KiCadAdapterError, read_board, run_helper
 from ..ir import Board, is_ground_net, plane_zone_layers, power_layers
 from ..toolchain import RUNTIME_DIR, sha256_file
-from . import drc, dsn
+from . import drc, dru, dsn
 from .freerouting import RouterConfig, route
 from .freerouting import settled as freerouting_settled
 
@@ -392,7 +392,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 router_timeout_s: int | None = None, intent: dict | None = None,
                 sanitize_drc: bool = True, heal_thermals: bool = True,
                 heal_mask_bridges: bool = True, allow_router_microvias: bool = False,
-                reroute_after_sanitize: bool = True) -> dict:
+                reroute_after_sanitize: bool = True, prune_dangling: bool = True,
+                inject_gnd_return_vias: bool = True) -> dict:
     """Route-check ``board``.  ``reference_board`` is the original input whose DRC
     findings count as pre-existing (architecture 8.1.3); it defaults to ``board``
     itself, which is right only when ``board`` *is* the designer's file.  A
@@ -418,10 +419,6 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     source, inputs = stage_input(board, run_dir)
     warnings: list[str] = []
     dru_sidecar = source.with_suffix(".kicad_dru")
-    if dru_sidecar.is_file():
-        dru_rules = _dru_rule_names(dru_sidecar)
-        names_str = ", ".join(dru_rules) if dru_rules else dru_sidecar.name
-        warnings.append(f"custom .kicad_dru rules are not translated to Specctra DSN: {names_str}")
     reference = drc.run_cached(Path(reference_board) if reference_board else Path(board), work / "drc_input.json")
     inputs["reference_board"] = str(Path(reference_board).resolve()) if reference_board else inputs["board"]["path"]
     t = tick("drc_input", t)
@@ -444,13 +441,31 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         text,
         {cl.name: ("power" if cl.name in pwr_set else "signal") for cl in ir.copper_layers},
     )
+    text, dru_compiled = dru.compile_dru_to_dsn(text, dru_sidecar, ir)
+    if dru_compiled["untranslated"]:
+        warnings.append(
+            f"custom .kicad_dru rules are not translated to Specctra DSN: {', '.join(dru_compiled['untranslated'])}"
+        )
+    elif dru_sidecar.is_file() and not dru_compiled["translated"]:
+        dru_rules = _dru_rule_names(dru_sidecar)
+        names_str = ", ".join(dru_rules) if dru_rules else dru_sidecar.name
+        warnings.append(f"custom .kicad_dru rules are not translated to Specctra DSN: {names_str}")
+    dru_eff = dru_compiled.get("effective_rules") or {}
     default_nc = next((c for c in ir.netclasses if c.name == "Default"), ir.netclasses[0] if ir.netclasses else None)
-    eff_via_d = max(float(getattr(default_nc, "via_diameter", 0.0) or 0.0), float(ir.rules.get("min_via_diameter") or 0.0))
-    eff_via_dr = max(float(getattr(default_nc, "via_drill", 0.0) or 0.0), float(ir.rules.get("min_through_drill") or 0.0))
+    eff_via_d = max(
+        float(getattr(default_nc, "via_diameter", 0.0) or 0.0),
+        float(ir.rules.get("min_via_diameter") or 0.0),
+        float(dru_eff.get("min_via_diameter_mm") or 0.0),
+    )
+    eff_via_dr = max(
+        float(getattr(default_nc, "via_drill", 0.0) or 0.0),
+        float(ir.rules.get("min_through_drill") or 0.0),
+        float(dru_eff.get("min_via_drill_mm") or 0.0),
+    )
     eff_clr = max(float(getattr(default_nc, "clearance", 0.0) or 0.0), float(ir.rules.get("min_clearance") or 0.0))
-    hole_clr_mm = float(ir.rules.get("hole_clearance") or 0.0)
-    hole_to_hole_mm = float(ir.rules.get("hole_to_hole") or 0.0)
-    edge_clr_mm = float(ir.rules.get("copper_edge_clearance") or 0.0)
+    hole_clr_mm = max(float(ir.rules.get("hole_clearance") or 0.0), float(dru_eff.get("hole_clearance_mm") or 0.0))
+    hole_to_hole_mm = max(float(ir.rules.get("hole_to_hole") or 0.0), float(dru_eff.get("hole_to_hole_mm") or 0.0))
+    edge_clr_mm = max(float(ir.rules.get("copper_edge_clearance") or 0.0), float(dru_eff.get("edge_clearance_mm") or 0.0))
     has_vippo_microvias = any(
         v.get("locked") and v.get("via_type") == "micro"
         for v in ir.routing.get("vias", ())
@@ -476,6 +491,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     text = dsn.restore_wiring_precision(text, ir)
     text, stacked_vias_merged = dsn.merge_stacked_fixed_vias(text, ordered_layer_names)
     text, vippo_attached = dsn.enable_vippo_attach(text, layer_count=len(ir.copper_layers))
+    text, fast_layer_nets = dsn.restrict_fast_net_layers(text, ir, intent)
     text, restricted_vias = dsn.restrict_structure_vias(
         text,
         layer_count=len(ir.copper_layers),
@@ -601,6 +617,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 rr_text = dsn.restore_wiring_precision(rr_text, locked_ir)
                 rr_text, _ = dsn.merge_stacked_fixed_vias(rr_text, ordered_layer_names)
                 rr_text, _ = dsn.enable_vippo_attach(rr_text, layer_count=len(ir.copper_layers))
+                rr_text, _ = dsn.restrict_fast_net_layers(rr_text, locked_ir, intent)
                 rr_text = dsn.add_wire_keepouts(rr_text, macro_zone_keepouts + intent_kps + san_kps)
                 rr_text, _ = dsn.restrict_structure_vias(
                     rr_text, layer_count=len(ir.copper_layers), allow_blind_micro=allow_router_microvias,
@@ -697,6 +714,112 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             mask_heal_info["final_bridges"] = len(_mask_bridge_aperture_uuids(attribution.new_other))
         t = tick("mask_bridge_heal", t)
 
+    dangling_prune_info: dict = {"attempted": False, "accepted": False, "pruned_tracks": 0, "pruned_vias": 0}
+    if prune_dangling and attribution.counts()["router_caused"] == 0:
+        cur_dangling_viols = [
+            v for v in result.get("violations", [])
+            if v.get("type") in ("via_dangling", "track_dangling")
+        ]
+        if cur_dangling_viols:
+            dangling_prune_info["attempted"] = True
+            d_uuids: list[str] = []
+            d_pts: list[dict] = []
+            for v in cur_dangling_viols:
+                kind = "via" if v.get("type") == "via_dangling" else "track"
+                for item in v.get("items", ()):
+                    uid = item.get("uuid")
+                    if uid:
+                        d_uuids.append(str(uid))
+                    pos = item.get("pos") or {}
+                    if "x" in pos and "y" in pos:
+                        d_pts.append({"x": float(pos["x"]), "y": float(pos["y"]), "kind": kind})
+            if d_uuids or d_pts:
+                dp_spec = work / "dangling_prune_spec.json"
+                dp_out = work / "dangling_prune_out.json"
+                dp_board = work / "dangling_pruned.kicad_pcb"
+                dp_spec.write_text(json.dumps({"uuids": sorted(set(d_uuids)), "points": d_pts}), encoding="utf-8")
+                shutil.copyfile(out_board, dp_board)
+                for suffix in PROJECT_SIDECARS:
+                    side = source.with_suffix(suffix)
+                    if side.is_file() and not dp_board.with_suffix(suffix).is_file():
+                        shutil.copyfile(side, dp_board.with_suffix(suffix))
+                run_helper("prune_dangling_by_drc", dp_board, dp_spec, dp_board, dp_out)
+                dp_res = _load(dp_out)
+                if int(dp_res.get("pruned_tracks", 0)) + int(dp_res.get("pruned_vias", 0)) > 0:
+                    dp_drc = drc.run(dp_board, work / "drc_dangling_pruned.json")
+                    dp_attr = drc.attribute(dp_drc, reference)
+                    after_dangling = sum(
+                        1 for v in dp_drc.get("violations", [])
+                        if v.get("type") in ("via_dangling", "track_dangling")
+                    )
+                    if (dp_attr.counts()["router_caused"] == 0
+                            and dp_attr.counts()["new_non_routing"] <= attribution.counts()["new_non_routing"]
+                            and int(dp_res.get("unrouted_final", 999999)) <= finished["unrouted_final"]
+                            and after_dangling < len(cur_dangling_viols)):
+                        shutil.copyfile(dp_board, out_board)
+                        result = dp_drc
+                        attribution = dp_attr
+                        for k in ("unrouted_tracks_only", "unrouted_final", "routing", "pads"):
+                            finished[k] = dp_res[k]
+                        dangling_prune_info["accepted"] = True
+                        dangling_prune_info["pruned_tracks"] = int(dp_res["pruned_tracks"])
+                        dangling_prune_info["pruned_vias"] = int(dp_res["pruned_vias"])
+            t = tick("dangling_prune", t)
+
+    return_via_info: dict = {"attempted": False, "added": 0}
+    if (inject_gnd_return_vias and len(ir.copper_layers) >= 4
+            and attribution.counts()["router_caused"] == 0):
+        from ..eval import lint as lint_mod
+
+        routed_ir = read_board(out_board)
+        lint_res = lint_mod.audit(routed_ir, intent=intent)
+        rv_findings = [
+            f for f in lint_res.get("findings", ())
+            if f.get("rule") == "return_via" and f.get("location_mm")
+        ]
+        if rv_findings:
+            gnd_net_obj = next((n.name for n in routed_ir.nets if is_ground_net(n.name)), "GND")
+            cand_pts = [[float(f["location_mm"][0]), float(f["location_mm"][1])] for f in rv_findings]
+            return_via_info["attempted"] = True
+            rv_spec = work / "return_vias_spec.json"
+            rv_out = work / "return_vias_out.json"
+            rv_board = work / "return_vias.kicad_pcb"
+            rv_spec.write_text(json.dumps({
+                "gnd_net": gnd_net_obj,
+                "points": cand_pts[:32],
+                "diameter": max(0.35, eff_via_d),
+                "drill": max(0.15, eff_via_dr),
+                "clearance": max(0.10, eff_clr),
+                "hole_clearance": max(0.15, hole_clr_mm),
+                "hole_to_hole": max(0.15, hole_to_hole_mm),
+                "edge_clearance": max(0.25, edge_clr_mm),
+                "max_vias": 24,
+            }), encoding="utf-8")
+            shutil.copyfile(out_board, rv_board)
+            for suffix in PROJECT_SIDECARS:
+                side = source.with_suffix(suffix)
+                if side.is_file() and not rv_board.with_suffix(suffix).is_file():
+                    shutil.copyfile(side, rv_board.with_suffix(suffix))
+            run_helper("inject_return_vias", rv_board, rv_spec, rv_board, rv_out)
+            rv_res = _load(rv_out)
+            if int(rv_res.get("added", 0)) > 0:
+                rv_drc = drc.run(rv_board, work / "drc_return_vias.json")
+                rv_attr = drc.attribute(rv_drc, reference)
+                cur_vd = sum(1 for v in result.get("violations", []) if v.get("type") == "via_dangling")
+                new_vd = sum(1 for v in rv_drc.get("violations", []) if v.get("type") == "via_dangling")
+                if (rv_attr.counts()["router_caused"] == 0
+                        and rv_attr.counts()["new_non_routing"] <= attribution.counts()["new_non_routing"]
+                        and int(rv_res.get("unrouted_final", 999999)) <= finished["unrouted_final"]
+                        and new_vd <= cur_vd):
+                    shutil.copyfile(rv_board, out_board)
+                    result = rv_drc
+                    attribution = rv_attr
+                    return_via_info["added"] = int(rv_res["added"])
+                    finished["unrouted_final"] = int(rv_res["unrouted_final"])
+                    if isinstance(finished.get("routing"), dict) and "vias" in finished["routing"]:
+                        finished["routing"]["vias"] = int(finished["routing"]["vias"]) + int(rv_res["added"])
+            t = tick("return_vias", t)
+
     unrouted_items = [u for u in result.get("unconnected_items", [])]
     failures = classify_unrouted(unrouted_items, finished, routed.stop_reason)
     plane_nets = {z["net"] for z in ir.zones if z.get("uuid") in keep and z.get("net")}
@@ -758,6 +881,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "prepare": {k: v for k, v in prepared.items() if k != "obstacles"},
             "layer_roles": [asdict(r) for r in ir.stackup.roles],
             "dsn_power_layers": power_layers(ir),
+            "dsn_dru_compiled": dru_compiled,
+            "dsn_fast_layer_nets": fast_layer_nets,
             "dsn_via_hole_clearances": via_hole_clrs,
             "dsn_stacked_vias_merged": stacked_vias_merged,
             "dsn_vippo_attached": vippo_attached,
@@ -771,6 +896,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "sanitize": sanitize_info,
             "thermal_heal": thermal_heal_info,
             "mask_bridge_heal": mask_heal_info,
+            "dangling_prune": dangling_prune_info,
+            "return_via_injection": return_via_info,
             "drc": attribution.counts(),
         },
         metrics=metrics,

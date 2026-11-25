@@ -404,6 +404,8 @@ mod tests {
         let parts: Vec<Part> = (0..n)
             .map(|i| Part {
                 local,
+                sub_rects: Vec::new(),
+                cavity_eligible: true,
                 side: 0,
                 fixed: i == 0,
                 can_rotate: true,

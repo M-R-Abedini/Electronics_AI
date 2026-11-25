@@ -18,7 +18,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from ..eval.legality import board_polygon, courtyard_polygon, placement_obstacle_holes
+from ..eval.legality import (
+    board_polygon,
+    courtyard_polygon,
+    is_shield_cavity_eligible,
+    placement_obstacle_holes,
+)
 from ..eval.metrics import zone_nets
 from ..geometry import rotated_box
 from ..intent import model
@@ -41,6 +46,60 @@ _NON_OVERHANGING_PREFIXES = frozenset({"TP", "C", "CP", "R", "RN", "L", "FB"})
 
 def _is_real_net(net: str | None) -> bool:
     return bool(net) and not net.startswith("unconnected-(")
+
+
+def local_sub_boxes(fp: Footprint) -> list[tuple[float, float, float, float]]:
+    """Decompose hollow/multi-island courtyards into disjoint local wall/island boxes.
+
+    Returns ``[]`` for single convex/solid courtyards so the Rust core keeps its single
+    ``Rect`` fast path. Hollow perimeter shields (one outer polygon with one interior
+    hole) produce 4 wall strips plus any protruding pad boxes so eligible interior parts fit inside.
+    """
+    if len(fp.courtyard.polygons) == 1 and fp.courtyard.holes and len(fp.courtyard.holes[0]) == 1:
+        outer = fp.courtyard.polygons[0]
+        hole = fp.courtyard.holes[0][0]
+        if len(outer) >= 3 and len(hole) >= 3:
+            ox0, oy0 = min(p[0] for p in outer), min(p[1] for p in outer)
+            ox1, oy1 = max(p[0] for p in outer), max(p[1] for p in outer)
+            hx0, hy0 = min(p[0] for p in hole), min(p[1] for p in hole)
+            hx1, hy1 = max(p[0] for p in hole), max(p[1] for p in hole)
+            strips: list[tuple[float, float, float, float]] = []
+            if hy0 > oy0 + 1e-4:
+                strips.append((ox0, oy0, ox1, hy0))
+            if oy1 > hy1 + 1e-4:
+                strips.append((ox0, hy1, ox1, oy1))
+            y_mid0, y_mid1 = max(oy0, hy0), min(oy1, hy1)
+            if y_mid1 > y_mid0 + 1e-4:
+                if hx0 > ox0 + 1e-4:
+                    strips.append((ox0, y_mid0, hx0, y_mid1))
+                if ox1 > hx1 + 1e-4:
+                    strips.append((hx1, y_mid0, ox1, y_mid1))
+            for pad in fp.pads:
+                w, h = pad.size[0] + 0.08, pad.size[1] + 0.08
+                rad = math.radians(pad.rotation)
+                c, s = math.cos(rad), math.sin(rad)
+                corners = [
+                    (pad.local[0] + dx * c - dy * s, pad.local[1] + dx * s + dy * c)
+                    for dx, dy in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2))
+                ]
+                px0, py0 = min(p[0] for p in corners), min(p[1] for p in corners)
+                px1, py1 = max(p[0] for p in corners), max(p[1] for p in corners)
+                inside_wall = any(
+                    px0 >= sx0 - 1e-4 and px1 <= sx1 + 1e-4 and py0 >= sy0 - 1e-4 and py1 <= sy1 + 1e-4
+                    for sx0, sy0, sx1, sy1 in strips
+                )
+                if not inside_wall:
+                    strips.append((px0, py0, px1, py1))
+            if strips:
+                return strips
+    if len(fp.courtyard.polygons) > 1:
+        islands = [
+            (min(p[0] for p in poly), min(p[1] for p in poly), max(p[0] for p in poly), max(p[1] for p in poly))
+            for poly in fp.courtyard.polygons if poly
+        ]
+        if len(islands) > 1:
+            return islands
+    return []
 
 
 def local_box(fp: Footprint) -> tuple[float, float, float, float]:
@@ -107,6 +166,8 @@ class PlaceProblem:
     outers: list[list[tuple[float, float]]] = field(default_factory=list)
     holes: list[list[tuple[float, float]]] = field(default_factory=list)
     exits: dict[str, list[escape.Escape]] = field(default_factory=dict)
+    sub_rects: list[list[tuple[float, float, float, float]]] = field(default_factory=list)
+    cavity_eligible: list[bool] = field(default_factory=list)
     local_block_links: int = 0
     sheet_cohesion_links: int = 0
 
@@ -135,19 +196,29 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         is_fixed = fp.ref in fixed
         flip = sides[fp.ref] != fp.side
         x0, y0, x1, y1 = boxes[fp.ref]
+        subs = local_sub_boxes(fp)
         if fp.ref in pb.exits:
             x0, y0, x1, y1 = escape.reserved_box((x0, y0, x1, y1), pb.exits[fp.ref])
+            subs = []
         if not is_fixed and inflations:
             pad_inf = float(inflations.get(fp.ref, 0.0))
             if pad_inf > 0.0:
                 x0, y0, x1, y1 = x0 - pad_inf, y0 - pad_inf, x1 + pad_inf, y1 + pad_inf
+                subs = [(sx0 - pad_inf, sy0 - pad_inf, sx1 + pad_inf, sy1 + pad_inf) for sx0, sy0, sx1, sy1 in subs]
         if flip:  # the footprint frame mirrors in y when the part changes side (KiCad left-right flip)
             y0, y1 = -y1, -y0
+            subs = [(sx0, -sy1, sx1, -sy0) for sx0, sy0, sx1, sy1 in subs]
         on_grid = abs(fp.rotation / 90.0 - round(fp.rotation / 90.0)) < 1e-6
         if is_fixed and not on_grid:
             # a fixed part at an odd angle keeps its true courtyard through its world bounding box
             if fp.ref in pb.exits:
                 x0, y0, x1, y1 = rotated_box((x0, y0, x1, y1), (0.0, 0.0), fp.rotation)
+            elif subs:
+                subs = [rotated_box((sx0, sy0, sx1, sy1), (0.0, 0.0), fp.rotation) for sx0, sy0, sx1, sy1 in subs]
+                shape = courtyard_polygon(fp)
+                if shape is not None:
+                    bx0, by0, bx1, by1 = shape.bounds
+                    x0, y0, x1, y1 = bx0 - fp.x, by0 - fp.y, bx1 - fp.x, by1 - fp.y
             else:
                 shape = courtyard_polygon(fp)
                 if shape is not None:
@@ -160,6 +231,8 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
             r = _quarter(fp.rotation) if on_grid else 0
         pb.parts.append((x0, y0, x1, y1, 0 if sides[fp.ref] == "F" else 1, is_fixed, not is_fixed,
                          fp.x, fp.y, r))
+        pb.sub_rects.append(subs)
+        pb.cavity_eligible.append(is_shield_cavity_eligible(fp))
         for pad in fp.pads:
             if not pad.net:
                 continue
@@ -265,7 +338,14 @@ def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0,
         ) from error
 
     args = (pb.parts, pb.pins, pb.nets, pb.outers, pb.holes, gap, w_hpwl, w_cross)
-    return PlacementProblem(*args, affinities=pb.affinities) if pb.affinities else PlacementProblem(*args)
+    kwargs: dict = {}
+    if pb.affinities:
+        kwargs["affinities"] = pb.affinities
+    if any(pb.sub_rects):
+        kwargs["sub_rects"] = pb.sub_rects
+        if pb.cavity_eligible:
+            kwargs["cavity_eligible"] = pb.cavity_eligible
+    return PlacementProblem(*args, **kwargs)
 
 
 def apply(pb: PlaceProblem, poses: list[tuple[float, float, int]]) -> Board:
@@ -284,6 +364,7 @@ def apply(pb: PlaceProblem, poses: list[tuple[float, float, int]]) -> Board:
                 pad.rotation = -pad.rotation
                 pad.layers = tuple(layer_flip.get(layer, layer) for layer in pad.layers)
             fp.courtyard.polygons = [[(x, -y) for x, y in ring] for ring in fp.courtyard.polygons]
+            fp.courtyard.holes = [[[(x, -y) for x, y in hole] for hole in poly_holes] for poly_holes in fp.courtyard.holes]
         fp.side = pb.sides[fp.ref]
     return out
 

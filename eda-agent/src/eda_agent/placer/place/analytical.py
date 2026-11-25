@@ -129,8 +129,25 @@ class Analytical:
         inside = contains_xy(shape, xx, yy)
         grid[~inside] = self.bin_area  # outside the board: full
         idx = np.flatnonzero(self.fixed & (self.side == side))
-        for rect in self._rects(idx):
-            self._raster(tuple(rect), grid)
+        sub_rects = getattr(self.pb, "sub_rects", None) or []
+        for k in idx:
+            subs = sub_rects[k] if k < len(sub_rects) else []
+            if subs:
+                rk = np.full(4, int(self.r[k]), dtype=int)
+                for sx0, sy0, sx1, sy1 in subs:
+                    cx, cy = _rot(
+                        np.array([sx0, sx1, sx1, sx0], dtype=float),
+                        np.array([sy0, sy0, sy1, sy1], dtype=float),
+                        rk,
+                    )
+                    self._raster((
+                        float(self.x[k] + cx.min()),
+                        float(self.y[k] + cy.min()),
+                        float(self.x[k] + cx.max()),
+                        float(self.y[k] + cy.max()),
+                    ), grid)
+            else:
+                self._raster(tuple(self._rects(np.array([k]))[0]), grid)
         return np.minimum(grid, self.bin_area)
 
     def _board_shape(self):

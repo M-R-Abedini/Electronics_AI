@@ -62,6 +62,7 @@ fn hpwl(xs: Vec<f64>, ys: Vec<f64>, nets: Vec<Vec<usize>>) -> PyResult<f64> {
 }
 
 type PartRow = (f64, f64, f64, f64, u8, bool, bool, f64, f64, u8);
+type SubRectRow = (f64, f64, f64, f64);
 
 /// A placement problem: parts (local courtyard box, side, fixed, rotatable, pose), pins, nets, outline.
 #[pyclass]
@@ -72,7 +73,7 @@ struct PlacementProblem {
 #[pymethods]
 impl PlacementProblem {
     #[new]
-    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None))]
+    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None, sub_rects=None, cavity_eligible=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parts: Vec<PartRow>,
@@ -84,6 +85,8 @@ impl PlacementProblem {
         w_hpwl: f64,
         w_cross: f64,
         affinities: Option<Vec<(Vec<usize>, f64)>>,
+        sub_rects: Option<Vec<Vec<SubRectRow>>>,
+        cavity_eligible: Option<Vec<bool>>,
     ) -> PyResult<Self> {
         let n = parts.len();
         if let Some(bad) = pins.iter().find(|p| p.0 >= n) {
@@ -112,16 +115,37 @@ impl PlacementProblem {
                 "invalid pin affinity",
             ));
         }
+        let sub_vec = sub_rects.unwrap_or_default();
+        let elig_vec = cavity_eligible.unwrap_or_default();
         let parts = parts
             .into_iter()
-            .map(|(x0, y0, x1, y1, side, fixed, can_rotate, x, y, r)| Part {
-                local: Rect { x0, y0, x1, y1 },
-                side,
-                fixed,
-                can_rotate,
-                x,
-                y,
-                r: r & 3,
+            .enumerate()
+            .map(|(idx, (x0, y0, x1, y1, side, fixed, can_rotate, x, y, r))| {
+                let srects = sub_vec
+                    .get(idx)
+                    .map(|rs| {
+                        rs.iter()
+                            .map(|&(sx0, sy0, sx1, sy1)| Rect {
+                                x0: sx0,
+                                y0: sy0,
+                                x1: sx1,
+                                y1: sy1,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let eligible = elig_vec.get(idx).copied().unwrap_or(true);
+                Part {
+                    local: Rect { x0, y0, x1, y1 },
+                    sub_rects: srects,
+                    cavity_eligible: eligible,
+                    side,
+                    fixed,
+                    can_rotate,
+                    x,
+                    y,
+                    r: r & 3,
+                }
             })
             .collect();
         let pins = pins
