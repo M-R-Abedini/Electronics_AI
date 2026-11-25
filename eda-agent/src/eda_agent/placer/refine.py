@@ -118,6 +118,9 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
             raise ValueError("Refinement rotation must be orthogonal")
         fp.rotation = angle
     swap_ref = change.get("swap_with_ref")
+    side_flip = bool(change.get("side_flip", False))
+    passive_align = bool(change.get("passive_align", False))
+    block_refs_raw = change.get("block_refs")
     if swap_ref and (change.get("toward_ref") or change.get("away_from_ref")):
         raise ValueError("swap_with_ref cannot be combined with toward_ref or away_from_ref")
     if swap_ref == ref:
@@ -128,6 +131,41 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
         raise ValueError("Movement target must be on a different footprint")
     if ("target_pad" in change or "step_mm" in change) and not (change.get("toward_ref") or change.get("away_from_ref")):
         raise ValueError("A target pad or step requires a movement direction")
+    if side_flip:
+        prior_side_policy = str((report.get("config") or {}).get("side_policy") or "expert")
+        if prior_side_policy not in ("level2_passives_back", "level3_two_sided") and not change.get("allow_side_flip"):
+            return {**delta, "status": "rejected",
+                    "reason": f"side_flip requires side_policy in ('level2_passives_back', 'level3_two_sided') or allow_side_flip=True (current: {prior_side_policy})"}
+        bc = decap._body_center_world(fp)
+        fp.side = "B" if fp.side == "F" else "F"
+        decap._set_body_center_pose(fp, bc[0], bc[1], fp.rotation)
+    if passive_align:
+        # Law-P1-safe orthogonal orientation alignment minimizing pad-to-pad distance to connected neighbor pins.
+        target_hint = change.get("toward_ref")
+        best_rot = fp.rotation
+        best_cost = math.inf
+        ref_pads_by_net: dict[str, list[tuple[float, float]]] = {}
+        for other in after.footprints:
+            if other.ref == ref:
+                continue
+            if target_hint and other.ref != target_hint:
+                continue
+            for p, xy in other.pads_world():
+                if p.net:
+                    ref_pads_by_net.setdefault(p.net, []).append(xy)
+        bc = decap._body_center_world(fp)
+        for cand_rot in (0, 90, 180, 270):
+            decap._set_body_center_pose(fp, bc[0], bc[1], cand_rot)
+            cost = 0.0
+            for p, xy in fp.pads_world():
+                peers = ref_pads_by_net.get(p.net or "")
+                if peers:
+                    cost += min(math.dist(xy, q) for q in peers)
+            if cost < best_cost - 1e-6:
+                best_cost = cost
+                best_rot = cand_rot
+        decap._set_body_center_pose(fp, bc[0], bc[1], best_rot)
+    moved_block_refs: list[str] = []
     if swap_ref:
         if sum(other.ref == swap_ref for other in after.footprints) != 1:
             raise ValueError("swap_with_ref must identify a unique existing footprint")
@@ -156,9 +194,24 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
             raise ValueError("Refinement step must be between 0.05 and 3 mm")
         if distance:
             fraction = -step / distance if change.get("away_from_ref") else min(step, distance) / distance
-            fp.x += (target_xy[0] - fp.x) * fraction
-            fp.y += (target_xy[1] - fp.y) * fraction
-    changed_ref = before.fp(ref).position != fp.position or before.fp(ref).rotation != fp.rotation
+            dx_move = (target_xy[0] - fp.x) * fraction
+            dy_move = (target_xy[1] - fp.y) * fraction
+            fp.x += dx_move
+            fp.y += dy_move
+            if block_refs_raw:
+                for bref in block_refs_raw:
+                    if bref == ref or bref in protected or sum(o.ref == bref for o in after.footprints) != 1:
+                        continue
+                    bfp = after.fp(bref)
+                    if bfp.side == fp.side:
+                        bfp.x += dx_move
+                        bfp.y += dy_move
+                        moved_block_refs.append(bref)
+    changed_ref = (
+        before.fp(ref).position != fp.position
+        or before.fp(ref).rotation != fp.rotation
+        or before.fp(ref).side != fp.side
+    )
     changed_swap = bool(swap_ref) and (
         before.fp(swap_ref).position != after.fp(swap_ref).position
         or before.fp(swap_ref).rotation != after.fp(swap_ref).rotation
@@ -287,15 +340,42 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     after_copper_path = (b.get("artifacts") or {}).get("routed_board")
     before_copper = read_board(before_copper_path) if before_copper_path and Path(before_copper_path).is_file() else None
     after_copper = read_board(after_copper_path) if after_copper_path and Path(after_copper_path).is_file() else None
-    old_score = score.evaluate(before, before_route, protected, intent, copper_board=before_copper)["pro_score"]["score"]
+    old_eval = score.evaluate(before, before_route, protected, intent, copper_board=before_copper)
+    old_score = old_eval["pro_score"]["score"]
     new_evaluation = score.evaluate(after, after_route, protected, intent, copper_board=after_copper)
     new_score = new_evaluation["pro_score"]["score"]
-    comparison.update(baseline_pro_score=old_score, candidate_pro_score=new_score)
-    if (before_route["unrouted"] == 0 and new_score <= old_score + 1e-6) or new_score < old_score:
+    old_lint = ((old_eval.get("metrics") or {}).get("lint") or {})
+    new_lint = ((new_evaluation.get("metrics") or {}).get("lint") or {})
+    old_lint_s = old_lint.get("score")
+    new_lint_s = new_lint.get("score")
+    pareto_lint_win = (
+        before_route["unrouted"] == 0
+        and after_route["unrouted"] == 0
+        and old_lint_s is not None
+        and new_lint_s is not None
+        and (new_lint_s - old_lint_s) >= 2.0
+        and int(new_lint.get("critical_errors") or 0) <= int(old_lint.get("critical_errors") or 0)
+        and new_score >= old_score - 0.15
+    )
+    comparison.update(
+        baseline_pro_score=old_score,
+        candidate_pro_score=new_score,
+        baseline_lint_score=old_lint_s,
+        candidate_lint_score=new_lint_s,
+        pareto_lint_win=pareto_lint_win,
+    )
+    if not pareto_lint_win and ((before_route["unrouted"] == 0 and new_score <= old_score + 1e-6) or new_score < old_score):
         return {**delta, "status": "rejected", "reason": "Pro Score did not improve" if before_route["unrouted"] == 0 else "Pro Score regressed", **comparison}
     new_report = work / "run_report.json"
+    prior_cfg = dict(report.get("config") or {})
+    preserved_cfg = {
+        k: prior_cfg[k]
+        for k in ("s6a", "side_policy", "floorplan", "silkscreen_policy", "fab_profile")
+        if k in prior_cfg
+    }
+    preserved_cfg.update({"s6a": use_s6a, "change": change, "router_timeout_s": route_timeout_s})
     updated = run_report.build(
-        kind="place_refinement", inputs=report["inputs"], config={"change": change, "router_timeout_s": route_timeout_s},
+        kind="place_refinement", inputs=report["inputs"], config=preserved_cfg,
         stages={"place": {"fixed": why_fixed, "rigid_macros": macros},
                 "route_check": {"run_report": comparison["reports"][1]}},
         metrics={**new_evaluation["metrics"], "pro_score": new_evaluation["pro_score"],
@@ -305,4 +385,4 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     )
     run_report.write(updated, new_report)
     return {**delta, "status": "accepted", "retained_board": str(candidate), "run_report": str(new_report),
-            "routed_board": b["artifacts"]["routed_board"], **comparison}
+            "routed_board": b["artifacts"]["routed_board"], "moved_block_refs": moved_block_refs, **comparison}

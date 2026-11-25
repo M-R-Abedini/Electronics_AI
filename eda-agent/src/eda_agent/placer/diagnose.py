@@ -109,7 +109,46 @@ def _drc_rows(report: dict, board_path: Path, report_path: Path) -> list[dict]:
             for row in report.get("drc", {}).get(key, [])]
 
 
-def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
+def _suggest_action(finding: dict) -> dict | None:
+    """Emit a Law-P1-safe symbolic suggested action (zero raw coordinates) for an actionable finding."""
+    kind = finding.get("kind") or ""
+    pts = finding.get("points") or []
+    refs = list(finding.get("refs") or [])
+    if not refs:
+        refs = [p["ref"] for p in pts if p.get("ref")]
+    if kind in ("decap_distance", "lint_decap_loop") and len(refs) >= 2:
+        return {
+            "tool": "placer__refine",
+            "change": {"ref": refs[0], "toward_ref": refs[1], "step_mm": 1.0, "confidence": 0.85},
+        }
+    if kind == "pad_exit_blocked":
+        blocked_by = finding.get("blocked_by") or []
+        fp_ref = refs[0] if refs else None
+        blocker = blocked_by[0] if isinstance(blocked_by, list) and blocked_by else None
+        if fp_ref and isinstance(blocker, str) and blocker != fp_ref:
+            return {
+                "tool": "placer__refine",
+                "change": {"ref": blocker, "away_from_ref": fp_ref, "step_mm": 0.8, "confidence": 0.80},
+            }
+    if kind in ("lint_fb_near_sw", "lint_fb_under_inductor") and len(refs) >= 2:
+        return {
+            "tool": "placer__refine",
+            "change": {"ref": refs[0], "away_from_ref": refs[1], "step_mm": 1.5, "confidence": 0.85},
+        }
+    if kind == "unrouted":
+        uniq = sorted({p["ref"] for p in pts if p.get("ref")})
+        if uniq:
+            return {"tool": "placer__place_cluster", "refs": uniq, "preserve_routing": "outside_cluster"}
+    return None
+
+
+def diagnose(
+    run: str,
+    limit: int = 8,
+    *,
+    kinds: list[str] | None = None,
+    offset: int = 0,
+) -> tuple[dict, dict]:
     report_path = Path(run).resolve()
     if report_path.is_dir():
         report_path /= "run_report.json"
@@ -253,10 +292,12 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
                     entry[k] = sf[k]
             findings.append(entry)
 
-    # Surface critical F6 electrical lint findings and top PathFinder congestion hotspots (below DRC/unrouted priority).
+    # Surface both critical and warning F6 electrical lint findings, DRU untranslated rules,
+    # and top PathFinder congestion hotspots (below DRC/unrouted priority).
     lint_block = (report.get("metrics") or {}).get("lint") or {}
     for lf in lint_block.get("findings") or []:
-        if lf.get("severity") != "critical":
+        sev = lf.get("severity")
+        if sev not in ("critical", "warning"):
             continue
         loc = lf.get("location_mm")
         pts = ([{"x_mm": float(loc[0]), "y_mm": float(loc[1]), "layer": None,
@@ -264,12 +305,22 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
                if isinstance(loc, (list, tuple)) and len(loc) == 2 else [])
         findings.append({
             "kind": f"lint_{lf['rule']}",
-            "severity": "error",
-            "description": lf.get("message") or f"Critical electrical lint finding ({lf['rule']})",
+            "severity": "error" if sev == "critical" else "warning",
+            "description": lf.get("detail") or lf.get("message") or f"Electrical lint finding ({lf['rule']})",
             "points": pts,
             "net": lf.get("net"),
             "refs": lf.get("refs") or [],
             "source": source,
+        })
+    dru_stage = (route_report.get("stages") or {}).get("dsn_dru_compiled") or {}
+    for rule_name in (dru_stage.get("untranslated") or [])[:6]:
+        findings.append({
+            "kind": "dru_untranslated",
+            "severity": "warning",
+            "description": f"Custom .kicad_dru rule '{rule_name}' is not natively expressible in Specctra DSN; verify against KiCad DRC",
+            "points": [],
+            "rule_name": rule_name,
+            "source": route_path or source,
         })
     pf_block = (report.get("metrics") or {}).get("pathfinder") or {}
     for hs in (pf_block.get("hotspots") or [])[:3]:
@@ -304,17 +355,31 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
         if kind in silk_kinds:
             return 7 if row.get("severity") == "error" else 8
         if kind.startswith("lint_"):
-            return 6
+            return 6 if row.get("severity") == "error" else 7
+        if kind == "dru_untranslated":
+            return 8
         if kind == "pathfinder_hotspot":
             return 9
         return 5 if row.get("severity") == "error" else 6
 
     findings.sort(key=_priority)
+    if kinds:
+        allowed = set(kinds)
+        findings = [row for row in findings if row["kind"] in allowed]
     unique_types = set()
     first, rest = [], []
     for row in findings:
         (rest if row["kind"] in unique_types else first).append(row)
         unique_types.add(row["kind"])
+    ordered_findings = first + rest
+    page_offset = max(0, int(offset))
+    page = ordered_findings[page_offset : page_offset + limit]
+    suggested_actions: list[dict] = []
+    for row in page:
+        act = _suggest_action(row)
+        if act is not None:
+            row["suggested_action"] = act
+            suggested_actions.append({"kind": row["kind"], **act})
     unrouted = route_metrics.get("unrouted")
     localized = counts.get("unrouted", 0)
     unlocalized = max(0, unrouted - localized) if unrouted is not None else None
@@ -327,12 +392,15 @@ def diagnose(run: str, limit: int = 8) -> tuple[dict, dict]:
     value = {"run": source, "board": str(board_path), "finding_counts": dict(counts),
              "image_scope": "Placement IR with board outline, pads, tracks, mask artwork and zone boundaries; zone fill is omitted",
              "open_link_deltas": open_link_deltas,
-             "reported_findings": min(len(findings), limit),
+             "total_findings": len(ordered_findings),
+             "offset": page_offset,
+             "reported_findings": len(page),
+             "suggested_actions": suggested_actions,
              "silkscreen": silk_audit,
              "route": {"status": ("settled" if settled else "inconclusive") if stop else "not_run",
                        "stop": stop, "unrouted": unrouted, "localized_open_links": localized,
                        "unlocalized_open_links": unlocalized, "locations_status": locations_status},
-             "findings": (first + rest)[:limit]}
+             "findings": page}
     boards = {source: board}
     if route_path and any(finding["source"] == route_path for finding in value["findings"]):
         boards[route_path] = read_board(routed_path)
