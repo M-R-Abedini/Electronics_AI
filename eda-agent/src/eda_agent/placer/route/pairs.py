@@ -378,16 +378,31 @@ def portal_terminal(board: Board, term: Terminal, rule: PairRule, fixed: list[di
     when that fits and necks down to the board's minimum track width when it does not.
     """
     (fp_a, pa), (fp_b, pb) = term.pads["pos"], term.pads["neg"]
-    if fp_a is not fp_b or any(abs(p.size[0] - p.size[1]) < 1e-6 for p in (pa, pb)):
+    if fp_a is not fp_b:
         return None
-    out_a, out_b = outward(fp_a, pa), outward(fp_b, pb)
-    if math.dist(out_a, out_b) > 1e-6:
-        return None
-    ox, oy = out_a
     a, b = fp_a.pad_world(pa), fp_b.pad_world(pb)
+    is_square = any(abs(p.size[0] - p.size[1]) < 1e-6 for p in (pa, pb))
+    if is_square:
+        # Square/circular pads (BGA/QFN/pin headers): derive exit perpendicular to pad-to-pad axis,
+        # pointing outward from the footprint center.
+        pdx, pdy = b[0] - a[0], b[1] - a[1]
+        plen = math.hypot(pdx, pdy)
+        if plen < 1e-6:
+            return None
+        n1 = (-pdy / plen, pdx / plen)
+        n2 = (pdy / plen, -pdx / plen)
+        mid_x, mid_y = 0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])
+        fcx, fcy = fp_a.position
+        vx, vy = mid_x - fcx, mid_y - fcy
+        ox, oy = n1 if (vx * n1[0] + vy * n1[1]) >= (vx * n2[0] + vy * n2[1]) else n2
+    else:
+        out_a, out_b = outward(fp_a, pa), outward(fp_b, pb)
+        if math.dist(out_a, out_b) > 1e-6:
+            return None
+        ox, oy = out_a
     lateral = (b[0] - a[0]) * -oy + (b[1] - a[1]) * ox  # signed pad pitch across the exit axis
     along = (b[0] - a[0]) * ox + (b[1] - a[1]) * oy
-    if abs(along) > 1e-6 or abs(lateral) < 1e-6:
+    if abs(along) > 1e-4 or abs(lateral) < 1e-6:
         return None
     ux, uy = (-oy, ox) if lateral > 0 else (oy, -ox)  # from the pos pad towards the neg pad
     shift = (abs(lateral) - rule.pitch) / 2  # each leg moves this far towards its partner (negative: apart)
@@ -568,11 +583,46 @@ def _route_pair(board: Board, pos: str, neg: str, rule: PairRule, *,
     return result
 
 
+def _pair_routing_layers(board: Board) -> list[str]:
+    """Return outer layers plus inner non-plane signal layers adjacent to a GND plane."""
+    from ..ir import is_ground_net, plane_zone_layers
+
+    ordered = sorted(board.copper_layers, key=lambda c: c.index)
+    canons = [cl.canonical for cl in ordered]
+    outer = [c for c in canons if c in ("F.Cu", "B.Cu")]
+    if len(ordered) < 4:
+        return outer
+    by_canon = {cl.name: cl.canonical for cl in ordered}
+    planes = plane_zone_layers(board)
+    gnd_lyrs: set[str] = set()
+    plane_lyrs: set[str] = set()
+    for z in board.zones:
+        if z.get("uuid") in planes:
+            lyrs = {by_canon.get(n, n) for n in planes[z["uuid"]]}
+            plane_lyrs |= lyrs
+            if is_ground_net(z.get("net")):
+                gnd_lyrs |= lyrs
+    for r in board.stackup.roles:
+        if r.role == "plane" and r.net:
+            c = by_canon.get(r.layer, r.layer)
+            plane_lyrs.add(c)
+            if is_ground_net(r.net):
+                gnd_lyrs.add(c)
+    inner_sig: list[str] = []
+    for idx, c in enumerate(canons):
+        if c in ("F.Cu", "B.Cu") or c in plane_lyrs:
+            continue
+        adj = {canons[j] for j in (idx - 1, idx + 1) if 0 <= j < len(canons)}
+        if adj & gnd_lyrs:
+            inner_sig.append(c)
+    return outer + inner_sig
+
+
 def _route_order(board: Board, terms: list[Terminal], pos: str, neg: str,
                  rule: PairRule, fixed: list[dict], core, *, coarse: bool = False,
                  segment_skew: float | None = None) -> PairRoute:
     res = PairRoute(pos, neg)
-    layers = [cl.canonical for cl in board.copper_layers if cl.canonical in ("F.Cu", "B.Cu")]  # outer layers
+    layers = _pair_routing_layers(board)
     fixed = list(fixed)
     holes = _existing_holes(board, fixed)
     hole_clearance = board.rules.get("hole_to_hole", 0.0)
@@ -875,25 +925,48 @@ def _tune(win: Window, leg_raw: dict[str, dict[str, np.ndarray]], tracks: list[d
                 nrm = (-nrm[0], -nrm[1])
         blocked = ndimage.binary_dilation(raw[t["layer"]] | partner[t["layer"]],
                                           structure=_disk(rule.width / 2 / win.res))
+        chamfer_loss = 8.0 - 4.0 * math.sqrt(2.0)  # 4 beveled corners of leg c save (8 - 4*sqrt(2))*c vs 90 deg
+        c_max = 0.20 * base  # keeps top flat >= 0.20*base and every corner strictly 45 degrees (135 deg interior)
         for h in TUNE_HEIGHTS:
-            per = 2 * h
-            n = min(n_max, max(1, math.ceil(need / per)))
-            h_use = min(h, need / (2 * n))
+            c_h = min(c_max, 0.25 * h)
+            per_max = 2.0 * h - chamfer_loss * c_h
+            if per_max <= 1e-6:
+                continue
+            n = min(n_max, max(1, math.ceil(need / per_max)))
+            target_per = need / n
+            if target_per >= per_max:
+                h_use, c_use = h, c_h
+            else:
+                # Exact inverse of added_len(h_use) = 2*h_use - chamfer_loss*min(c_max, 0.25*h_use)
+                h_cand = (target_per + chamfer_loss * c_max) / 2.0
+                if 0.25 * h_cand >= c_max:
+                    h_use, c_use = h_cand, c_max
+                else:
+                    h_use = target_per / (2.0 - 0.25 * chamfer_loss)
+                    c_use = 0.25 * h_use
+            added_per = 2.0 * h_use - chamfer_loss * c_use
             pts = [p]
             start = (seg_len - n * base - (n - 1) * gap) / 2
             for k in range(n):
                 s0 = start + k * (base + gap)
                 a0 = (p[0] + d[0] * s0, p[1] + d[1] * s0)
+                p1 = (a0[0] + d[0] * c_use + nrm[0] * c_use, a0[1] + d[1] * c_use + nrm[1] * c_use)
+                p2 = (a0[0] + d[0] * c_use + nrm[0] * (h_use - c_use), a0[1] + d[1] * c_use + nrm[1] * (h_use - c_use))
+                p3 = (a0[0] + d[0] * (2.0 * c_use) + nrm[0] * h_use, a0[1] + d[1] * (2.0 * c_use) + nrm[1] * h_use)
+                p4 = (a0[0] + d[0] * (base - 2.0 * c_use) + nrm[0] * h_use,
+                      a0[1] + d[1] * (base - 2.0 * c_use) + nrm[1] * h_use)
+                p5 = (a0[0] + d[0] * (base - c_use) + nrm[0] * (h_use - c_use),
+                      a0[1] + d[1] * (base - c_use) + nrm[1] * (h_use - c_use))
+                p6 = (a0[0] + d[0] * (base - c_use) + nrm[0] * c_use, a0[1] + d[1] * (base - c_use) + nrm[1] * c_use)
                 a1 = (a0[0] + d[0] * base, a0[1] + d[1] * base)
-                pts += [a0, (a0[0] + nrm[0] * h_use, a0[1] + nrm[1] * h_use),
-                        (a1[0] + nrm[0] * h_use, a1[1] + nrm[1] * h_use), a1]
+                pts += [a0, p1, p2, p3, p4, p5, p6, a1]
             pts.append(q)
             new_geom = LineString(pts).buffer(rule.width / 2).difference(LineString([p, q]).buffer(rule.width / 2 + 1e-3))
             if (win.raster(new_geom) & blocked).any():
                 continue
             t["points"] = t["points"][:si] + pts + t["points"][si + 2:]
             insertions.setdefault(ti, []).append((original_index, len(pts) - 2))
-            need -= 2 * n * h_use
+            need -= n * added_per
             break
     ln = _leg_lengths(tracks, nets)
     return tracks, abs(ln["pos"] - ln["neg"])
@@ -1132,9 +1205,19 @@ def _legs(win: Window, path, layers, a: Terminal, b: Terminal, rule: PairRule) -
     return tracks, vias, ends
 
 
-def rule_for(board: Board, net: str) -> PairRule:
+def rule_for(board: Board, net: str, *, target_zdiff: float | None = None) -> PairRule:
     nc = board.netclass_of(net) or next(c for c in board.netclasses if c.name == "Default")
-    return PairRule(width=nc.diff_pair_width or nc.track_width, gap=nc.diff_pair_gap or nc.clearance,
+    width = nc.diff_pair_width
+    gap = nc.diff_pair_gap
+    if (width is None or gap is None) and target_zdiff is not None and board.stackup.source == "file":
+        from ..impedance import pair_rule_from_stackup
+
+        min_w = float(board.rules.get("min_track_width") or 0.10)
+        solved = pair_rule_from_stackup(board, "F.Cu", target_zdiff=target_zdiff, min_width_mm=min_w, gap_mm=gap)
+        if solved is not None:
+            width = width or solved[0]
+            gap = gap or solved[1]
+    return PairRule(width=width or nc.track_width, gap=gap or nc.clearance,
                     clearance=nc.clearance, via_d=nc.via_diameter, via_drill=nc.via_drill)
 
 

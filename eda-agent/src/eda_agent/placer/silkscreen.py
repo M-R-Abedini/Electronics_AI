@@ -258,8 +258,9 @@ def build_config(
     *,
     policy: str = "auto",
     fab_profile: str = "ipc_standard",
+    dru_rules: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Build deterministic silkscreen cleanup config from board rules, density, and design intent."""
+    """Build deterministic silkscreen cleanup config from board rules, ``.kicad_dru``, density, and intent."""
     if policy not in SILKSCREEN_POLICIES:
         raise ValueError(f"unsupported silkscreen_policy: {policy!r}; valid: {SILKSCREEN_POLICIES}")
     if fab_profile not in FAB_PROFILES:
@@ -279,10 +280,11 @@ def build_config(
         else ("dense" if density["classification"] == "dense" else "ipc_standard")
     )
 
-    # Respect board DRC minimums so normalized silkscreen never violates board design rules.
-    board_min_h = float(board.rules.get("min_silk_text_height") or 0.0)
-    board_min_w = float(board.rules.get("min_silk_text_thickness") or 0.0)
-    board_silk_clr = float(board.rules.get("silk_clearance") or 0.0)
+    # Respect board DRC + .kicad_dru minimums so normalized silkscreen never violates fab rules.
+    dru_eff = dru_rules or {}
+    board_min_h = max(float(board.rules.get("min_silk_text_height") or 0.0), float(dru_eff.get("min_silk_text_height_mm") or 0.0))
+    board_min_w = max(float(board.rules.get("min_silk_text_thickness") or 0.0), float(dru_eff.get("min_silk_text_thickness_mm") or 0.0))
+    board_silk_clr = max(float(board.rules.get("silk_clearance") or 0.0), float(dru_eff.get("silk_clearance_mm") or 0.0))
 
     min_h = max(float(prof["min_height_mm"]), board_min_h)
     dense_h = max(float(prof["dense_height_mm"]), min_h)
@@ -340,6 +342,7 @@ def build_config(
         "fallback_offload_non_critical": policy in ("auto", "ipc_standard", "dense"),
         "fallback_offload_critical": policy in ("auto", "ipc_standard", "dense"),
         "populate_hidden_refs": populate_hidden_refs,
+        "hide_silk_values": policy != "off",
         "normalize_fab_texts": policy != "off",
         "critical_refs": critical_refs,
         "non_critical_refs": non_critical_refs,
@@ -353,17 +356,19 @@ def audit_texts(
     fab_profile: str = "ipc_standard",
     rules: dict[str, Any] | None = None,
     board: Board | None = None,
+    dru_rules: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Audit extracted silkscreen and assembly-layer texts against IPC-7351 and fab DFM limits."""
     prof = FAB_PROFILES.get(fab_profile, FAB_PROFILES["ipc_standard"])
     rules = rules or {}
-    min_h = max(float(prof["min_height_mm"]), float(rules.get("min_silk_text_height") or 0.0))
+    dru_eff = dru_rules or {}
+    min_h = max(float(prof["min_height_mm"]), float(rules.get("min_silk_text_height") or 0.0), float(dru_eff.get("min_silk_text_height_mm") or 0.0))
     rec_h = float(prof["target_height_mm"])
-    min_s = max(float(prof["min_stroke_mm"]), float(rules.get("min_silk_text_thickness") or 0.0))
+    min_s = max(float(prof["min_stroke_mm"]), float(rules.get("min_silk_text_thickness") or 0.0), float(dru_eff.get("min_silk_text_thickness_mm") or 0.0))
     hard_min_s = 0.12
     min_ratio = float(prof["min_stroke_ratio"])
     max_ratio = float(prof["max_stroke_ratio"])
-    min_pad_clr = max(float(prof["min_pad_clearance_mm"]), float(rules.get("silk_clearance") or 0.0))
+    min_pad_clr = max(float(prof["min_pad_clearance_mm"]), float(rules.get("silk_clearance") or 0.0), float(dru_eff.get("silk_clearance_mm") or 0.0))
 
     density = estimate_board_density(board) if board is not None else None
     is_miniature = bool(density["is_miniature"]) if density is not None else False

@@ -185,6 +185,24 @@ def _build_reference_planes(
             if c is not None:
                 vias_by_layer[c].append((vnet, disk, db))
 
+    # Subtract PTH / NPTH footprint drills + antipads on every copper layer so dense pin headers
+    # or mounting holes properly show up as reference-plane perforation / antipad slots.
+    for fp in board.footprints:
+        for pad, (px, py) in fp.pads_world():
+            if pad.kind not in ("thru_hole", "np_thru_hole") or not pad.drill:
+                continue
+            dr = max(float(pad.drill[0]), float(pad.drill[1]))
+            if dr <= 0.0:
+                continue
+            pnet = "" if pad.kind == "np_thru_hole" else (pad.net or "")
+            prad = max(0.5 * dr, 0.5 * max(pad.size[0], pad.size[1])) + clearance
+            disk = Point(px, py).buffer(prad, quad_segs=3)
+            db = disk.bounds
+            for li in range(n_layers):
+                c = idx_to_canon.get(li)
+                if c is not None:
+                    vias_by_layer[c].append((pnet, disk, db))
+
     planes: dict[str, dict[str, Any]] = {}
     for canon, by_net in raw_by_layer_net.items():
         layer_planes: dict[str, Any] = {}
@@ -397,8 +415,9 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
 
     def add_finding(rule: str, severity: str, detail: str, *, net: str | None = None,
                     refs: list[str] | None = None, location_mm: tuple[float, float] | None = None,
-                    value: float | None = None, limit: float | None = None) -> None:
-        findings.append({
+                    value: float | None = None, limit: float | None = None,
+                    ref_net: str | None = None) -> None:
+        row = {
             "rule": rule,
             "severity": severity,
             "net": net,
@@ -407,7 +426,10 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
             "value": round(value, 4) if value is not None else None,
             "limit": round(limit, 4) if limit is not None else None,
             "detail": detail,
-        })
+        }
+        if ref_net is not None:
+            row["ref_net"] = ref_net
+        findings.append(row)
 
     # Reconstruct effective reference copper planes on layers that have filled zones
     ref_planes = _build_reference_planes(board, name_to_canon, canon_to_idx, tracks, vias)
@@ -509,19 +531,35 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
             if not t_ref or not net or t_ref not in by_ref or is_ground_net(net):
                 continue
             ic = by_ref[t_ref]
-            # When the supply rail has an internal power plane, decap and IC connect via the plane
-            # directly (low-inductance vertical path) rather than winding along outer-layer stubs.
+            nums = {str(x) for x in (target.get("pins") or ())} or None
+            src_specs = _pad_match_specs(fp, net, name_to_canon)
+            dst_specs = _pad_match_specs(ic, net, name_to_canon, nums)
+            if not src_specs or not dst_specs:
+                continue
+            # When the supply rail has an internal power plane, decap and IC couple vertically through
+            # the plane, so do not require an outer-layer track or penalize vias, but STILL audit
+            # physical pad-to-pad proximity so far-away decaps on plane rails are flagged.
             has_inner_plane = any(
                 net in ref_planes.get(lyr, {})
                 for idx_l, lyr in enumerate(ordered_layers)
                 if 0 < idx_l < n_layers - 1
             )
             if has_inner_plane:
-                continue
-            nums = {str(x) for x in (target.get("pins") or ())} or None
-            src_specs = _pad_match_specs(fp, net, name_to_canon)
-            dst_specs = _pad_match_specs(ic, net, name_to_canon, nums)
-            if not src_specs or not dst_specs:
+                decap_checked += 1
+                plane_dist = min(math.hypot(a[0] - b[0], a[1] - b[1]) for a in src_specs for b in dst_specs)
+                decap_lengths.append(plane_dist)
+                if plane_dist > DECAP_COPPER_CRIT_MM:
+                    add_finding(
+                        "decap_loop", "critical",
+                        f"plane-coupled decap {fp.ref}->{t_ref} on {net} is {plane_dist:.2f} mm away (> {DECAP_COPPER_CRIT_MM} mm)",
+                        net=net, refs=[fp.ref, t_ref], location_mm=fp.position, value=plane_dist, limit=DECAP_COPPER_CRIT_MM,
+                    )
+                elif plane_dist > DECAP_COPPER_WARN_MM:
+                    add_finding(
+                        "decap_loop", "warning",
+                        f"plane-coupled decap {fp.ref}->{t_ref} on {net} is {plane_dist:.2f} mm away (> {DECAP_COPPER_WARN_MM} mm)",
+                        net=net, refs=[fp.ref, t_ref], location_mm=fp.position, value=plane_dist, limit=DECAP_COPPER_WARN_MM,
+                    )
                 continue
             decap_checked += 1
             nodes, adj = get_net_graph(net)
@@ -570,6 +608,17 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
         for lyr, refs in adj_ref_layers.items()
     }
     adj_ref_prep = {lyr: prep(geom) for lyr, geom in adj_ref_union.items()}
+    # Per-net reference polygons per signal layer so crossing between DIFFERENT reference nets
+    # (e.g., GND -> +3V3 or +3V3 -> +5V) is detected as a Hartley reference_split_crossing.
+    adj_ref_by_net: dict[str, dict[str, Any]] = {}
+    adj_ref_by_net_prep: dict[str, dict[str, Any]] = {}
+    for lyr, r_lyrs in adj_ref_layers.items():
+        per_net_polys: dict[str, list[Any]] = defaultdict(list)
+        for r_lyr in r_lyrs:
+            for rn, geom in ref_planes.get(r_lyr, {}).items():
+                per_net_polys[rn].append(geom)
+        adj_ref_by_net[lyr] = {rn: unary_union(gs) for rn, gs in per_net_polys.items()}
+        adj_ref_by_net_prep[lyr] = {rn: prep(g) for rn, g in adj_ref_by_net[lyr].items()}
 
     total_sig_len = 0.0
     covered_sig_len = 0.0
@@ -577,7 +626,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
     fast_covered_len = 0.0
     split_crossings = 0
     # Deduplicate split findings per (net, layer) so one split doesn't spam multiple segments.
-    worst_split: dict[tuple[str, str], tuple[float, float, tuple[float, float], float]] = {}
+    worst_split: dict[tuple[str, str], tuple[float, float, tuple[float, float], float, str | None]] = {}
 
     if has_copper and n_layers >= 4 and not ref_planes:
         add_finding(
@@ -633,16 +682,43 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                         key = (net, canon)
                         prev = worst_split.get(key)
                         if prev is None or plen > prev[0]:
-                            worst_split[key] = (plen, cov / seg_len, (mid.x, mid.y), gap_limit)
+                            worst_split[key] = (plen, cov / seg_len, (mid.x, mid.y), gap_limit, None)
+                # Hartley multi-net split plane check: even if total copper coverage is ~100%,
+                # crossing between two different reference plane nets (e.g. GND -> +3V3) breaks return current.
+                elif n_layers >= 4 and len(adj_ref_by_net.get(canon, ())) >= 2:
+                    per_net = adj_ref_by_net[canon]
+                    per_net_p = adj_ref_by_net_prep[canon]
+                    covered_single = any(pp.covers(line) for pp in per_net_p.values())
+                    if not covered_single:
+                        net_covs = sorted(
+                            ((float(line.intersection(g).length), rn) for rn, g in per_net.items()),
+                            reverse=True,
+                        )
+                        if len(net_covs) >= 2 and net_covs[1][0] > gap_limit and (cov - net_covs[0][0]) > gap_limit:
+                            split_len = cov - net_covs[0][0]
+                            mid = line.interpolate(0.5, normalized=True)
+                            key = (net, canon)
+                            prev = worst_split.get(key)
+                            if prev is None or split_len > prev[0]:
+                                split_desc = f"{net_covs[0][1]} <-> {net_covs[1][1]}"
+                                worst_split[key] = (split_len, net_covs[0][0] / seg_len, (mid.x, mid.y), gap_limit, split_desc)
 
-    for (net, canon), (plen, cov_ratio, loc, gap_limit) in sorted(worst_split.items()):
+    for (net, canon), (plen, cov_ratio, loc, gap_limit, split_nets) in sorted(worst_split.items()):
         split_crossings += 1
         sev = "warning" if n_layers <= 2 else "critical"
         rule_name = "two_layer_return_gap" if n_layers <= 2 else "reference_split_crossing"
+        if split_nets:
+            detail = (
+                f"fast/critical net {net} on {canon} crosses reference plane split between {split_nets} "
+                f"({plen:.2f} mm on secondary plane, {cov_ratio:.0%} on primary reference)"
+            )
+        else:
+            detail = (
+                f"fast/critical net {net} on {canon} crosses a reference plane gap "
+                f"({plen:.2f} mm uncovered, {cov_ratio:.0%} segment covered)"
+            )
         add_finding(
-            rule_name, sev,
-            f"fast/critical net {net} on {canon} crosses a reference plane gap "
-            f"({plen:.2f} mm uncovered, {cov_ratio:.0%} segment covered)",
+            rule_name, sev, detail,
             net=net, location_mm=loc, value=plen, limit=gap_limit,
         )
 
@@ -696,14 +772,19 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
             canon = name_to_canon.get(t.get("layer", ""), t.get("layer", ""))
             tracks_by_net_layer[net].append((canon, float(pts[0][0]), float(pts[0][1]), float(pts[-1][0]), float(pts[-1][1])))
 
-        def _dominant_ref_net(layer_canon: str) -> str | None:
-            cand_nets = {}
+        def _dominant_ref_net(layer_canon: str, vx: float, vy: float) -> str | None:
+            probe = Point(vx, vy).buffer(0.5, quad_segs=2)
+            local_nets: dict[str, float] = {}
+            global_nets: dict[str, float] = {}
             for r_lyr in adj_ref_layers.get(layer_canon, ()):
                 for rn, geom in ref_planes.get(r_lyr, {}).items():
-                    cand_nets[rn] = cand_nets.get(rn, 0.0) + float(geom.area)
+                    global_nets[rn] = global_nets.get(rn, 0.0) + float(geom.area)
+                    if geom.intersects(probe):
+                        local_nets[rn] = local_nets.get(rn, 0.0) + float(geom.intersection(probe).area)
+            cand_nets = local_nets or global_nets
             if not cand_nets:
                 return None
-            # Prefer GND if present with significant area
+            # Prefer GND if present locally at (vx, vy)
             gnd_best = max(((a, n) for n, a in cand_nets.items() if is_ground_net(n)), default=None)
             if gnd_best is not None:
                 return gnd_best[1]
@@ -720,7 +801,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                     touched.add(canon)
             if len(touched) < 2:
                 continue
-            ref_nets = {rn for lyr in touched if (rn := _dominant_ref_net(lyr)) is not None}
+            ref_nets = {rn for lyr in touched if (rn := _dominant_ref_net(lyr, vx, vy)) is not None}
             if not ref_nets:
                 continue
             transitions_checked += 1
@@ -745,7 +826,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                             f"layer transition via on {net} is {nearest:.2f} mm from nearest {rn} return via "
                             f"(> {RETURN_VIA_MAX_MM} mm)",
                             net=net, location_mm=(vx, vy), value=nearest if math.isfinite(nearest) else None,
-                            limit=RETURN_VIA_MAX_MM,
+                            limit=RETURN_VIA_MAX_MM, ref_net=rn,
                         )
             else:
                 # Reference plane changed between different nets (e.g., GND <-> PWR): check stitching cap
@@ -1000,8 +1081,11 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
     fast_cov = (fast_covered_len / fast_sig_len) if fast_sig_len > 0 else None
     if has_copper:
         s = 100.0
-        s -= min(60.0, 20.0 * critical_count)
-        s -= min(30.0, 4.0 * warning_count)
+        # Smooth diminishing penalty prevents flat saturation while keeping 1-critical severity (~20 pts).
+        if critical_count > 0:
+            s -= 60.0 * (1.0 - math.exp(-0.40 * critical_count))
+        if warning_count > 0:
+            s -= 30.0 * (1.0 - math.exp(-0.15 * warning_count))
         if ref_cov is not None and ref_cov < 0.90:
             s -= min(20.0, (0.90 - ref_cov) * 40.0)
         if two_layer_gnd.get("applicable"):

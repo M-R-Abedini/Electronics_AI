@@ -152,23 +152,36 @@ def _quadrant_offsets(
     ]
 
 
-def _via_options(board: Board, net: str, pitch: float, pad_diam: float) -> list[tuple[float, float, float, float]]:
+def _via_options(
+    board: Board,
+    net: str,
+    pitch: float,
+    pad_diam: float,
+    *,
+    dru_eff: dict[str, float] | None = None,
+) -> list[tuple[float, float, float, float]]:
     """Return ordered legal (track_width, clearance, via_diameter, via_drill) tuples.
 
     Tries the netclass via first; if that via cannot clear neighboring balls at the
     dogbone midpoint, falls back to the board's minimum legal via diameter/drill
-    (never below fab minimums).
+    (never below fab or ``.kicad_dru`` minimums).
     """
+    eff = dru_eff or {}
     rules = board.netclass_of(net)
     min_w = float(board.rules.get("min_track_width") or 0.0)
     min_clr = float(board.rules.get("min_clearance") or 0.0)
-    min_vd = float(board.rules.get("min_via_diameter") or 0.0)
-    min_dr = float(board.rules.get("min_through_drill") or 0.0)
+    min_vd = max(float(board.rules.get("min_via_diameter") or 0.0), float(eff.get("min_via_diameter_mm") or 0.0))
+    min_dr = max(float(board.rules.get("min_through_drill") or 0.0), float(eff.get("min_via_drill_mm") or 0.0))
+    min_ann = max(float(board.rules.get("min_via_annular_width") or 0.0), float(eff.get("min_via_annular_width_mm") or 0.0))
+    if min_dr > 0 and min_ann > 0:
+        min_vd = max(min_vd, round(min_dr + 2.0 * min_ann, 4))
 
     nc_w = max(rules.track_width, min_w)
     nc_clr = max(rules.clearance, min_clr)
     nc_vd = max(rules.via_diameter, min_vd)
     nc_dr = max(rules.via_drill, min_dr)
+    if nc_dr > 0 and min_ann > 0:
+        nc_vd = max(nc_vd, round(nc_dr + 2.0 * min_ann, 4))
 
     diag_center_dist = 0.5 * math.hypot(pitch, pitch)
     # Between-via routing channel requirement: two adjacent dogbone vias spaced by `pitch`
@@ -312,15 +325,16 @@ def check_hdi_rule_conflicts(board: Board) -> list[dict[str, Any]]:
 class _BgaContext:
     """Board-wide spatial index built once for fast, DRC-exact BGA escape validation."""
 
-    def __init__(self, board: Board, fixed: list[dict]) -> None:
+    def __init__(self, board: Board, fixed: list[dict], *, dru_eff: dict[str, float] | None = None) -> None:
+        eff = dru_eff or {}
         self.board = board
         self.ordered_layers = [cl.canonical for cl in sorted(board.copper_layers, key=lambda c: c.index)]
         self.top_layer = self.ordered_layers[0]
         self.bottom_layer = self.ordered_layers[-1]
         self.outline = board_polygon(board)
-        self.edge = float(board.rules.get("copper_edge_clearance") or 0.0)
-        self.hole_clearance = float(board.rules.get("hole_clearance") or 0.0)
-        self.hole_to_hole = float(board.rules.get("hole_to_hole") or 0.0)
+        self.edge = max(float(board.rules.get("copper_edge_clearance") or 0.0), float(eff.get("edge_clearance_mm") or 0.0))
+        self.hole_clearance = max(float(board.rules.get("hole_clearance") or 0.0), float(eff.get("hole_clearance_mm") or 0.0))
+        self.hole_to_hole = max(float(board.rules.get("hole_to_hole") or 0.0), float(eff.get("hole_to_hole_mm") or 0.0))
         self.min_clr = float(board.rules.get("min_clearance") or 0.0)
 
         self.pad_geoms: list[Polygon] = []
@@ -661,6 +675,7 @@ def plan_bga_escapes(
     already_handled: set[tuple[str, str]] | None = None,
     include_signals: bool = True,
     microvia: str = "auto",
+    dru_eff: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Generate DRC-safe BGA escapes (quadrant dogbone + HDI microvia-in-pad) on >= 4-layer boards.
 
@@ -701,7 +716,7 @@ def plan_bga_escapes(
     if not bgas:
         return {"copper": [], "rows": [], "packages": []}
 
-    ctx = _BgaContext(board, fixed)
+    ctx = _BgaContext(board, fixed, dru_eff=dru_eff)
     new_copper: list[dict] = []
     rows: list[dict[str, Any]] = []
     packages: list[dict[str, Any]] = []
@@ -752,7 +767,7 @@ def plan_bga_escapes(
             pad_layer = pad_lyrs[0]
             pad_xy = fp.pad_world(pad)
             offsets = _quadrant_offsets(pad.local[0], pad.local[1], cx, cy, px, py)
-            opts = _via_options(board, net, pitch, pad_diam)
+            opts = _via_options(board, net, pitch, pad_diam, dru_eff=dru_eff)
             row: dict[str, Any] = {"ref": fp.ref, "pad": str(pad.number), "net": net, "routed": False}
 
             adj1, adj2 = _adjacent_escape_layers(pad_layer, ctx.ordered_layers)
