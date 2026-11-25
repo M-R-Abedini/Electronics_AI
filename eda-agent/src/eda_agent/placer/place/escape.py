@@ -39,10 +39,11 @@ def envelopes(board: Board, intent: dict, boxes: dict[str, Box]) -> dict[str, li
     out: dict[str, list[Escape]] = {}
     for fp in board.footprints:
         role = intent.get("parts", {}).get(fp.ref, {}).get("role")
-        if model.is_uncertain(role) or role["value"] not in ("ic", "converter_ic", "linear_regulator", "power_switch"):
+        if model.is_uncertain(role) or role["value"] not in ("ic", "converter_ic", "linear_regulator", "power_switch", "connector"):
             continue
         pads = [p for p in fp.pads if p.kind == "smd" and p.net in connected and not is_ground_net(p.net)]
-        if len(pads) < MIN_CONNECTED_PADS:
+        min_pads = 12 if role["value"] == "connector" else MIN_CONNECTED_PADS
+        if len(pads) < min_pads:
             continue
         x0, y0, x1, y1 = boxes[fp.ref]
         for pad in pads:

@@ -166,13 +166,22 @@ def estimate(board: Board, *, iterations: int = 8, capacity_scale: float = 1.0) 
                 cap_v[gy * nx + gx] = max(0.5 if blk > 0 else 1.0, base_cap - blk)
 
     planes = _plane_nets(board)
+    nc_by_name = {nc.name: nc for nc in board.netclasses}
+    net_to_nc = {n.name: nc_by_name.get(n.netclass) for n in board.nets}
     nets_cells: list[list[tuple[int, int]]] = []
     for net, pts in sorted(metrics.net_points(board).items()):
         if net in planes or len(pts) < 2:
             continue
         cells = [(min(nx - 1, max(0, int((px - x0) // cell))),
                   min(ny - 1, max(0, int((py - y0) // cell)))) for px, py in pts]
-        nets_cells.append(cells)
+        nc = net_to_nc.get(net)
+        mult = 1
+        if nc is not None and nc.track_width > 0:
+            net_pitch = nc.track_width + max(0.0, nc.clearance)
+            if net_pitch > 1.8 * pitch:
+                mult = min(3, max(1, round(net_pitch / pitch)))
+        for _ in range(mult):
+            nets_cells.append(cells)
 
     raw = pf_fn(nx, ny, cap_h, cap_v, nets_cells, iterations=iterations)
     cell_ov: list[float] = raw["cell_overflow"]
