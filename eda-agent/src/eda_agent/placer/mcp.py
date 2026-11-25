@@ -158,9 +158,34 @@ def _drc_signoff(rep: dict) -> dict | None:
 
 
 def _inspect_summary(board: Board) -> dict:
+    from .route import dru as dru_mod
+    from .route.bga_escape import detect_bga
+
     by_class: dict[str, int] = {}
     for net in board.nets:
         by_class[net.netclass] = by_class.get(net.netclass, 0) + 1
+    sheets = sorted({s for fp in board.footprints for s in ([fp.sheet] if fp.sheet else [])})
+    multi_unit_ics = sum(1 for fp in board.footprints if len(fp.unit_sheets) > 1)
+    bga_packages = []
+    qfn_thermal_pads = []
+    hollow_shields = 0
+    for fp in sorted(board.footprints, key=lambda f: f.ref):
+        if fp.courtyard.holes and any(fp.courtyard.holes):
+            hollow_shields += 1
+        bga = detect_bga(fp)
+        if bga is not None:
+            bga_packages.append({
+                "ref": fp.ref,
+                "side": fp.side,
+                "balls": len(bga["grid"]),
+                "pitch_mm": round(min(bga["pitch_x"], bga["pitch_y"]), 3),
+            })
+        if len(fp.pads) >= 8:
+            ep = [p for p in fp.pads if p.kind == "smd" and p.size[0] * p.size[1] >= 3.5 and min(p.size) >= 1.6]
+            if ep:
+                qfn_thermal_pads.append({"ref": fp.ref, "side": fp.side, "nets": sorted({p.net for p in ep if p.net})})
+    src_path = (board.source or {}).get("path")
+    dru_rules = dru_mod.extract_effective_rules(Path(src_path).with_suffix(".kicad_dru")) if src_path else {}
     return {
         "name": board.name,
         "source": board.source,
@@ -170,6 +195,11 @@ def _inspect_summary(board: Board) -> dict:
         "copper_layers": [cl.name for cl in board.copper_layers],
         "board_area_mm2": board.board_area_mm2,
         "outline_valid": board.outline_valid,
+        "schematic_hierarchy": {"sheets": sheets, "sheet_count": len(sheets), "multi_unit_ics": multi_unit_ics},
+        "bga_packages": bga_packages,
+        "qfn_thermal_pads": qfn_thermal_pads,
+        "hollow_shields": hollow_shields,
+        "dru_rules": dru_rules,
         "stackup": {"source": board.stackup.source, "policy": board.stackup.policy,
                     "board_thickness_mm": board.stackup.board_thickness_mm,
                     "layers": [asdict(layer) for layer in board.stackup.layers if layer.type in ("copper", "core",
@@ -221,12 +251,14 @@ class PlacerService:
              ("Draft the board's design intent (design_intent.json) from its netlist alone: the role of every part "
               "(decap and its target IC, crystal and load caps, converter parts, ESD and its connector, pull-ups, "
               "terminations, ...), net classes, differential pairs and blocks, each claim with its source and "
-              "confidence. Writes the draft next to the board as <board>.design_intent.json unless that file exists "
+              "confidence. Optionally apply structured Law-P1-safe patches (never raw coordinates) before writing. "
+              "Writes the draft next to the board as <board>.design_intent.json unless that file exists "
               "(then into the run folder; never overwrites). Returns the questions it could not settle, critical "
               "ones first. Settle them with datasheet or schematic evidence by editing the file: set the claim's "
               "value, source {kind: 'llm', ref: '<datasheet URL + page>', client: '<your client>'} and confidence, "
               "or ask the user and set confirmed_by_user=true. Never write coordinates. Then call intent_validate."),
-             {"board_path": _STRING, "out_path": _STRING}, ["board_path"], False),
+             {"board_path": _STRING, "out_path": _STRING,
+              "patches": {"type": "array", "items": {"type": "object"}}}, ["board_path"], False),
             ("intent_validate",
              ("Validate a design_intent.json against its board: JSON schema, every reference, net and pin, target "
               "roles, sources. Returns errors (the intent is refused), warnings, the canonical intent hash (the same "
@@ -241,7 +273,9 @@ class PlacerService:
               "Set floorplan=true to evaluate local-block placement and pad escape reservations. "
               "Supply schematic_path to verify schematic connectivity and reset all movable PCB poses. "
               "Takes 1 to 10 minutes. Never modifies the input board."),
-             {"board_path": _STRING, "side_policy": {"type": "string", "enum": ["expert", "top_only"]},
+             {"board_path": _STRING,
+              "side_policy": {"type": "string",
+                              "enum": ["expert", "top_only", "level2_passives_back", "level3_two_sided"]},
               "seed": {"type": "integer", "minimum": 0, "default": 0}, "route": {"type": "boolean", "default": True},
               "s6a": {"type": "boolean", "default": True},
               "silkscreen_policy": {"type": "string",
@@ -278,9 +312,11 @@ class PlacerService:
              {"runs": {"type": "array", "items": _STRING, "minItems": 1}, "title": _STRING,
               "include_images": {"type": "boolean", "default": False}}, ["runs"], True),
             ("diagnose",
-             ("Review a placement or route-check run with localized findings, numeric evidence and PNG crops. "
-              "Reads existing artifacts only. Timeout results show observations with an inconclusive route status."),
-             {"run": _STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12},
+             ("Review a placement or route-check run with localized findings, numeric evidence, suggested actions, "
+              "and PNG crops. Reads existing artifacts only. Supports filtering by kinds and pagination via offset."),
+             {"run": _STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 24},
+              "kinds": {"type": "array", "items": _STRING},
+              "offset": {"type": "integer", "minimum": 0, "default": 0},
               "include_images": {"type": "boolean", "default": True}}, ["run"], True),
             ("refine",
              ("Experimentally test one local placement proposal on independent copies using equal routing budgets. "
@@ -289,11 +325,16 @@ class PlacerService:
              {"run": _STRING, "change": {"type": "object", "additionalProperties": False, "properties": {
                  "ref": _STRING, "rotation_deg": {"type": "integer", "enum": [0, 90, 180, 270]},
                  "toward_ref": _STRING, "away_from_ref": _STRING, "swap_with_ref": _STRING, "target_pad": _STRING,
+                 "block_refs": {"type": "array", "items": _STRING},
+                 "passive_align": {"type": "boolean"},
+                 "side_flip": {"type": "boolean"},
+                 "allow_side_flip": {"type": "boolean"},
                  "step_mm": {"type": "number", "minimum": 0.05, "maximum": 3},
                  "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
                  "required": ["ref", "confidence"],
                  "anyOf": [{"required": ["rotation_deg"]}, {"required": ["toward_ref"]},
-                           {"required": ["away_from_ref"]}, {"required": ["swap_with_ref"]}]},
+                           {"required": ["away_from_ref"]}, {"required": ["swap_with_ref"]},
+                           {"required": ["passive_align"]}, {"required": ["side_flip"]}]},
               "preview": {"type": "boolean", "default": False},
               "route_timeout_s": {"type": "integer", "minimum": 15, "maximum": 600, "default": 180}}, ["run", "change"], False),
             ("apply",
@@ -338,11 +379,52 @@ class PlacerService:
         summary["silkscreen"] = silk_mod.audit_board(board)
         return summary
 
-    def intent_draft(self, board_path: str, out_path: str | None = None) -> dict:
-        from .intent import infer, model
+    def intent_draft(
+        self,
+        board_path: str,
+        out_path: str | None = None,
+        patches: list[dict[str, Any]] | None = None,
+    ) -> dict:
+        from .intent import infer, model, validate
 
         board = read_board(board_path)
         intent = infer.draft(board)
+        applied_patches = 0
+        for p in patches or ():
+            kind = str(p.get("kind") or "")
+            src_kind = str(p.get("source_kind") or "llm")
+            src_ref = str(p.get("source_ref") or "agent patch")
+            conf = float(p.get("confidence", 0.95))
+            confirmed = bool(p.get("confirmed_by_user", False))
+            if kind == "part_role" and p.get("ref") in intent.get("parts", {}):
+                cl = model.claim(str(p["value"]), src_kind, conf, ref=src_ref)
+                if confirmed:
+                    cl["confirmed_by_user"] = True
+                intent["parts"][p["ref"]]["role"] = cl
+                applied_patches += 1
+            elif kind == "part_target" and p.get("ref") in intent.get("parts", {}):
+                cl = model.claim(dict(p["value"]), src_kind, conf, ref=src_ref)
+                if confirmed:
+                    cl["confirmed_by_user"] = True
+                intent["parts"][p["ref"]]["target"] = cl
+                applied_patches += 1
+            elif kind == "net_class" and p.get("net") in intent.get("nets", {}):
+                cl = model.claim(str(p["value"]), src_kind, conf, ref=src_ref)
+                if confirmed:
+                    cl["confirmed_by_user"] = True
+                intent["nets"][p["net"]]["class"] = cl
+                applied_patches += 1
+            elif kind == "diff_pair_confirm" and p.get("positive") and p.get("negative"):
+                for dp in intent.get("diff_pairs", ()):
+                    val = dp.get("value") or {}
+                    if val.get("positive") == p["positive"] and val.get("negative") == p["negative"]:
+                        dp["confidence"] = max(float(dp.get("confidence", 0.0)), conf)
+                        dp["confirmed_by_user"] = True
+                        applied_patches += 1
+        if applied_patches:
+            v_res = validate.validate(intent, board)
+            if v_res["errors"]:
+                raise ValueError(f"intent_draft patches failed validation: {v_res['errors'][:3]}")
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         target = Path(out_path) if out_path else Path(board_path).with_name(f"{board.name}.design_intent.json")
         note = None
@@ -355,6 +437,7 @@ class PlacerService:
         for part in intent["parts"].values():
             roles[part["role"]["value"]] = roles.get(part["role"]["value"], 0) + 1
         return {"intent_path": str(target), "note": note, "intent_sha256": model.intent_hash(intent),
+                "applied_patches": applied_patches,
                 "parts": len(intent["parts"]), "roles": dict(sorted(roles.items())),
                 "diff_pairs": [[p["value"]["positive"], p["value"]["negative"], p["confidence"]]
                                for p in intent["diff_pairs"]],
@@ -481,7 +564,16 @@ class PlacerService:
                 "missing_legends": cnt["missing_legends"],
                 "legend_coverage": sa["legend_coverage"],
             })
-            panels.append(Panel(f"{board.name} ({rep['kind']})", board, evaluate(board, route_metrics), route_metrics))
+            from .intent.resolve import IntentError, resolve
+
+            saved_intent_path = ((rep.get("inputs") or {}).get("intent") or {}).get("path")
+            try:
+                resolved_intent, _ = resolve(board, saved_intent_path)
+            except (OSError, IntentError):
+                resolved_intent = None
+            copper_b = board if route_metrics is not None else None
+            ev = evaluate(board, route_metrics, intent=resolved_intent, copper_board=copper_b)
+            panels.append(Panel(f"{board.name} ({rep['kind']})", board, ev, route_metrics))
             sources.append((Path(shown), board.name, rep["kind"], board, sa))
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out = gallery(panels, self.runs / f"gallery-{stamp}.html", title=title)
@@ -636,10 +728,17 @@ class PlacerService:
             "gallery": str(page),
         }
 
-    def diagnose(self, run: str, limit: int = 8, include_images: bool = True) -> dict[str, Any] | types.CallToolResult:
+    def diagnose(
+        self,
+        run: str,
+        limit: int = 8,
+        include_images: bool = True,
+        kinds: list[str] | None = None,
+        offset: int = 0,
+    ) -> dict[str, Any] | types.CallToolResult:
         from .diagnose import diagnose
 
-        value, boards = diagnose(run, limit)
+        value, boards = diagnose(run, limit, kinds=kinds, offset=offset)
         if not include_images:
             return value
         images = []
