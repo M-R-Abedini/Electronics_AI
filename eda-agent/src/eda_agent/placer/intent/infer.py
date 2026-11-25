@@ -44,7 +44,7 @@ class _PairLeg(NamedTuple):
 POWER_FN = re.compile(r"^(VCC|VDD|VAA|AVDD|DVDD|PVDD|VDDA|VCCA|VCCB|V_\{CC[AB]?\}|VIN|VI|VBAT|VSYS|VBUS|VDDH|VDDIO|"
                       r"VPP|VS)\d*$")
 GROUND_FN = re.compile(r"^(GND|VSS|AVSS|PVSS|DVSS|AGND|DGND|PGND|GNDA|GNDD|VSS_PA|EP|PAD)\w*$")
-SW_FN = re.compile(r"^(SW|LX|VSW|SWITCH|PH)\d*$")
+SW_FN = re.compile(r"^(SW|LX|VSW|SWITCH|PH|PHASE|LXA|LXB|SW_\d+|LX_\d+|DRVH|DRVL)\d*$")
 CONTROL_FN = re.compile(r"^(FB|FB\+|FB-|COMP|VC|SS|SS/TR|VSET|VSET\d|RT|ILIM|TRK|NR|ADJ)\d*$")
 REF_FN = re.compile(r"(REXT|RSET|IREF|ISET|RREF|RBIAS|RCAL|REF\+?|VREF|CREF\+?|IOUT\d*)$")
 OUT_FN = re.compile(r"^(VO|VOUT|OUT|S|VOUT\d|SW_OUT)$")
@@ -126,6 +126,22 @@ def _family(fp: Footprint) -> str:
         r"BATTERY|COIN.?CELL|\b(?:CR|BR|LR|SR)\d{2,4}\b", f"{v} {lib}", re.IGNORECASE
     ):
         return "battery"
+    # Check active oscillators BEFORE passive crystals: 4-pin TCXOs named Y1/X1 have a supply pin or Oscillator lib.
+    if (
+        "Oscillator" in lib
+        or p in ("OSC", "G")
+        or re.search(r"(TCXO|VCXO|OCXO|\bNT\d{4}\b)", f"{v} {lib}", re.IGNORECASE)
+        or (
+            p in ("Y", "X", "XTAL")
+            and len(fp.pads) >= 3
+            and any(
+                (pad.net and is_power_net(pad.net) and not is_ground_net(pad.net))
+                or fn(pad) in ("VDD", "VCC", "V+", "OE", "EN", "STBY", "OUT", "CLK")
+                for pad in fp.pads
+            )
+        )
+    ):
+        return "oscillator"
     if (
         "Crystal" in lib
         or p in ("Y", "XTAL")
@@ -140,8 +156,6 @@ def _family(fp: Footprint) -> str:
         )
     ):
         return "crystal"
-    if "Oscillator" in lib or p in ("OSC", "G") or re.search(r"(TCXO|VCXO|OCXO|\bNT\d{4}\b)", f"{v} {lib}", re.IGNORECASE):
-        return "oscillator"
     if p in ("FL", "BAL") or re.search(r"(^SAW|SAFF|SAWF|^FIL_|BALUN|DIPLEX)", f"{v} {lib}", re.IGNORECASE):
         return "rf_filter"
     if p in ("M", "LS", "BZ", "SPK") or re.search(r"(MOTOR|HAPTIC|VYBRONICS|BUZZER|SPEAKER)", f"{v} {lib}", re.IGNORECASE):
@@ -235,6 +249,84 @@ def regulators(f: Facts) -> dict[str, Regulator]:
                     if p.net and p.net != net and p.net not in f.grounds:
                         (reg.inputs if p.net in reg.inputs else reg.outputs).add(p.net)
         out[ref] = reg
+    # Discrete-MOSFET switching converter motif (e.g. half-bridge / synchronous buck MPPT):
+    # an inductor shares a non-rail switch node with >=2 transistors (or transistor + diode),
+    # and a gate-driver IC drives one of those transistor gates (or the high-side transistor anchors it).
+    known_sw = {n for r in out.values() for n in r.sw}
+    for ind_ref, kind in f.kind.items():
+        if kind != "ind":
+            continue
+        ind_fp = f.fp[ind_ref]
+        if ind_fp.prefix == "FB":
+            continue
+        ind_nets = [p.net for p in ind_fp.pads if p.net and p.net not in f.grounds]
+        if len(set(ind_nets)) != 2:
+            continue
+        for sw_net in ind_nets:
+            if sw_net in known_sw or f.is_rail(sw_net):
+                continue
+            fets = f.parts_on(sw_net, ("transistor",))
+            diodes = f.parts_on(sw_net, ("diode",))
+            if len(fets) < 2 and not (fets and diodes):
+                continue
+            other_ind_net = next((n for n in ind_nets if n != sw_net), None)
+            # Find gate-driver IC directly on SW_NODE or driving any FET gate (directly or via gate resistor).
+            drivers: Counter[str] = Counter()
+            in_rails: set[str] = set()
+            for ic in f.parts_on(sw_net, ("ic",)):
+                if ic not in out:
+                    drivers[ic] += 2
+            for q in fets:
+                for qp in f.fp[q].pads:
+                    if not qp.net or qp.net == sw_net or qp.net in f.grounds:
+                        continue
+                    if qp.net in f.rails or is_power_net(qp.net):
+                        in_rails.add(qp.net)
+                    for ic in f.parts_on(qp.net, ("ic",)):
+                        if ic not in out:
+                            drivers[ic] += 2
+                    for res in f.parts_on(qp.net, ("res",)):
+                        for rp in f.fp[res].pads:
+                            if rp.net and rp.net != qp.net and not f.is_rail(rp.net):
+                                for ic in f.parts_on(rp.net, ("ic",)):
+                                    if ic not in out:
+                                        drivers[ic] += 1
+            if drivers:
+                anchor_ic = min(drivers, key=lambda r: (-drivers[r], natural_key(r)))
+                reg = out.setdefault(anchor_ic, Regulator(anchor_ic, "converter_ic"))
+                reg.sw.add(sw_net)
+                reg.inputs |= in_rails
+                if other_ind_net:
+                    reg.outputs.add(other_ind_net)
+                known_sw.add(sw_net)
+                break
+        else:
+            # Integrated switching buck without pin-function labels (e.g. KiCad 5):
+            # inductor + diode + 1 small IC sharing a non-rail switch node, with output on a power rail.
+            for sw_net in ind_nets:
+                if sw_net in known_sw or f.is_rail(sw_net):
+                    continue
+                other_ind_net = next((n for n in ind_nets if n != sw_net), None)
+                if not other_ind_net or (other_ind_net not in f.rails and not is_power_net(other_ind_net)):
+                    continue
+                diodes = f.parts_on(sw_net, ("diode",))
+                ics = [r for r in f.parts_on(sw_net, ("ic",)) if r not in out and len(f.fp[r].pads) <= 16]
+                if diodes and len(ics) == 1:
+                    ic = ics[0]
+                    reg = out.setdefault(ic, Regulator(ic, "converter_ic"))
+                    reg.sw.add(sw_net)
+                    reg.outputs.add(other_ind_net)
+                    for p in f.fp[ic].pads:
+                        if (
+                            p.net
+                            and p.net != sw_net
+                            and p.net != other_ind_net
+                            and p.net not in f.grounds
+                            and (p.net in f.rails or is_power_net(p.net))
+                        ):
+                            reg.inputs.add(p.net)
+                    known_sw.add(sw_net)
+                    break
     return out
 
 
@@ -275,7 +367,7 @@ class Inference:
         for ref, kind in self.f.kind.items():
             if kind == "crystal":
                 for p in self.f.fp[ref].pads:
-                    if p.net and p.net not in self.f.grounds:
+                    if p.net and not self.f.is_rail(p.net):
                         out[p.net] = ref
         return out
 
@@ -292,17 +384,50 @@ class Inference:
         return [r for r in self.f.parts_on(net, ("ic",)) if self.supply_pins(r, net)
                 and not ESD_VALUE.search(self.f.fp[r].value)]
 
+    @staticmethod
+    def _norm_sheet(sheet: str | None) -> str | None:
+        if not sheet:
+            return None
+        s = sheet.strip("/")
+        return s or "/"
+
+    @classmethod
+    def _fp_sheets(cls, fp: Footprint) -> set[str]:
+        sheets: set[str] = set()
+        if ns := cls._norm_sheet(fp.sheet):
+            sheets.add(ns)
+        if fp.unit_sheets:
+            for k in fp.unit_sheets:
+                if nk := cls._norm_sheet(k):
+                    sheets.add(nk)
+        return sheets
+
+    @classmethod
+    def _pos_on_sheet(cls, fp: Footprint, sheet: str | None) -> tuple[float, float] | None:
+        ns = cls._norm_sheet(sheet)
+        if ns and fp.unit_sheets:
+            for k, pos in fp.unit_sheets.items():
+                if cls._norm_sheet(k) == ns:
+                    return pos
+        if ns and cls._norm_sheet(fp.sheet) == ns:
+            return fp.schematic_position
+        return None
+
     def local(self, refs: list[str], near: str) -> list[str]:
-        """On a multi-sheet design, the refs on ``near``'s schematic sheet."""
+        """On a multi-sheet design, the refs sharing any schematic sheet with ``near``."""
         if self.f.sheets <= 1:
             return list(refs)
-        return [r for r in refs if self.f.fp[r].sheet == self.f.fp[near].sheet]
+        near_sheets = self._fp_sheets(self.f.fp[near])
+        if not near_sheets:
+            return []
+        return [r for r in refs if self._fp_sheets(self.f.fp[r]) & near_sheets]
 
     def _schematic_decap_target(self, ref: str, rail: str, candidates: list[str]) -> dict | None:
         cap = self.f.fp[ref]
-        if not cap.sheet:
+        cap_sheet = self._norm_sheet(cap.sheet)
+        if not cap_sheet:
             return None
-        local = [self.f.fp[r] for r in set(candidates) if self.f.fp[r].sheet == cap.sheet]
+        local = [self.f.fp[r] for r in set(candidates) if cap_sheet in self._fp_sheets(self.f.fp[r])]
         if len(local) == 1 and self.f.kind[local[0].ref] == "ic":
             winner = local[0].ref
             return claim(
@@ -310,11 +435,15 @@ class Inference:
                 "schematic", SCHEMATIC_TARGET_CONFIDENCE, ref=cap.sheet,
                 detail=f"{ref} is the only candidate IC load on sheet {cap.sheet} for {rail}",
             )
-        if cap.schematic_position is None or len(local) < 2 or any(fp.schematic_position is None for fp in local):
+        cap_pos = self._pos_on_sheet(cap, cap_sheet)
+        if cap_pos is None or len(local) < 2:
             return None
-        ranked = sorted((math.dist(cap.schematic_position, fp.schematic_position), fp.ref) for fp in local)
-        (nearest, winner), (second, runner_up) = ranked[:2]
-        spacing = math.dist(self.f.fp[winner].schematic_position, self.f.fp[runner_up].schematic_position)
+        local_pos = [(fp, self._pos_on_sheet(fp, cap_sheet)) for fp in local]
+        if any(pos is None for _, pos in local_pos):
+            return None
+        ranked = sorted((math.dist(cap_pos, pos), fp.ref, pos) for fp, pos in local_pos if pos is not None)
+        (nearest, winner, win_pos), (second, runner_up, run_pos) = ranked[:2]
+        spacing = math.dist(win_pos, run_pos)
         if not spacing or second < SCHEMATIC_NEIGHBOR_RATIO * nearest or nearest > SCHEMATIC_NEIGHBOR_RADIUS * spacing:
             return None
         return claim(
@@ -606,7 +735,8 @@ class Inference:
         xtal = [crystal_nets[n] for n in nets if n in crystal_nets]
         grounds = [n for n in nets if n in self.f.grounds]
         signal = [n for n in nets if not self.f.is_rail(n)]
-        if xtal and grounds:
+        farads = parse_farads(fp.value)
+        if xtal and grounds and (farads is None or farads <= 220e-12):
             self.set(ref, "crystal_load_cap", 0.95, "capacitor from a crystal net to ground", {"ref": xtal[0]})
             return
         if len(signal) == 2:
@@ -664,7 +794,8 @@ class Inference:
                 role, regs = "regulator_input_cap", shared or ins
             else:
                 role, regs = "regulator_output_cap", srcs
-            conf = 0.75 if polar or not other_loads else 0.5
+            near_regs = self.local(regs, ref) if self.f.sheets > 1 else []
+            conf = 0.75 if (polar or not other_loads or near_regs) else 0.5
             if shared:  # one regulator's input and output pins share the rail: which pin it serves is not known
                 conf = 0.5
             target = {"ref": regs[0], "net": rail} if len(regs) == 1 else {"ref": None, "net": rail, "candidates": regs}
@@ -744,24 +875,88 @@ class Inference:
         return None
 
     # ---- nets, pairs, blocks
-    def nets(self) -> dict:
+    _NC_RF = re.compile(r"(^RF\d*|50.?OHM|75.?OHM|ANTENNA|COAX)", re.IGNORECASE)
+    _NC_DIFF = re.compile(r"(DIFF|USB|PCIE|SATA|HDMI|LVDS|MIPI|DSI|CSI|ETH|CAN|RS485)", re.IGNORECASE)
+    _NC_HS = re.compile(r"(RMII|RGMII|SDIO|QSPI|SPI|DDR|SDRAM|HIGH.?SPEED|HS_)", re.IGNORECASE)
+    _NC_PWR = re.compile(r"(POWER|PWR|HIGH.?CURR|12V|24V|48V|VBAT|VIN|5V|3V3|VBUS)", re.IGNORECASE)
+    _CLK_NET = re.compile(r"(^|[/_\-])(MCLK|SCLK|BCLK|PCLK|HCLK|HSE_CLK|LSE_CLK|REF_?CLK|SYS_?CLK|OSC_?CLK|XTAL_?CLK|CLK_?(IN|OUT)|CLOCK)($|[/_\-\d])", re.IGNORECASE)
+
+    def _netclass_map(self) -> tuple[dict[str, object], float]:
+        by_name = {nc.name: nc for nc in self.f.board.netclasses}
+        default_nc = by_name.get("Default") or by_name.get("kicad_default")
+        def_w = float(default_nc.track_width) if default_nc and default_nc.track_width else 0.2
+        net_to_nc = {}
+        for n in self.f.board.nets:
+            nc = by_name.get(n.netclass)
+            if nc is not None and nc.name not in ("Default", "kicad_default"):
+                net_to_nc[n.name] = nc
+        return net_to_nc, def_w
+
+    def nets(self, pair_claims: list[dict] | None = None) -> dict:
         out = {}
         xtal = self.crystal_nets()
+        net_to_nc, def_w = self._netclass_map()
+        dp_nets: set[str] = set()
+        for pc in (pair_claims or []):
+            if not model.is_uncertain(pc):
+                dp_nets.add(pc["value"]["positive"])
+                dp_nets.add(pc["value"]["negative"])
         for net in sorted(self.f.on_net, key=natural_key):
             rail = "ground" if net in self.f.grounds else "power" if net in self.f.rails else "signal"
+            nc = net_to_nc.get(net)
+            nc_name = nc.name if nc is not None else ""
             if net in self.sw_nets:
                 cls, conf, why = "SW_NODE", 0.95, "converter switch node"
             elif net in self.control_nets or net in xtal:
                 cls, conf, why = "SENSITIVE_ANALOG", 0.85, "converter control or crystal net"
-            elif any(net in (r.inputs | r.outputs) for r in self.regs.values() if r.role == "converter_ic"):
-                cls, conf, why = "POWER_HIGH_CURRENT", 0.6, "converter input or output (current not known)"
+            elif nc is not None and self._NC_RF.search(nc_name):
+                cls, conf, why = "RF", 0.9, f"board netclass {nc_name}"
+            elif net in dp_nets or (nc is not None and self._NC_DIFF.search(nc_name) and rail == "signal"):
+                cls, conf, why = "DIFF_PAIR", 0.85, (f"board netclass {nc_name}" if nc_name else "confirmed differential pair")
+            elif nc is not None and self._NC_HS.search(nc_name) and rail == "signal":
+                cls, conf, why = "HIGH_SPEED", 0.85, f"board netclass {nc_name}"
+            elif rail == "signal" and self._CLK_NET.search(net):
+                cls, conf, why = "CLOCK", 0.8, "clock net name"
+            elif (
+                any(net in (r.inputs | r.outputs) for r in self.regs.values() if r.role == "converter_ic")
+                or (rail == "power" and nc is not None and (self._NC_PWR.search(nc_name) or nc.track_width >= 2.0 * def_w))
+            ):
+                cls, conf, why = "POWER_HIGH_CURRENT", (0.85 if nc is not None else 0.6), (
+                    f"board netclass {nc_name}" if nc is not None else "converter input or output (current not known)"
+                )
             else:
                 cls, conf, why = "GENERAL", 0.5, "no rule"
             out[net] = {"class": claim(cls, MOTIF, conf, ref=why), "rail": claim(rail, MOTIF, 0.85, ref="net facts")}
         return out
 
+    @staticmethod
+    def _pair_kind_from_name(name: str, nc_name: str = "") -> str | None:
+        blob = f"{nc_name} {name}".upper()
+        if "USB" in blob:
+            return "usb"
+        if "PCIE" in blob:
+            return "pcie"
+        if "SATA" in blob:
+            return "sata"
+        if "HDMI" in blob or "TMDS" in blob:
+            return "hdmi"
+        if "MIPI" in blob or "CSI" in blob or "DSI" in blob:
+            return "mipi"
+        if "ETH" in blob or "MDI" in blob:
+            return "ethernet"
+        if "LVDS" in blob:
+            return "lvds"
+        if "CAN" in blob or "RS485" in blob:
+            return "can"
+        if "RF" in blob or "BALUN" in blob or "MIX" in blob or "TXIF" in blob or "RXIF" in blob:
+            return "rf"
+        if "DIFF" in nc_name.upper():
+            return "other"
+        return None
+
     def pairs(self, board: Board) -> list[dict]:
         out = []
+        net_to_nc, _ = self._netclass_map()
         for dp in board.diff_pairs:
             pos, neg = (self._pair_leg(net) for net in (dp.positive, dp.negative))
             if pos and neg and pos.chip == neg.chip and pos.series_roles == neg.series_roles:
@@ -778,12 +973,22 @@ class Inference:
                                          ref="two independent legs with matching interface endpoints",
                                          detail=f"{pos.chip} and {pos.connector}; {pp or 'unnamed'} / {pn or 'unnamed'}"))
                         continue
+            nc_pos = net_to_nc.get(dp.positive)
+            nc_neg = net_to_nc.get(dp.negative)
+            nc_name = nc_pos.name if (nc_pos is not None and nc_neg is not None and nc_pos.name == nc_neg.name) else ""
             pins = [fn(p) for n in (dp.positive, dp.negative) for _r, p in self.f.on_net.get(n, ())]
             libs = [self.f.fp[r].lib_id.upper() for n in (dp.positive, dp.negative) for r, _p in self.f.on_net.get(n, ())]
             usb = any(re.search(r"(D[+-]|DP|DM|USB)", p) for p in pins) or any("USB" in lib for lib in libs)
-            conf = 0.95 if usb else 0.5
-            out.append(claim({"positive": dp.positive, "negative": dp.negative, "kind": "usb" if usb else "other"},
-                             MOTIF, conf, ref="net name pattern" + (" + USB pins" if usb else "")))
+            if usb:
+                out.append(claim({"positive": dp.positive, "negative": dp.negative, "kind": "usb"},
+                                 MOTIF, 0.95, ref="net name pattern + USB pins"))
+            elif nc_name and (self._NC_DIFF.search(nc_name) or self._NC_RF.search(nc_name)):
+                kind = self._pair_kind_from_name(dp.positive, nc_name) or "other"
+                out.append(claim({"positive": dp.positive, "negative": dp.negative, "kind": kind},
+                                 "board", 0.85, ref=f"board netclass {nc_name}"))
+            else:
+                out.append(claim({"positive": dp.positive, "negative": dp.negative, "kind": "other"},
+                                 MOTIF, 0.5, ref="net name pattern"))
         return out
 
     def _pair_leg(self, net: str) -> _PairLeg | None:
@@ -838,7 +1043,7 @@ class Inference:
             role = part["role"]["value"]
             tgt = part.get("target", {}).get("value") or {}
             t = tgt.get("ref")
-            kind = {"decap": "decap_group", "crystal_load_cap": "crystal", "crystal_aux": "crystal",
+            kind = {"decap": "decap_group", "crystal": "crystal", "crystal_load_cap": "crystal", "crystal_aux": "crystal",
                     "converter_inductor": "converter", "converter_diode": "converter", "converter_control": "converter",
                     "esd": "esd_port", "led_resistor": "led"}.get(role)
             if role in ("regulator_input_cap", "regulator_output_cap") and t in self.regs:
@@ -866,6 +1071,7 @@ def draft(board: Board) -> dict:
     """Intent drafted from netlist and schematic evidence, with unresolved questions."""
     inf = Inference(board)
     inf.run()
+    pair_claims = inf.pairs(board)
     intent = {
         "schema": model.SCHEMA, "schema_version": model.SCHEMA_VERSION,
         "board": {"name": board.name, "sha256": board.source.get("sha256") or (
@@ -873,7 +1079,7 @@ def draft(board: Board) -> dict:
                   "path": board.source.get("path", "")},
         "policies": {"side_policy": claim("expert", "board", 0.9, ref="default: keep every part's side (P2)"),
                      "stackup": claim(board.stackup.policy, "board", 0.9, ref="stackup policy from the board (S0)")},
-        "parts": inf.parts, "nets": inf.nets(), "diff_pairs": inf.pairs(board), "blocks": inf.blocks(), "power_w": {},
+        "parts": inf.parts, "nets": inf.nets(pair_claims), "diff_pairs": pair_claims, "blocks": inf.blocks(), "power_w": {},
     }
     intent["questions"] = questions(intent)
     return intent

@@ -92,15 +92,26 @@ def cold_input(reference: Board, schematic: Path) -> tuple[Board, dict]:
             read_pins(path, positions=origins)
     for fp in board.footprints:
         fp.schematic_position = None
+        fp.unit_sheets = {}
         if c := components.get(fp.ref):
             fp.value = c.findtext("value") or fp.value
             sheet = c.find("sheetpath")
             if sheet is not None:
                 fp.sheet = sheet.get("names")
+                fp.sheet_path = sheet.get("names")
             positions = origins.get(fp.ref, set())
             if len(positions) == 1:
                 _, x, y = next(iter(positions))
                 fp.schematic_position = (x, y)
+            if positions:
+                by_sh: dict[str, list[tuple[float, float]]] = {}
+                for sch_label, x, y in positions:
+                    key = Path(sch_label).stem if sch_label.lower().endswith(".kicad_sch") else sch_label
+                    by_sh.setdefault(key, []).append((x, y))
+                fp.unit_sheets = {
+                    s: (sum(pt[0] for pt in cs) / len(cs), sum(pt[1] for pt in cs) / len(cs))
+                    for s, cs in sorted(by_sh.items())
+                }
         for pad in fp.pads:
             if data := pad_metadata.get((fp.ref, str(pad.number))):
                 pad.net, name, pin_type = data

@@ -132,7 +132,7 @@
       "additionalProperties": false,
       "properties": {
         "class": {"allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {"enum": [
-          "POWER_HIGH_CURRENT", "SW_NODE", "DIFF_PAIR", "HIGH_SPEED", "SENSITIVE_ANALOG", "GENERAL"]}}}]},
+          "POWER_HIGH_CURRENT", "SW_NODE", "DIFF_PAIR", "HIGH_SPEED", "RF", "CLOCK", "SENSITIVE_ANALOG", "GENERAL"]}}}]},
         "rail": {"allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {"enum": ["power", "ground", "signal"]}}}]}
       }
     },
@@ -140,7 +140,7 @@
       "allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {
         "type": "object", "required": ["positive", "negative"], "additionalProperties": false,
         "properties": {"positive": {"type": "string"}, "negative": {"type": "string"},
-                       "kind": {"enum": ["usb", "lvds", "ethernet", "mipi", "analog_audio", "other"]},
+                       "kind": {"enum": ["usb", "lvds", "ethernet", "mipi", "pcie", "sata", "hdmi", "can", "rf", "analog_audio", "other"]},
                        "routing_eligible": {"type": "boolean"}}}}}]
     },
     "block_claim": {
@@ -148,7 +148,7 @@
         "type": "object", "required": ["name", "kind", "members"], "additionalProperties": false,
         "properties": {
           "name": {"type": "string"},
-          "kind": {"enum": ["decap_group", "crystal", "converter", "linear_regulator", "esd_port", "led", "pull_up_row", "other"]},
+          "kind": {"enum": ["decap_group", "crystal", "converter", "linear_regulator", "esd_port", "led", "pull_up_row", "rf_chain", "analog_domain", "power_domain", "other"]},
           "anchor": {"type": ["string", "null"]},
           "members": {"type": "array", "items": {"type": "string"}, "minItems": 1}}}}}]
     }

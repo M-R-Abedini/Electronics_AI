@@ -59,7 +59,7 @@ CRITICAL_ROLES = frozenset({
     "converter_control", "esd"})
 CONVERTER_CAP_ROLES = frozenset({"regulator_input_cap", "regulator_output_cap"})  # critical when the target is a converter
 
-NET_CLASSES = ("POWER_HIGH_CURRENT", "SW_NODE", "DIFF_PAIR", "HIGH_SPEED", "SENSITIVE_ANALOG", "GENERAL")
+NET_CLASSES = ("POWER_HIGH_CURRENT", "SW_NODE", "DIFF_PAIR", "HIGH_SPEED", "RF", "CLOCK", "SENSITIVE_ANALOG", "GENERAL")
 
 
 def claim(value: Any, kind: str, confidence: float, *, ref: str | None = None, detail: str | None = None,

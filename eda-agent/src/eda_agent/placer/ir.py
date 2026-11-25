@@ -77,6 +77,8 @@ class Footprint:
     description: str = ""
     attributes: tuple[str, ...] = ()
     schematic_position: Point | None = None  # Symbol origin in its sheet's coordinate system.
+    sheet_path: str | None = None  # Full hierarchical sheet path (e.g. /TARGET Port/TARGET PHY/).
+    unit_sheets: dict[str, Point] = field(default_factory=dict)  # Multi-unit IC sheets -> average position.
 
     @property
     def position(self) -> Point:
@@ -305,44 +307,112 @@ class Board:
 # --------------------------------------------------------------------------
 # derived facts
 # --------------------------------------------------------------------------
-_PAIR_SUFFIXES = (("+", "-"), ("_P", "_N"), ("P", "N"), ("_DP", "_DN"), ("DP", "DM"))
+_PAIR_SUFFIXES = (
+    ("+", "-"), ("_P", "_N"), ("P", "N"), ("_DP", "_DN"), ("DP", "DM"),
+    ("_POS", "_NEG"), ("_PLUS", "_MINUS"), ("_H", "_L"), ("CANH", "CANL"), ("CAN_H", "CAN_L"),
+)
+_INDEXED_PAIR_PREFIXES = (
+    "TX", "RX", "CLK", "DATA", "LANE", "CH", "PCIE", "SATA", "ETH",
+    "MIPI", "DSI", "CSI", "USB", "LVDS", "HDMI", "CAN", "RS485", "DP", "D",
+)
+
+
+def _indexed_pair_partner(name: str) -> str | None:
+    """Match indexed differential pairs like PCIE_TXP0/PCIE_TXN0, USB_DP1/USB_DM1, RXP_0/RXN_0."""
+    i = len(name)
+    while i > 0 and name[i - 1].isdigit():
+        i -= 1
+    if i == len(name) or i < 2:
+        return None
+    digits = name[i:]
+    stem = name[:i]
+    sep = ""
+    if stem.endswith("_"):
+        sep = "_"
+        stem = stem[:-1]
+    upper_leaf = stem.rsplit("/", 1)[-1].upper()
+    if not any(tok in upper_leaf for tok in _INDEXED_PAIR_PREFIXES):
+        return None
+    for pos, neg in (("+", "-"), ("_P", "_N"), ("DP", "DM"), ("_DP", "_DN"), ("P", "N"), ("_H", "_L")):
+        if stem.endswith(pos) and len(stem) > len(pos):
+            return stem[: -len(pos)] + neg + sep + digits
+    return None
 
 
 def find_diff_pairs(net_names: list[str]) -> list[DiffPair]:
-    """Pairs by KiCad's naming convention (suffix +/-, P/N); unconfirmed until intent (F2)."""
+    """Pairs by KiCad's naming convention (suffix +/-, P/N, indexed P0/N0); unconfirmed until intent (F2)."""
     names = set(net_names)
     pairs: list[DiffPair] = []
     used: set[str] = set()
     for name in sorted(names):
+        if name in used:
+            continue
+        matched = False
         for pos, neg in _PAIR_SUFFIXES:
-            if name.endswith(pos) and len(name) > len(pos):
+            min_len = len(pos) if pos.startswith("CAN") else len(pos) + 1
+            if name.endswith(pos) and len(name) >= min_len:
                 other = name[: -len(pos)] + neg
                 if other in names and name not in used and other not in used:
                     pairs.append(DiffPair(positive=name, negative=other, source="name_pattern"))
                     used |= {name, other}
+                    matched = True
                     break
+        if matched:
+            continue
+        other = _indexed_pair_partner(name)
+        if other and other in names and other not in used:
+            pairs.append(DiffPair(positive=name, negative=other, source="name_pattern"))
+            used |= {name, other}
     return pairs
 
 
+def _unfilled_zone_areas(board: Board, cl: CopperLayer) -> dict[str, float]:
+    """Fallback outline area per power/ground net when zones exist on *cl* but have not been filled yet."""
+    out: dict[str, float] = {}
+    for zone in board.zones:
+        net = zone.get("net")
+        if not net or not is_power_net(net):
+            continue
+        layers = zone.get("layers") or ()
+        if cl.name in layers or cl.canonical in layers:
+            z_area = float(zone.get("outline_area_mm2") or 0.0)
+            if z_area > 0.0:
+                out[net] = round(out.get(net, 0.0) + z_area, 4)
+    return out
+
+
 def infer_layer_roles(board: Board) -> list[LayerRole]:
-    """Role of each copper layer from filled area per net, not from zone presence (4.2)."""
+    """Role of each copper layer from filled area per net (falling back to unfilled power/GND zone outlines)."""
     area = board.board_area_mm2 or 0.0
     names = {cl.name: cl for cl in board.copper_layers}
     roles = []
     last = len(board.copper_layers) - 1
     # tracks of nets other than the layer's fill nets: a plane that also carries signals is mixed
-    fill_nets = {cl.canonical: {n for n in board.zone_fill_by_layer_mm2.get(cl.name, {}) if n}
-                 for cl in board.copper_layers}
+    fill_nets: dict[str, set[str]] = {}
+    layer_fills: dict[str, tuple[dict[str, float], bool]] = {}
+    for cl in board.copper_layers:
+        raw_fills = (
+            board.zone_fill_by_layer_mm2.get(cl.name)
+            or board.zone_fill_by_layer_mm2.get(cl.canonical)
+            or {}
+        )
+        has_fill = any(a > 0 for n, a in raw_fills.items() if n)
+        if has_fill:
+            layer_fills[cl.name] = (raw_fills, False)
+        else:
+            unfilled = _unfilled_zone_areas(board, cl)
+            layer_fills[cl.name] = (unfilled, bool(unfilled))
+        fill_nets[cl.canonical] = {n for n in layer_fills[cl.name][0] if n}
     foreign: dict[str, float] = {}
     for t in board.routing.get("tracks", []):
         if t["net"] not in fill_nets.get(t["layer"], set()):
             (x0, y0), (x1, y1) = t["points"][0], t["points"][-1]
             foreign[t["layer"]] = foreign.get(t["layer"], 0.0) + ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
     for cl in board.copper_layers:
-        fills = board.zone_fill_by_layer_mm2.get(cl.name, {})
+        fills, from_outline = layer_fills[cl.name]
         counted = {n: a for n, a in fills.items() if n and area and a / area >= ROLE_MIN_NET_FRACTION}
         total = sum(counted.values())
-        frac = round(total / area, 4) if area else 0.0
+        frac = round(min(1.0, total / area), 4) if area else 0.0
         top = max(counted.items(), key=lambda kv: (kv[1], kv[0]), default=(None, 0.0))
         share = top[1] / total if total else 0.0
         inner = 0 < cl.index < last
@@ -356,6 +426,8 @@ def infer_layer_roles(board: Board) -> list[LayerRole]:
         else:
             role, net = "mixed", top[0]
             conf = 0.75
+        if from_outline and role != "signal":
+            conf = min(conf, 0.65)
         roles.append(LayerRole(layer=names[cl.name].canonical, role=role, net=net, nets=nets,
                                fill_fraction=frac, confidence=round(conf, 3)))
     return roles
@@ -451,11 +523,15 @@ def plane_zone_layers(board: Board) -> dict[str, list[str]]:
     F.Cu through B.Cu).
     """
     last = len(board.copper_layers) - 1
-    nets_by_layer = {cl.name: set(role.nets) for cl, role in zip(board.copper_layers, board.stackup.roles)
-                     if 0 < cl.index < last and role.role in ("plane", "mixed")}
+    nets_by_layer: dict[str, set[str]] = {}
+    canon_to_eda = {cl.canonical: cl.name for cl in board.copper_layers}
+    for cl, role in zip(board.copper_layers, board.stackup.roles):
+        if 0 < cl.index < last and role.role in ("plane", "mixed"):
+            nets_by_layer[cl.name] = set(role.nets)
+            nets_by_layer[cl.canonical] = set(role.nets)
     out: dict[str, list[str]] = {}
     for zone in board.zones:
-        layers = [name for name in zone["layers"] if zone["net"] in nets_by_layer.get(name, ())]
+        layers = [canon_to_eda.get(name, name) for name in zone["layers"] if zone["net"] in nets_by_layer.get(name, ())]
         if layers:
-            out[zone["uuid"]] = layers
+            out[zone["uuid"]] = list(dict.fromkeys(layers))
     return dict(sorted(out.items()))

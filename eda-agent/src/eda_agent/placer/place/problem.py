@@ -123,13 +123,24 @@ def fixed_parts(board: Board) -> dict[str, str]:
                 if fp.locked or fp.ref in board.placement_anchors}
     out: dict[str, str] = {}
     outline = board_polygon(board)
-    edge = outline.exterior if outline is not None and outline.geom_type == "Polygon" else None
+    edge = None
+    if outline is not None:
+        if outline.geom_type == "Polygon":
+            edge = outline.exterior
+        elif outline.geom_type == "MultiPolygon":
+            from shapely.ops import unary_union
+            edge = unary_union([g.exterior for g in outline.geoms])
     for fp in board.footprints:
         if fp.locked:
             out[fp.ref] = "locked in the file"
             continue
         if not any(_is_real_net(p.net) for p in fp.pads):
             out[fp.ref] = "mechanical (no nets)"
+            continue
+        if (
+            fp.prefix in ("H", "MH", "HOLE", "FID") or "mountinghole" in fp.lib_id.lower()
+        ) and all((not _is_real_net(p.net)) or is_ground_net(p.net) for p in fp.pads):
+            out[fp.ref] = "mechanical (grounded mounting hole)"
             continue
         shape = courtyard_polygon(fp)
         if shape is None or outline is None:
