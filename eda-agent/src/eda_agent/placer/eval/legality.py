@@ -411,9 +411,10 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                                         fixed=all(r in fixed for r in pair), waived_by=overlap_waiver))
 
         # Cavity height/profile guard: tall/TH/external parts may not sit inside a hollow shield cavity.
-        hollow_refs = [r for r in refs if board.fp(r).courtyard.holes]
+        fp_by_ref = {fp.ref: fp for fp in board.footprints}
+        hollow_refs = [r for r in refs if fp_by_ref[r].courtyard.holes]
         for h_ref in hollow_refs:
-            h_fp = board.fp(h_ref)
+            h_fp = fp_by_ref[h_ref]
             outer_polys = [Polygon(shell) for shell in h_fp.courtyard_world() if len(shell) >= 3]
             if not outer_polys:
                 continue
@@ -426,7 +427,7 @@ def check(board: Board, *, clearance_mm: float | None = None, fixed: set[str] | 
                 pair_key = (min(h_ref, o_ref), max(h_ref, o_ref))
                 if pair_key in reported_pairs:
                     continue
-                o_fp = board.fp(o_ref)
+                o_fp = fp_by_ref[o_ref]
                 if is_shield_cavity_eligible(o_fp):
                     continue
                 area = outer_solid.intersection(geoms[idx_o]).area

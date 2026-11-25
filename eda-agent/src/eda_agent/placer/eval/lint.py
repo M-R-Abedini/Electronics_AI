@@ -485,7 +485,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
         return g
 
     intent_rail_nets = {
-        n for n, info in (intent.get("nets") or {}).items()
+        n for n, info in ((intent or {}).get("nets") or {}).items()
         if ((info.get("rail") or {}).get("value")) in ("power", "ground")
     }
 

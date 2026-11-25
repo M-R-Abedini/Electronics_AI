@@ -519,3 +519,143 @@ def add_class_via_rule(dsn: str, class_name: str, via_names: list[str]) -> str:
     insert = f"\n      (circuit (use_via {via_clause}))\n    "
     updated = net_block[:close_idx] + insert + net_block[close_idx:]
     return dsn[:net_start] + updated + dsn[end:]
+
+
+def restrict_fast_net_layers(dsn: str, board: Board, intent: dict | None) -> tuple[str, list[str]]:
+    """Keep high-speed / diff-pair nets strictly on signal layers adjacent to a GND plane.
+
+    Active only on >= 6-layer boards when >= 2 signal layers sit adjacent to a GND plane AND
+    >= 1 signal layer lacks direct GND adjacency. Only restricts nets whose ALL SMD pads and
+    locked S6a routing already lie strictly inside ``gnd_adj_signals`` (so no net can ever be
+    locked off its own pad layer).
+    """
+    ordered = [cl for cl in sorted(board.copper_layers, key=lambda c: c.index)]
+    n_layers = len(ordered)
+    if n_layers < 6:
+        return dsn, []
+
+    from ..ir import is_ground_net, plane_zone_layers
+
+    by_canon = {cl.name: cl.canonical for cl in ordered}
+    canon_order = [cl.canonical for cl in ordered]
+    planes = plane_zone_layers(board)
+    gnd_plane_layers: set[str] = set()
+    power_plane_layers: set[str] = set()
+    for z in board.zones:
+        net = z.get("net") or ""
+        if z.get("uuid") not in planes and not z.get("filled") and z.get("fill_fraction", 0.0) <= 0.3:
+            continue
+        lyrs = {by_canon.get(n, n) for n in z.get("layers", ())}
+        if is_ground_net(net):
+            gnd_plane_layers |= lyrs
+        elif net:
+            power_plane_layers |= lyrs
+    for role in board.stackup.roles:
+        if role.role in ("plane", "mixed") and role.net:
+            c = by_canon.get(role.layer, role.layer)
+            if is_ground_net(role.net):
+                gnd_plane_layers.add(c)
+            else:
+                power_plane_layers.add(c)
+    if not gnd_plane_layers:
+        return dsn, []
+
+    gnd_adj_signals: list[str] = []
+    non_gnd_signals: list[str] = []
+    for idx, cl in enumerate(ordered):
+        if cl.canonical in gnd_plane_layers or cl.canonical in power_plane_layers:
+            continue
+        adj = {canon_order[j] for j in (idx - 1, idx + 1) if 0 <= j < n_layers}
+        if adj & gnd_plane_layers:
+            gnd_adj_signals.append(cl.canonical)
+        else:
+            non_gnd_signals.append(cl.canonical)
+
+    if len(gnd_adj_signals) < 2 or not non_gnd_signals:
+        return dsn, []
+
+    fast_nets: set[str] = set()
+    for dp in board.diff_pairs:
+        fast_nets.add(dp.positive)
+        fast_nets.add(dp.negative)
+    if intent:
+        for dp in intent.get("diff_pairs") or ():
+            val = dp.get("value") if isinstance(dp, dict) and "value" in dp else dp
+            if isinstance(val, dict):
+                for k in ("positive", "negative", "pos", "neg"):
+                    if val.get(k):
+                        fast_nets.add(str(val[k]))
+        for nname, meta in (intent.get("nets") or {}).items():
+            cls_val = str(((meta.get("class") or {}).get("value")) or "").upper()
+            if cls_val in ("HIGH_SPEED", "DIFF_PAIR", "CLOCK"):
+                fast_nets.add(nname)
+    if not fast_nets:
+        return dsn, []
+
+    name_by_canon = {cl.canonical: cl.name for cl in ordered}
+    # Exact parity: every SMD pad and locked non-plane track/via must lie inside use_layer!
+    allowed_set = set(gnd_adj_signals)
+    end_layers = {canon_order[0], canon_order[-1]}
+    non_signal_layers = gnd_plane_layers | power_plane_layers
+    eligible: list[str] = []
+    for nname in sorted(fast_nets):
+        ok = True
+        for fp in board.footprints:
+            for pad in fp.pads:
+                if pad.net != nname or pad.kind != "smd":
+                    continue
+                plyrs = {by_canon.get(lyr, lyr) for lyr in pad.layers}
+                if not (plyrs <= allowed_set):
+                    ok = False
+                    break
+            if not ok:
+                break
+        if ok and board.routing:
+            for trk in board.routing.get("tracks", ()):
+                if trk.get("locked") and trk.get("net") == nname:
+                    tlyr = by_canon.get(trk.get("layer", ""), trk.get("layer", ""))
+                    if tlyr not in allowed_set:
+                        ok = False
+                        break
+        if ok and board.routing:
+            for via in board.routing.get("vias", ()):
+                if via.get("locked") and via.get("net") == nname:
+                    v_canons = {by_canon.get(lyr, lyr) for lyr in via.get("layers", ())}
+                    if v_canons != end_layers and any(
+                        slyr not in allowed_set for slyr in (v_canons - non_signal_layers)
+                    ):
+                        ok = False
+                        break
+        if ok:
+            eligible.append(nname)
+    if not eligible:
+        return dsn, []
+
+    net_start = dsn.find("(network")
+    wiring_start = dsn.find("(wiring", net_start) if net_start >= 0 else -1
+    if net_start < 0:
+        return dsn, []
+    net_end = wiring_start if wiring_start > net_start else len(dsn)
+    net_block = dsn[net_start:net_end]
+    use_layers = " ".join(_token(name_by_canon.get(c, c)) for c in gnd_adj_signals)
+    applied_nets: list[str] = []
+    for nname in eligible:
+        pat = re.compile(r"\(net\s+" + re.escape(_token(nname)) + r"(?=[\s)])")
+        nm = pat.search(net_block)
+        if nm is None:
+            pat = re.compile(r"\(net\s+" + re.escape(_quote(nname)) + r"(?=[\s)])")
+            nm = pat.search(net_block)
+        if nm is None:
+            continue
+        n_end = _sexp_end(net_block, nm.start())
+        if n_end < 0:
+            continue
+        n_body = net_block[nm.start():n_end]
+        if "(circuit" in n_body:
+            continue
+        updated_body = n_body[:-1].rstrip() + f"\n      (circuit (use_layer {use_layers}))\n    )"
+        net_block = net_block[:nm.start()] + updated_body + net_block[n_end:]
+        applied_nets.append(nname)
+    if not applied_nets:
+        return dsn, []
+    return dsn[:net_start] + net_block + dsn[net_end:], applied_nets

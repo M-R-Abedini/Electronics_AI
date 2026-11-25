@@ -328,7 +328,11 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                         or (ref, str(pad.number)) in escaped_pads):
                     continue
                 here = pad_layers(fp, pad, layers)
-                targets = sorted({by_canon.get(n, n) for n in pours[pad.net]} - set(here))
+                here_idx = layers.index(here[0]) if here and here[0] in layers else 0
+                targets = sorted(
+                    {by_canon.get(n, n) for n in pours[pad.net]} - set(here),
+                    key=lambda t: (abs(layers.index(t) - here_idx) if t in layers else 999, t),
+                )
                 row = {"ref": ref, "pad": str(pad.number), "net": pad.net, "routed": False}
                 if kind == "decap":
                     row["kind"] = "decap"

@@ -521,12 +521,13 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
         for points in _joins(origin, angle, end):
             if _length(points) <= share_max_mm + 1e-9 and (track := site.track(layer, points)):
                 return track, via
-    for full_sweep in (False, True):
-        for points in _candidate_paths(origin, angle, max_length_mm, full_sweep=full_sweep):
-            via = site.via(*points[-1], inside=target)
-            if via and (track := site.track(layer, points)):
-                return track, via
-    if allow_microvia and board.rules.get("allow_microvias", False):
+    prefer_adjacent_microvia = (
+        allow_microvia
+        and bool(board.rules.get("allow_microvias", False))
+        and abs(layers.index(target_layer) - layers.index(layer)) == 1
+    )
+
+    def _try_microvia() -> tuple[dict | None, dict | list[dict]] | None:
         for full_sweep in (False, True):
             for points in _candidate_paths(origin, angle, max_length_mm, full_sweep=full_sweep):
                 uvias = site.microvia_tap(*points[-1], layer, target_layer, inside=target)
@@ -537,6 +538,24 @@ def plan_power_tap(board: Board, footprint: Footprint, pad: Pad, target_layer: s
         uvias_inpad = site.microvia_tap(*origin, layer, target_layer, inside=target, allow_own_pad_at=origin)
         if uvias_inpad and min(pad.size) + 1e-6 >= uvias_inpad[0]["diameter"]:
             return None, (uvias_inpad[0] if len(uvias_inpad) == 1 else uvias_inpad)
+        return None
+
+    def _try_through() -> tuple[dict, dict] | None:
+        for full_sweep in (False, True):
+            for points in _candidate_paths(origin, angle, max_length_mm, full_sweep=full_sweep):
+                via = site.via(*points[-1], inside=target)
+                if via and (track := site.track(layer, points)):
+                    return track, via
+        return None
+
+    if prefer_adjacent_microvia:
+        if hit := _try_microvia():
+            return hit
+        return _try_through()
+    if hit := _try_through():
+        return hit
+    if allow_microvia and board.rules.get("allow_microvias", False):
+        return _try_microvia()
     return None
 
 
