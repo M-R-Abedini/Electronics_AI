@@ -239,20 +239,40 @@ def _intent_roles(intent: dict | None) -> tuple[dict[str, dict], set[str], set[s
     return parts, fast_nets, sw_nets, fb_nets
 
 
+def _via_layer_set(
+    v: dict,
+    name_to_canon: dict[str, str],
+    canon_to_idx: dict[str, int],
+    ordered_layers: list[str],
+) -> frozenset[str]:
+    vlayers = v.get("layers") or []
+    if len(vlayers) == 2 and ordered_layers:
+        c0 = name_to_canon.get(vlayers[0], vlayers[0])
+        c1 = name_to_canon.get(vlayers[1], vlayers[1])
+        if c0 in canon_to_idx and c1 in canon_to_idx:
+            lo, hi = sorted((canon_to_idx[c0], canon_to_idx[c1]))
+            return frozenset(ordered_layers[lo : hi + 1])
+    return frozenset(ordered_layers) if ordered_layers else frozenset({"*.Cu"})
+
+
 def _copper_graph_for_net(
     board: Board,
     net: str,
     tracks: list[dict],
     vias: list[dict],
     name_to_canon: dict[str, str],
-) -> tuple[list[tuple[float, float, str, str]], dict[int, list[tuple[int, float, bool]]]]:
-    """Build node graph for one net: nodes are (x, y, layer_or_ALL, kind), edges are (neighbor, len_mm, is_via)."""
-    nodes: list[tuple[float, float, str, str]] = []
+    canon_to_idx: dict[str, int] | None = None,
+    ordered_layers: list[str] | None = None,
+) -> tuple[list[tuple[float, float, frozenset[str], str]], dict[int, list[tuple[int, float, bool]]]]:
+    """Build node graph for one net: nodes are (x, y, layer_span, kind), edges are (neighbor, len_mm, is_via)."""
+    if canon_to_idx is None or ordered_layers is None:
+        _, canon_to_idx, ordered_layers = _layer_maps(board)
+    nodes: list[tuple[float, float, frozenset[str], str]] = []
     adj: dict[int, list[tuple[int, float, bool]]] = defaultdict(list)
 
-    def add_node(x: float, y: float, layer: str, kind: str) -> int:
+    def add_node(x: float, y: float, layer_span: frozenset[str], kind: str) -> int:
         idx = len(nodes)
-        nodes.append((x, y, layer, kind))
+        nodes.append((x, y, layer_span, kind))
         return idx
 
     # Track segments
@@ -263,20 +283,21 @@ def _copper_graph_for_net(
         if len(pts) < 2:
             continue
         canon = name_to_canon.get(t.get("layer", ""), t.get("layer", ""))
+        lyr_span = frozenset({canon}) if canon else (frozenset(ordered_layers) if ordered_layers else frozenset({"*.Cu"}))
         line = _track_line(t)
         seg_len = float(line.length) if line is not None else math.hypot(pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1])
-        u = add_node(float(pts[0][0]), float(pts[0][1]), canon, "track")
-        v = add_node(float(pts[-1][0]), float(pts[-1][1]), canon, "track")
+        u = add_node(float(pts[0][0]), float(pts[0][1]), lyr_span, "track")
+        v = add_node(float(pts[-1][0]), float(pts[-1][1]), lyr_span, "track")
         adj[u].append((v, seg_len, False))
         adj[v].append((u, seg_len, False))
 
-    # Vias
+    # Vias (preserve exact microvia/blind/buried/through layer spans instead of collapsing to "ALL")
     for v in vias:
         if (v.get("net") or "") != net:
             continue
-        add_node(float(v["x"]), float(v["y"]), "ALL", "via")
+        add_node(float(v["x"]), float(v["y"]), _via_layer_set(v, name_to_canon, canon_to_idx, ordered_layers), "via")
 
-    # Connect coincident endpoints (within 0.12 mm) on compatible layers using spatial buckets (O(n))
+    # Connect coincident endpoints (within 0.12 mm) on intersecting layers using spatial buckets (O(n))
     tol = 0.12
     bucket_sz = 0.25
     buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
@@ -291,7 +312,7 @@ def _copper_graph_for_net(
                     d = math.hypot(xi - xj, yi - yj)
                     if d > tol:
                         continue
-                    if li == lj or li == "ALL" or lj == "ALL":
+                    if "*.Cu" in li or "*.Cu" in lj or (li & lj):
                         is_via = ki == "via" or kj == "via"
                         adj[i].append((j, d, is_via))
                         adj[j].append((i, d, is_via))
@@ -300,7 +321,7 @@ def _copper_graph_for_net(
 
 
 def _shortest_copper_path(
-    nodes: list[tuple[float, float, str, str]],
+    nodes: list[tuple[float, float, frozenset[str], str]],
     adj: dict[int, list[tuple[int, float, bool]]],
     src_pts: list[tuple[float, float, set[str], float]],
     dst_pts: list[tuple[float, float, set[str], float]],
@@ -310,13 +331,13 @@ def _shortest_copper_path(
         return None, False
     srcs: list[int] = []
     dsts: set[int] = set()
-    for idx, (nx, ny, nlayer, _kind) in enumerate(nodes):
+    for idx, (nx, ny, nlayers, _kind) in enumerate(nodes):
         for sx, sy, slayers, srad in src_pts:
-            if (nlayer == "ALL" or nlayer in slayers) and math.hypot(nx - sx, ny - sy) <= srad:
+            if ("*.Cu" in slayers or "*.Cu" in nlayers or (nlayers & slayers)) and math.hypot(nx - sx, ny - sy) <= srad:
                 srcs.append(idx)
                 break
         for dx, dy, dlayers, drad in dst_pts:
-            if (nlayer == "ALL" or nlayer in dlayers) and math.hypot(nx - dx, ny - dy) <= drad:
+            if ("*.Cu" in dlayers or "*.Cu" in nlayers or (nlayers & dlayers)) and math.hypot(nx - dx, ny - dy) <= drad:
                 dsts.add(idx)
                 break
     if not srcs or not dsts:
@@ -398,11 +419,16 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
     for t in tracks:
         if t.get("net"):
             tracks_by_net[t["net"]].append(t)
-    gnd_vias = [(float(v["x"]), float(v["y"])) for v in vias if is_ground_net(v.get("net"))]
-    vias_by_net: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    gnd_vias = [
+        (float(v["x"]), float(v["y"]), _via_layer_set(v, name_to_canon, canon_to_idx, ordered_layers))
+        for v in vias if is_ground_net(v.get("net"))
+    ]
+    vias_by_net: dict[str, list[tuple[float, float, frozenset[str]]]] = defaultdict(list)
     for v in vias:
         if v.get("net"):
-            vias_by_net[v["net"]].append((float(v["x"]), float(v["y"])))
+            vias_by_net[v["net"]].append(
+                (float(v["x"]), float(v["y"]), _via_layer_set(v, name_to_canon, canon_to_idx, ordered_layers))
+            )
 
     # Identify crystals, converters, inductors, ESD, and decaps from intent
     crystals: list[Footprint] = []
@@ -453,7 +479,9 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
     def get_net_graph(net_name: str) -> tuple[list, dict]:
         g = net_graph_cache.get(net_name)
         if g is None:
-            g = net_graph_cache[net_name] = _copper_graph_for_net(board, net_name, tracks, vias, name_to_canon)
+            g = net_graph_cache[net_name] = _copper_graph_for_net(
+                board, net_name, tracks, vias, name_to_canon, canon_to_idx, ordered_layers,
+            )
         return g
 
     intent_rail_nets = {
@@ -698,8 +726,17 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
             transitions_checked += 1
             if len(ref_nets) == 1:
                 rn = next(iter(ref_nets))
+                req_ref_layers = {
+                    r_lyr for lyr in touched
+                    for r_lyr in adj_ref_layers.get(lyr, ())
+                    if rn in ref_planes.get(r_lyr, {})
+                }
                 ref_vias = vias_by_net.get(rn) or gnd_vias
-                nearest = min((math.hypot(vx - gx, vy - gy) for gx, gy in ref_vias), default=math.inf)
+                nearest = min(
+                    (math.hypot(vx - gx, vy - gy) for gx, gy, g_lyrs in ref_vias
+                     if not req_ref_layers or "*.Cu" in g_lyrs or req_ref_layers.issubset(g_lyrs)),
+                    default=math.inf,
+                )
                 if nearest > RETURN_VIA_MAX_MM:
                     transitions_missing_return += 1
                     if net in fast_nets:
