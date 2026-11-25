@@ -1225,7 +1225,7 @@ def _pad_dict(board, pad, ox, oy, rot):
         "size": [_mm(sx), _mm(sy)],
         "shape": pad.ShowPadShape(shape_layer) if hasattr(pad, "ShowPadShape") else str(pad.GetShape()),
         "kind": _PAD_KIND.get(pad.GetAttribute(), "smd"),
-        "layers": _copper_layer_names(board, pad),
+        "layers": [pcbnew.BOARD.GetStandardLayerName(layer) for layer in pad.GetLayerSet().CuStack()],
         "drill": [_mm(drill.x), _mm(drill.y)] if drill.x > 0 else None,
         "function": pad.GetPinFunction() or None,
         "pin_type": pad.GetPinType() or None,
@@ -1276,18 +1276,27 @@ def _courtyard(fp, ox, oy, rot, max_error):
             ))
     if not pts:
         return {"source": "none", "polygons": []}
-    m = DERIVED_COURTYARD_MARGIN_MM
-    x0, y0 = min(p[0] for p in pts) - m, min(p[1] for p in pts) - m
-    x1, y1 = max(p[0] for p in pts) + m, max(p[1] for p in pts) + m
+    raw_x0, raw_y0 = min(p[0] for p in pts), min(p[1] for p in pts)
+    raw_x1, raw_y1 = max(p[0] for p in pts), max(p[1] for p in pts)
+    raw_span = max(raw_x1 - raw_x0, raw_y1 - raw_y0)
+    # Adaptive IPC-7351 Density-C derived margin prevents false overlaps on dense legacy SMD libraries.
+    if raw_span <= 2.6:
+        m = 0.10
+    elif raw_span <= 5.0:
+        m = 0.15
+    else:
+        m = DERIVED_COURTYARD_MARGIN_MM
+    x0, y0 = raw_x0 - m, raw_y0 - m
+    x1, y1 = raw_x1 + m, raw_y1 + m
     rect = [[round(a, 6), round(b, 6)] for a, b in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
     bw, bh = x1 - x0, y1 - y0
     bbox_area = bw * bh
     if bw >= 6.0 and bh >= 6.0 and len(pad_boxes) >= 3 and bbox_area > 0:
         pad_area = sum((px1 - px0 + 2 * m) * (py1 - py0 + 2 * m) for px0, py0, px1, py1, _ in pad_boxes)
-        max_pad_span = max(max(px1 - px0, py1 - py0) for px0, py0, px1, py1, _ in pad_boxes)
-        pad_limit = min(max_pad_span + m, 0.22 * min(bw, bh)) + 0.02
+        pad_thickness = max(min(px1 - px0, py1 - py0) for px0, py0, px1, py1, _ in pad_boxes)
+        pad_limit = min(pad_thickness + m, 0.22 * min(bw, bh)) + 0.02
         lx0, ly0, lx1, ly1 = x0 + pad_limit, y0 + pad_limit, x1 - pad_limit, y1 - pad_limit
-        wall = min(max(max_pad_span, 0.8) + 2.0 * m, 0.24 * min(bw, bh))
+        wall = min(max(pad_thickness, 0.8) + 2.0 * m, 0.24 * min(bw, bh))
         ix0, iy0, ix1, iy1 = x0 + wall, y0 + wall, x1 - wall, y1 - wall
         if ix1 - ix0 >= 2.0 and iy1 - iy0 >= 2.0 and pad_area < 0.28 * bbox_area:
             interior_clear = not any(
@@ -1303,6 +1312,17 @@ def _courtyard(fp, ox, oy, rot, max_error):
             if interior_clear and (shield_hint or all_gnd_or_nc):
                 hole = [[round(a, 6), round(b, 6)] for a, b in ((ix0, iy0), (ix0, iy1), (ix1, iy1), (ix1, iy0))]
                 return {"source": "derived", "margin_mm": m, "polygons": [rect], "holes": [[hole]]}
+            # Multi-chamber RF shield (e.g. HackRF J2 52x39 mm): internal dividing-wall GND pads mean
+            # interior_clear is False, so emit per-wall pad boxes as disjoint wall islands instead of a solid brick.
+            if bw >= 12.0 and bh >= 12.0 and len(pad_boxes) >= 8 and (shield_hint or all_gnd_or_nc):
+                wm = 0.15
+                islands = [
+                    [[round(a, 6), round(b, 6)] for a, b in (
+                        (px0 - wm, py0 - wm), (px1 + wm, py0 - wm), (px1 + wm, py1 + wm), (px0 - wm, py1 + wm)
+                    )]
+                    for px0, py0, px1, py1, _ in pad_boxes
+                ]
+                return {"source": "derived", "margin_mm": wm, "polygons": islands}
     return {"source": "derived", "margin_mm": m, "polygons": [rect]}
 
 
@@ -1321,6 +1341,7 @@ def _footprint_dict(board, fp, max_error):
         "locked": bool(fp.IsLocked()),
         "attributes": _attrs(fp),
         "sheet": fp.GetSheetname() if hasattr(fp, "GetSheetname") else None,
+        "sheet_path": fp.GetPath().AsString() if hasattr(fp, "GetPath") else None,
         "description": fp.GetLibDescription() if hasattr(fp, "GetLibDescription") else "",
         "courtyard": _courtyard(fp, ox, oy, rot, max_error),
         "pads": [_pad_dict(board, pad, ox, oy, rot) for pad in fp.Pads()],
@@ -1421,7 +1442,8 @@ def _zones(board):
         names = [board.GetLayerName(layer) for layer in layers]
         if zone.GetIsRuleArea():
             outline = [[[round(x, 6), round(y, 6)] for x, y in ring] for ring in _world_outlines(zone.Outline())]
-            rule_areas.append({"uuid": zone.m_Uuid.AsString(), "layers": names, "polygons": outline,
+            rule_areas.append({"uuid": zone.m_Uuid.AsString(), "name": zone.GetZoneName(),
+                               "locked": bool(zone.IsLocked()), "layers": names, "polygons": outline,
                                "keepout": _zone_info(board, zone)["keepout"]})
             continue
         areas = {}

@@ -91,13 +91,24 @@ _TALL_CAVITY_BLOCKED_KEYWORDS = (
 )
 
 
+_LOW_PROFILE_RF_KEYWORDS = (
+    "balun", "mm8930", "swh", "u.fl", "ufl", "ipex", "saw", "diplex", "coupler",
+)
+
+
 def is_shield_cavity_eligible(fp: Footprint) -> bool:
     """Return True when a footprint is low-profile SMD and safe inside a hollow RF shield cavity."""
     if any(p.kind in ("thru_hole", "np_thru_hole") or p.drill for p in fp.pads):
         return False
+    desc = f"{fp.lib_id} {fp.value}".lower()
+    # Tiny SMD RF chip baluns (e.g. TDK 0605) and ultra-low-profile RF test switches (Murata SWH)
+    # are specifically manufactured to sit inside RF shields.
+    if any(kw in desc for kw in _LOW_PROFILE_RF_KEYWORDS) and "shield" not in desc:
+        bx0, by0, bx1, by1 = fp.box()
+        if max(bx1 - bx0, by1 - by0) <= 4.0:
+            return True
     if fp.prefix in _TALL_CAVITY_BLOCKED_PREFIXES:
         return False
-    desc = f"{fp.lib_id} {fp.value}".lower()
     return not any(kw in desc for kw in _TALL_CAVITY_BLOCKED_KEYWORDS)
 
 

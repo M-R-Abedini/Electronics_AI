@@ -83,19 +83,20 @@ def read_stackup(text: str) -> Stackup:
 # --------------------------------------------------------------------------
 # reading
 # --------------------------------------------------------------------------
-def _pad(row: dict) -> Pad:
+def _pad(row: dict, name_to_canon: dict[str, str] | None = None) -> Pad:
+    layers = tuple(name_to_canon.get(lyr, lyr) for lyr in row["layers"]) if name_to_canon else tuple(row["layers"])
     return Pad(number=row["number"], net=row["net"], local=tuple(row["local"]), size=tuple(row["size"]),
-               rotation=row["rotation"], shape=row["shape"], kind=row["kind"], layers=tuple(row["layers"]),
+               rotation=row["rotation"], shape=row["shape"], kind=row["kind"], layers=layers,
                drill=tuple(row["drill"]) if row["drill"] else None, function=row["function"],
                pin_type=row["pin_type"], uuid=row["uuid"])
 
 
-def _footprint(row: dict) -> Footprint:
+def _footprint(row: dict, name_to_canon: dict[str, str] | None = None) -> Footprint:
     cy = row["courtyard"]
     return Footprint(
         ref=row["ref"], value=row["value"], lib_id=row["lib_id"], x=row["x"], y=row["y"],
         rotation=row["rotation"], side=row["side"], locked=row["locked"],
-        pads=[_pad(p) for p in row["pads"]],
+        pads=[_pad(p, name_to_canon) for p in row["pads"]],
         courtyard=Courtyard(
             source=cy["source"],
             polygons=[[tuple(p) for p in poly] for poly in cy["polygons"]],
@@ -103,6 +104,7 @@ def _footprint(row: dict) -> Footprint:
             holes=[[[tuple(p) for p in hole] for hole in poly_holes] for poly_holes in cy.get("holes", [])],
         ),
         uuid=row["uuid"], sheet=row["sheet"], description=row["description"], attributes=tuple(row["attributes"]),
+        sheet_path=row.get("sheet_path") or None,
     )
 
 
@@ -117,9 +119,10 @@ def _canonical_order(data: dict) -> None:
 
 def board_from_dump(data: dict, stackup: Stackup, name: str) -> Board:
     _canonical_order(data)
+    name_to_canon = {c["name"]: c["canonical"] for c in data["copper_layers"]}
     board = Board(
         name=name,
-        footprints=[_footprint(r) for r in data["footprints"]],
+        footprints=[_footprint(r, name_to_canon) for r in data["footprints"]],
         outline=[Outline(outer=[tuple(p) for p in o["outer"]], holes=[[tuple(p) for p in h] for h in o["holes"]])
                  for o in data["outline"]["polygons"]],
         outline_valid=data["outline"]["valid"],
@@ -164,23 +167,51 @@ def read_severities(project: Path) -> dict[str, str]:
             if k in PLACER_DRC_CHECKS and v != PLACER_DRC_CHECKS[k] and v in ("ignore", "warning")}
 
 
+def _upgrade_legacy_copy(src: Path, tmp_dir: Path) -> Path:
+    """Upgrade a legacy KiCad board (e.g. KiCad 5 version 20171130) inside a temp copy (P8-safe)."""
+    dst = tmp_dir / src.name
+    shutil.copyfile(src, dst)
+    for suffix in SIDECARS:
+        sidecar = src.with_suffix(suffix)
+        if sidecar.is_file():
+            shutil.copyfile(sidecar, dst.with_suffix(suffix))
+    done = subprocess.run(
+        [str(kicad().cli), "pcb", "upgrade", "--force", str(dst)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False,
+    )
+    if done.returncode != 0:
+        raise KiCadAdapterError(f"kicad-cli pcb upgrade failed: {(done.stderr or done.stdout).strip()[-1000:]}")
+    return dst
+
+
 def read_board(path: str | Path) -> Board:
     path = Path(path).resolve()
     if not path.is_file():
         raise KiCadAdapterError(f"board not found: {path}")
+    upgraded = False
     with tempfile.TemporaryDirectory(prefix="eai_dump_") as tmp:
-        out = Path(tmp) / "dump.json"
-        run_helper("dump", path, out)
+        tmp_dir = Path(tmp)
+        out = tmp_dir / "dump.json"
+        load_path = path
+        try:
+            run_helper("dump", load_path, out)
+        except KiCadAdapterError:
+            # Legacy KiCad 4/5 boards fail direct KiCad 10 LoadBoard; upgrade a temp copy (never src, P8).
+            load_path = _upgrade_legacy_copy(path, tmp_dir)
+            run_helper("dump", load_path, out)
+            upgraded = True
         data = json.loads(out.read_text(encoding="utf-8"))
+        stackup = read_stackup(load_path.read_text(encoding="utf-8", errors="replace"))
     data["source"].update({"path": str(path), "sha256": sha256_file(path)})
-    stackup = read_stackup(path.read_text(encoding="utf-8", errors="replace"))
+    if upgraded:
+        data["source"]["upgraded_from_legacy"] = True
     board = board_from_dump(data, stackup, path.stem)
     board.drc_severities = read_severities(path.with_suffix(".kicad_pro"))
     # pin names the board file lacks (a board converted from another EDA) come from its schematics
     from . import kicad_sch
 
     found = kicad_sch.enrich(board, path)
-    if found["pads_named"] or found["pads_typed"]:
+    if found["pads_named"] or found["pads_typed"] or found["sheets_assigned"] or found["units_mapped"]:
         board.source["schematic_pins"] = found
     return board
 

@@ -45,10 +45,10 @@ Every engineering assertion is a **claim**:
   - Settled local target: `{"ref": "U1", "net": "+3V3", "pins": ["12", "13"]}`
   - Unsettled candidate list: `{"ref": null, "net": "+3V3", "candidates": ["U1", "U2"]}`
   - Shared rail capacitor (e.g., `bulk_cap`): `{"ref": null, "net": "VBUS", "scope": "rail"}` (`pins` and `candidates` must be omitted or empty).
-- **Net Classes (`nets.<name>.class.value`):** `POWER_HIGH_CURRENT`, `SW_NODE`, `DIFF_PAIR`, `HIGH_SPEED`, `SENSITIVE_ANALOG`, `GENERAL`
+- **Net Classes (`nets.<name>.class.value`):** `POWER_HIGH_CURRENT`, `SW_NODE`, `DIFF_PAIR`, `HIGH_SPEED`, `RF`, `CLOCK`, `SENSITIVE_ANALOG`, `GENERAL`
 - **Net Rail (`nets.<name>.rail.value`):** `power`, `ground`, `signal`
-- **Differential Pair Kinds (`diff_pairs[].value.kind`):** `usb`, `lvds`, `ethernet`, `mipi`, `analog_audio`, `other` (plus optional `routing_eligible: true | false`)
-- **Block Kinds (`blocks[].value.kind`):** `decap_group`, `crystal`, `converter`, `linear_regulator`, `esd_port`, `led`, `pull_up_row`, `other`
+- **Differential Pair Kinds (`diff_pairs[].value.kind`):** `usb`, `lvds`, `ethernet`, `mipi`, `pcie`, `sata`, `hdmi`, `can`, `rf`, `analog_audio`, `other` (plus optional `routing_eligible: true | false`)
+- **Block Kinds (`blocks[].value.kind`):** `decap_group`, `crystal`, `converter`, `linear_regulator`, `esd_port`, `led`, `pull_up_row`, `rf_chain`, `analog_domain`, `power_domain`, `other`
 - **Mechanical Constraints (`mechanical.<ref>.value`):**
   - Lock existing pose: `{"mode": "preserve"}`
   - Constrain to a board rule area: `{"mode": "region", "region": "<rule_area_name>", "angles_deg": [0, 90, 180, 270]}`
