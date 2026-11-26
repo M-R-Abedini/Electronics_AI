@@ -29,7 +29,7 @@ def read_netlist(path: Path) -> ElementTree.Element:
         return root
 
 
-def cold_input(reference: Board, schematic: Path) -> tuple[Board, dict]:
+def cold_input(reference: Board, schematic: Path, *, intent: dict | None = None) -> tuple[Board, dict]:
     """Use schematic connectivity after verifying the original PCB is an equivalent template."""
     root = read_netlist(schematic)
     board = reference.copy()
@@ -70,7 +70,8 @@ def cold_input(reference: Board, schematic: Path) -> tuple[Board, dict]:
     if reference.outline_box is None or not reference.outline_valid:
         raise ValueError("valid board outline required for cold placement")
     x0, y0, x1, y1 = reference.outline_box
-    anchors = fixed_parts(reference)
+    anchors = fixed_parts(reference, intent)
+    regional = {ref for ref, row in (intent or {}).get("mechanical", {}).items() if row["value"]["mode"] == "region"}
     board.placement_anchors = anchors.copy()
     outline = board_polygon(reference)
     center = Point((x0 + x1) / 2, (y0 + y1) / 2)
@@ -118,13 +119,16 @@ def cold_input(reference: Board, schematic: Path) -> tuple[Board, dict]:
                 pad.function = name if name not in (None, "", "~", str(pad.number)) else None
                 pad.pin_type = pin_type
         if fp.ref in anchors:
-            fp.locked = True  # freeze exactly the constraints supplied by the geometry template
+            fp.locked = fp.locked or fp.ref not in regional
         else:
             fp.x, fp.y, fp.rotation = center.x, center.y, 0.0
-    # Keep declared construction constraints and assembly sides. Discard copper-derived placement evidence.
+    # Discard the template's routing and pours. Board artwork, mask openings and
+    # fixed holes still exist in the file written by the cold-placement adapter.
     board.routing, board.routing_items, board.teardrops = {}, 0, 0
     board.zones, board.zone_fill_by_layer_mm2 = [], {}
-    board.obstacles = []
+    stationary = {f"footprint:{ref}" for ref in anchors.keys() - regional}
+    board.obstacles = [row for row in board.obstacles if row["source"] == "board"
+                       or row["source"].startswith("board:") or row["source"] in stationary]
     board.source = {**board.source, "schematic": {"path": str(schematic), "sha256": sha256_file(schematic),
                                                   "sheets": {str(p): sha256_file(p) for p in sorted(sources)}}}
     return derive(board), {"verified_nets": len(verified), "verified_pad_endpoints": len(pad_metadata),

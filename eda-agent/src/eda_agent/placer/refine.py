@@ -10,11 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import quality
 from . import report as run_report
 from .eval import legality, metrics, score
 from .intent.resolve import resolve
-from .io.kicad import read_board, write_board
-from .place import decap, escape, problem
+from .io.kicad import lock_routing_copy, read_board, write_board
+from .place import decap, escape, problem, review
 from .route import drc
 from .route.check import PROJECT_SIDECARS, RouteCheckError, route_check
 from .toolchain import ToolchainError, sha256_file
@@ -29,6 +30,7 @@ def _baseline_cache_key(
     intent_sha256: str | None = None,
 ) -> str:
     payload: dict = {
+        "saved_review": 1,
         "board_sha256": sha256_file(board_path),
         "reference_sha256": sha256_file(reference),
         "route_timeout_s": int(route_timeout_s),
@@ -82,8 +84,8 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     if report_path.is_dir():
         report_path /= "run_report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report.get("config", {}).get("cold_input") or report.get("stages", {}).get("place", {}).get("cold_input"):
-        raise ValueError("Refinement requires a placement with a reproducible PCB intent input")
+    is_cold = bool(report.get("config", {}).get("cold_input")
+                   or report.get("stages", {}).get("place", {}).get("cold_input"))
     depth = int(report.get("refinement_round", 0))
     if depth >= 3:
         raise ValueError("Three refinement rounds have already been accepted for this run")
@@ -91,7 +93,9 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     before = read_board(src)
     original_hash = sha256_file(src)
     place_stage = report.get("stages", {}).get("place") or {}
-    why_fixed = problem.fixed_parts(before) | (place_stage.get("fixed") or {})
+    verified = (report.get("quality") or {}).get("placement", {}).get("artifact")
+    if verified and verified != quality.identity(src):
+        raise ValueError("Run artifact or its project rules changed after review")
     ref = change["ref"]
     if sum(fp.ref == ref for fp in before.footprints) != 1:
         raise ValueError("Refinement requires a unique existing footprint reference")
@@ -100,10 +104,22 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     if reference_hash is not None and sha256_file(reference) != reference_hash:
         raise ValueError("The placement input changed; generate a fresh placement run")
     saved = report["inputs"]["intent"]
-    design = read_board(reference) if reference != src else before
+    template = read_board(reference) if reference != src else before
+    design = template
+    if is_cold:
+        from .io.schematic_input import cold_input
+
+        schematic = report["inputs"]["board"].get("schematic") or {}
+        if (not schematic.get("path") or any(not Path(path).is_file() or sha256_file(path) != digest
+                                             for path, digest in schematic.get("sheets", {}).items())
+                or sha256_file(schematic["path"]) != schematic.get("sha256")):
+            raise ValueError("Cold refinement requires the original schematic and sheet revisions")
+        declared = resolve(template, saved["path"])[0] if saved.get("path") else None
+        design, _ = cold_input(template, Path(schematic["path"]), intent=declared)
     intent, info = resolve(design, saved.get("path"))
     if info["sha256"] != saved["sha256"]:
         raise ValueError("Recorded intent hash differs; rerun placement with the current intent")
+    why_fixed = problem.fixed_parts(design, intent) | (place_stage.get("fixed") or {})
     protected = set(why_fixed) | set(intent.get("mechanical", {}))
     macros = place_stage.get("rigid_macros") or {}
     protected.update(member for group in macros.get("members", []) for member in group)
@@ -262,8 +278,11 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
         return out
 
     work = out_root.resolve() / f"{src.stem}-refine-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}"
-    candidate = write_board(src, after, work / src.name, strip_routing=True, unfill_zones=True)
-    original = write_board(src, before, work / "baseline" / src.name, strip_routing=True, unfill_zones=True)
+    native = design.source.get("eda") == "kicad"
+    eco = native and report.get("config", {}).get("preserve_routing") == "outside_cluster"
+    write_options = {"strip_routing": not eco, "unfill_zones": True, **({"preserve_outside_routing": True} if eco else {})}
+    candidate = write_board(src, after, work / src.name, **write_options)
+    original = write_board(src, before, work / "baseline" / src.name, **write_options)
     if any(item["kind"] == "mask_aperture" for item in before.obstacles):
         mask_before = work / "mask-before.drc.json"
         # The candidate report also follows the placement report's sidecar naming convention.
@@ -275,20 +294,27 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
             return {**delta, "status": "rejected", "reason": "New solder mask bridges before routing",
                     "new_mask_bridge_count": len(added), "new_mask_bridges": added[:12],
                     "drc_reports": [str(mask_before), str(mask_after)], **comparison}
-    use_s6a = bool(report.get("config", {}).get("s6a", False))
+    use_s6a = not eco and bool(report.get("config", {}).get("s6a", False))
 
     def _route_trial(board_file: Path, route_dir: Path) -> dict:
         route_in = board_file
-        if use_s6a:
+        live_taps = []
+        if eco:
+            route_in = lock_routing_copy(board_file, route_dir.with_name(f"{route_dir.name}-eco") / board_file.name)
+        elif use_s6a:
             from .route import s6a as s6a_mod
 
-            s6a_res = s6a_mod.apply_to_board(board_file, intent, route_dir / "s6a")
+            s6a_res = s6a_mod.apply_to_board(board_file, intent, route_dir.with_name(f"{route_dir.name}-s6a"))
             if s6a_res["applied"] and s6a_res["s6a_board"]:
                 route_in = Path(s6a_res["s6a_board"])
-        return route_check(
+                live_taps = s6a_res.get("live_taps", [])
+        result = route_check(
             route_in, out_dir=route_dir, reference_board=reference,
             router_timeout_s=route_timeout_s, intent=intent,
         )
+        if live_taps:
+            result["s6a_verified_taps"] = s6a_mod.verify_taps_after_route(result["artifacts"]["routed_board"], live_taps)
+        return result
 
     cache_key = _baseline_cache_key(
         original, reference, route_timeout_s,
@@ -338,8 +364,11 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
         return {**delta, "status": "rejected", "reason": "No reduction in open connections", **comparison}
     before_copper_path = (a.get("artifacts") or {}).get("routed_board")
     after_copper_path = (b.get("artifacts") or {}).get("routed_board")
-    before_copper = read_board(before_copper_path) if before_copper_path and Path(before_copper_path).is_file() else None
-    after_copper = read_board(after_copper_path) if after_copper_path and Path(after_copper_path).is_file() else None
+    options = {"include_fill": True} if native else {}
+    before_copper = (read_board(before_copper_path, **options)
+                     if before_copper_path and Path(before_copper_path).is_file() else None)
+    after_copper = (read_board(after_copper_path, **options)
+                    if after_copper_path and Path(after_copper_path).is_file() else None)
     old_eval = score.evaluate(before, before_route, protected, intent, copper_board=before_copper)
     old_score = old_eval["pro_score"]["score"]
     new_evaluation = score.evaluate(after, after_route, protected, intent, copper_board=after_copper)
@@ -370,19 +399,38 @@ def refine(run: str, change: dict, out_root: Path, *, route_timeout_s: int = 180
     prior_cfg = dict(report.get("config") or {})
     preserved_cfg = {
         k: prior_cfg[k]
-        for k in ("s6a", "side_policy", "floorplan", "silkscreen_policy", "fab_profile")
+        for k in ("s6a", "side_policy", "floorplan", "silkscreen_policy", "fab_profile", "preserve_routing", "cluster_refs")
         if k in prior_cfg
     }
     preserved_cfg.update({"s6a": use_s6a, "change": change, "router_timeout_s": route_timeout_s})
+    reviews, extra_artifacts = {}, {}
+    if native:
+        anchors = place_stage.get("mechanical_anchors", ())
+        reviewer = quality.PlacementReview(template, intent, why_fixed, anchors, cold=is_cold,
+                                           fab_profile=preserved_cfg.get("fab_profile", "ipc_standard"))
+        baseline_drc = drc.run_cached(reference, work / "reference.drc.json")
+        placement = review.draft_evidence(candidate, read_board(candidate), reviewer, work / "review" / "placement",
+                                          reference_drc=baseline_drc)
+        routing = review.routed_evidence(Path(after_copper_path), after_copper, reviewer, b, placement,
+                                         work / "review" / "routed", taps=b.get("s6a_verified_taps"))
+        reviews = {"placement": placement, "routing": routing}
+        extra_artifacts = {"routed_board": after_copper_path}
+        if placement["status"] != "approved" or routing["status"] == "failed":
+            return {**delta, "status": "rejected", "reason": "Saved candidate failed review",
+                    "quality": reviews, "trial_dir": str(work), **comparison}
     updated = run_report.build(
         kind="place_refinement", inputs=report["inputs"], config=preserved_cfg,
-        stages={"place": {"fixed": why_fixed, "rigid_macros": macros},
+        stages={"place": {"fixed": why_fixed, "rigid_macros": macros,
+                          **({"cold_input": True} if is_cold else {}),
+                          "mechanical_anchors": place_stage.get("mechanical_anchors", [])},
                 "route_check": {"run_report": comparison["reports"][1]}},
         metrics={**new_evaluation["metrics"], "pro_score": new_evaluation["pro_score"],
                  "fanout_escape": escape.audit(after, exits, flipped=flips), "route": after_route},
         gates=b.get("gates", []), failures=[], refinement_round=depth + 1, parent_run=str(report_path),
-        artifacts={"placed_board": str(candidate), "run_dir": str(work)},
+        artifacts={"placed_board": str(candidate), "run_dir": str(work), **extra_artifacts},
+        **({"quality": reviews} if reviews else {}),
     )
     run_report.write(updated, new_report)
     return {**delta, "status": "accepted", "retained_board": str(candidate), "run_report": str(new_report),
-            "routed_board": b["artifacts"]["routed_board"], "moved_block_refs": moved_block_refs, **comparison}
+            "routed_board": b["artifacts"]["routed_board"], "moved_block_refs": moved_block_refs,
+            **({"quality": {stage: row["status"] for stage, row in reviews.items()}} if reviews else {}), **comparison}

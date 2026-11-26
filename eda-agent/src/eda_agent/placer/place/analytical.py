@@ -58,6 +58,9 @@ class Analytical:
         self.y = np.array([p[8] for p in parts], dtype=float)
         self.r = np.array([p[9] for p in parts], dtype=int)
         self.movable = np.flatnonzero(~self.fixed)
+        self.movable_by_side = [self.movable[self.side[self.movable] == side] for side in (0, 1)]
+        self.movable_area = (float(np.sum((self.box[:, 2] - self.box[:, 0]) * (self.box[:, 3] - self.box[:, 1])
+                                         * (~self.fixed))) if self.n else 0.0)
         # pins, sorted by net for segmented reductions
         order, net_of, weights = [], [], []
         for k, (pins, weight, _crossing) in enumerate(pb.nets):
@@ -83,6 +86,8 @@ class Analytical:
         self.mx = max(4, math.ceil((max(xs) - self.gx0) / self.bw))
         self.my = max(4, math.ceil((max(ys) - self.gy0) / self.bw))
         self.bin_area = self.bw * self.bw
+        self.x_edges = self.gx0 + self.bw * np.arange(self.mx + 1)
+        self.y_edges = self.gy0 + self.bw * np.arange(self.my + 1)
         self.fixed_map = [self._fixed_density(s) for s in (0, 1)]
         u = np.pi * np.arange(self.mx) / self.mx
         v = np.pi * np.arange(self.my) / self.my
@@ -107,8 +112,8 @@ class Analytical:
         j1 = min(self.my - 1, int((y1 - self.gy0) // self.bw))
         if i1 < i0 or j1 < j0:
             return None
-        ex = self.gx0 + self.bw * np.arange(i0, i1 + 2)
-        ey = self.gy0 + self.bw * np.arange(j0, j1 + 2)
+        ex = self.x_edges[i0:i1 + 2]
+        ey = self.y_edges[j0:j1 + 2]
         ox = np.clip(np.minimum(ex[1:], x1) - np.maximum(ex[:-1], x0), 0, None)
         oy = np.clip(np.minimum(ey[1:], y1) - np.maximum(ey[:-1], y0), 0, None)
         return slice(j0, j1 + 1), slice(i0, i1 + 1), np.outer(oy, ox)
@@ -215,29 +220,40 @@ class Analytical:
         return cost
 
     # -------------------------------------------------------------- density
+    def _density_contributions(self, rects):
+        """Flatten the covered cells of all movable rectangles for sparse updates."""
+        x0, y0, x1, y1 = rects.T
+        w, h = x1 - x0, y1 - y0
+        ew, eh = np.maximum(w, 1.414 * self.bw), np.maximum(h, 1.414 * self.bw)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        left, right = cx - ew / 2, cx + ew / 2
+        top, bottom = cy - eh / 2, cy + eh / 2
+        i0 = np.maximum(0, ((left - self.gx0) // self.bw).astype(np.int64))
+        j0 = np.maximum(0, ((top - self.gy0) // self.bw).astype(np.int64))
+        i1 = np.minimum(self.mx - 1, ((right - self.gx0) // self.bw).astype(np.int64))
+        j1 = np.minimum(self.my - 1, ((bottom - self.gy0) // self.bw).astype(np.int64))
+        nx = np.maximum(0, i1 - i0 + 1)
+        counts = nx * np.maximum(0, j1 - j0 + 1)
+        part = np.repeat(np.arange(len(rects)), counts)
+        offset = np.arange(part.size) - np.repeat(np.cumsum(counts) - counts, counts)
+        ix = i0[part] + offset % nx[part]
+        iy = j0[part] + offset // nx[part]
+        ox = np.maximum(0, np.minimum(self.x_edges[ix + 1], right[part]) - np.maximum(self.x_edges[ix], left[part]))
+        oy = np.maximum(0, np.minimum(self.y_edges[iy + 1], bottom[part]) - np.maximum(self.y_edges[iy], top[part]))
+        area = ox * oy * (w * h)[part] / (ew * eh)[part]
+        return part, iy * self.mx + ix, area
+
     def density(self) -> tuple[float, np.ndarray, np.ndarray, float]:
         """Electrostatic energy gradient per part and the overflow of movable area."""
         grad_x = np.zeros(self.n)
         grad_y = np.zeros(self.n)
         overflow_area = 0.0
         energy = 0.0
-        min_w = 1.414 * self.bw
-        for s in (0, 1):
-            idx = np.flatnonzero(~self.fixed & (self.side == s))
+        for s, idx in enumerate(self.movable_by_side):
             if idx.size == 0:
                 continue
-            rects = self._rects(idx)
-            mov = np.zeros((self.my, self.mx))
-            windows = []
-            for rect in rects:
-                w, h = rect[2] - rect[0], rect[3] - rect[1]
-                cx, cy = (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
-                ew, eh = max(w, min_w), max(h, min_w)
-                win = self._window((cx - ew / 2, cy - eh / 2, cx + ew / 2, cy + eh / 2))
-                if win is not None:
-                    win = (win[0], win[1], win[2] * (w * h) / (ew * eh))
-                    mov[win[0], win[1]] += win[2]
-                windows.append(win)
+            parts, cells, area = self._density_contributions(self._rects(idx))
+            mov = np.bincount(cells, weights=area, minlength=self.my * self.mx).reshape(self.my, self.mx)
             rho = (mov + self.fixed_map[s]) / self.bin_area
             coef = dctn(rho, type=2, norm="ortho") / self.denom
             coef[0, 0] = 0.0
@@ -246,14 +262,9 @@ class Analytical:
             energy += float(np.sum(rho * psi))
             cap = np.clip(TARGET_DENSITY * self.bin_area - self.fixed_map[s], 0, None)
             overflow_area += float(np.sum(np.clip(mov - cap, 0, None)))
-            for k, win in zip(idx, windows, strict=True):
-                if win is None:
-                    continue
-                grad_x[k] = -float(np.sum(win[2] * ex[win[0], win[1]]))
-                grad_y[k] = -float(np.sum(win[2] * ey[win[0], win[1]]))
-        movable_area = float(np.sum((self.box[:, 2] - self.box[:, 0]) * (self.box[:, 3] - self.box[:, 1])
-                                    * (~self.fixed)))
-        return energy, grad_x, grad_y, overflow_area / max(movable_area, 1e-9)
+            grad_x[idx] = -np.bincount(parts, weights=area * ex.ravel()[cells], minlength=idx.size)
+            grad_y[idx] = -np.bincount(parts, weights=area * ey.ravel()[cells], minlength=idx.size)
+        return energy, grad_x, grad_y, overflow_area / max(self.movable_area, 1e-9)
 
     # ------------------------------------------------------------- rotation
     def choose_rotations(self, gamma: float) -> int:

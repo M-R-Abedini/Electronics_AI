@@ -35,18 +35,151 @@ class Panel:
     route: dict | None = None  # route-check metrics for this placement
 
 
-def review_images(board_path: Path) -> list[tuple[str, bytes]]:
+def review_images(board_path: Path, *, sides=("top", "bottom")) -> list[tuple[str, bytes]]:
     """Render front and back views without writing files beside the PCB."""
     cli = str(kicad().cli)
     images = []
     with TemporaryDirectory(prefix="electronics-ai-review-") as tmp:
-        for side in ("top", "bottom"):
+        for side in sides:
             target = Path(tmp) / f"{side}.png"
             subprocess.run([cli, "pcb", "render", "--side", side, "--width", "1000", "--height", "1000",
                             "--quality", "basic", "--background", "opaque", "-o", str(target), str(board_path)],
                            stdin=subprocess.DEVNULL, capture_output=True, timeout=90, check=True)
             images.append((side, target.read_bytes()))
     return images
+
+
+def add_native_review_views(board_path, folder, views):
+    for side in ("top", "bottom"):
+        try:
+            [(_, png)] = review_images(board_path, sides=(side,))
+            path = folder / f"native_{side}.png"
+            path.write_bytes(png)
+            views["files"][f"native_{side}"] = str(path)
+        except (OSError, subprocess.SubprocessError) as exc:
+            views["unavailable"].append({"view": f"native_{side}", "reason": str(exc)})
+
+
+def save_review_views(board_path, board, copper, interfaces, findings, folder, *, frame=None, native=True):
+    """Save registered engineering views, native renders and localized evidence."""
+    from PIL import Image, ImageDraw
+
+    from .eval.legality import courtyard_polygon
+    from .place.mechanical import access_geometry
+
+    folder.mkdir(parents=True, exist_ok=True)
+    outputs, unavailable = {}, []
+    x0, y0, x1, y1 = frame or board.outline_box or (0.0, 0.0, 10.0, 10.0)
+    margin = max(2.5, max(x1 - x0, y1 - y0) * 0.075)
+    x0, y0, x1, y1 = x0 - margin, y0 - margin, x1 + margin, y1 + margin
+    scale = 920 / max(x1 - x0, y1 - y0)
+    size = (round((x1 - x0) * scale), round((y1 - y0) * scale) + 27)
+
+    def xy(point, mirror=False):
+        x, y = point
+        return (round(((x1 - x) if mirror else (x - x0)) * scale), 26 + round((y - y0) * scale))
+
+    def canvas(title, mirror=False):
+        image = Image.new("RGB", size, "#101923")
+        draw = ImageDraw.Draw(image)
+        draw.text((7, 6), title, fill="#d9e6e8")
+        for contour in board.outline:
+            draw.polygon([xy(p, mirror) for p in contour.outer], fill="#213737", outline="#b9d4d5")
+            for hole in contour.holes:
+                draw.polygon([xy(p, mirror) for p in hole], fill="#101923", outline="#b9d4d5")
+        return image, draw
+
+    def save(image, key):
+        output = folder / f"{key}.png"
+        image.save(output)
+        outputs[key] = str(output)
+
+    def paint_shape(draw, geom, mirror, color):
+        if geom is None or geom.is_empty:
+            return
+        for poly in getattr(geom, "geoms", [geom]):
+            if poly.geom_type == "Polygon":
+                draw.line([xy(p, mirror) for p in poly.exterior.coords], fill=color, width=2)
+                for hole in poly.interiors:
+                    draw.line([xy(p, mirror) for p in hole.coords], fill=color)
+
+    interfaces_by_ref = {row["ref"]: row for row in interfaces}
+    error_refs = {ref for row in findings if row["severity"] == "error" for ref in row["refs"]}
+    for side, label in (("F", "front"), ("B", "back")):
+        mirror = side == "B"
+        image, draw = canvas(f"{label.title()} | access, body and fixed artwork | red: finding", mirror)
+        for row in board.artwork:
+            if row["side"] == side:
+                lx, ly, rx, ry = row["bounds_mm"]
+                a, b = xy((lx, ly), mirror), xy((rx, ry), mirror)
+                draw.rectangle((min(a[0], b[0]), a[1], max(a[0], b[0]), b[1]), outline="#df94ed")
+        for fp in board.footprints:
+            if fp.side != side:
+                continue
+            interface = interfaces_by_ref.get(fp.ref, {})
+            color = "#ff886e" if fp.ref in error_refs else "#eee6a3" if interface.get("protected") else "#65938f"
+            paint_shape(draw, courtyard_polygon(fp), mirror, color)
+            if interface.get("access"):
+                paint_shape(draw, access_geometry(fp, interface["access"]), mirror, "#45cee6")
+            if interface.get("protected"):
+                draw.text(xy(fp.position, mirror), fp.ref, fill=color)
+                if interface.get("edge_datum_mm"):
+                    datum = xy(interface["edge_datum_mm"], mirror)
+                    draw.ellipse((datum[0] - 3, datum[1] - 3, datum[0] + 3, datum[1] + 3), fill="#45cee6")
+        save(image, f"{label}_geometry")
+        for fp in board.footprints:
+            row = interfaces_by_ref.get(fp.ref, {})
+            if fp.side != side or not row.get("protected"):
+                continue
+            cx, cy = xy(fp.position, mirror)
+            radius = min(220, max(80, round(6 * scale)))
+            left, top = max(0, cx - radius), max(0, cy - radius)
+            right, bottom = min(image.width, cx + radius), min(image.height, cy + radius)
+            if right <= left or bottom <= top:
+                continue
+            section = image.crop((left, top, right, bottom))
+            ref = "".join(c if c.isalnum() or c in "-_" else "_" for c in fp.ref)
+            save(section, f"interface_{label}_{ref}")
+
+    assembly = folder / "assembly.png"
+    assembly.write_bytes(assembly_overlay_image(board))
+    outputs["assembly"] = str(assembly)
+    native_zones = copper.zones if copper is not None else []
+    for index, layer in enumerate(board.copper_layers):
+        image, draw = canvas(f"{layer.name} | saved copper geometry | orange: isolated island")
+        for zone in native_zones:
+            for part in zone.get("fill_geometry", {}).get(layer.name, []):
+                if len(part["outer"]) >= 3:
+                    exterior = [xy(p) for p in part["outer"]]
+                    color = "#b96f39" if part["island"] else "#527f6d"
+                    if not part["holes"]:
+                        draw.polygon(exterior, fill=color)
+                        continue
+                    mask = Image.new("L", size)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.polygon(exterior, fill=255)
+                    for hole in part["holes"]:
+                        mask_draw.polygon([xy(p) for p in hole], fill=0)
+                    image.paste(color, (0, 0, *size), mask)
+        for item in (copper or board).routing.get("tracks", ()):
+            if item["layer"] in (layer.canonical, layer.name):
+                draw.line([xy(p) for p in item["points"]], fill="#ffd68a", width=max(1, round(item["width"] * scale)))
+        for fp in board.footprints:
+            for pad in fp.pads:
+                if layer.canonical in pad.layers and pad.kind != "np_thru_hole":
+                    paint_shape(draw, _pad_polygon(fp, pad), False, "#f3d497")
+        for row in findings:
+            if row["severity"] != "error":
+                continue
+            for point in row["points"]:
+                if point.get("layer") in (None, layer.name, layer.canonical):
+                    cx, cy = xy((point["x_mm"], point["y_mm"]))
+                    draw.ellipse((cx - 5, cy - 5, cx + 5, cy + 5), outline="#fa706b", width=2)
+        save(image, f"copper_{index}_{layer.canonical}")
+    views = {"files": outputs, "unavailable": unavailable}
+    if native:
+        add_native_review_views(board_path, folder, views)
+    return views
 
 
 def finding_image(board: Board, finding: dict) -> bytes:

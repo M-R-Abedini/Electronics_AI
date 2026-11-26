@@ -10,6 +10,7 @@ file (still usable if every reference resolves, as when only copper moved).
 from __future__ import annotations
 
 import json
+import math
 from functools import cache
 
 import jsonschema
@@ -44,6 +45,14 @@ def validate(intent: dict, board: Board) -> dict:
     layer_names = {layer.name: layer.canonical for layer in board.copper_layers}
     for ref, constraint in intent.get("mechanical", {}).items():
         value = constraint["value"]
+        access = value.get("access")
+        if access:
+            coordinates = (access["entry_mm"] + access["exit_mm"] + [access["width_mm"], access.get("max_overhang_mm", 0)]
+                           if access["kind"] == "planar" else access["center_mm"] + [access["diameter_mm"]])
+            if not all(math.isfinite(number) for number in coordinates):
+                errors.append(f"mechanical/{ref}: mating envelope requires finite dimensions")
+            if access["kind"] == "planar" and access["entry_mm"] == access["exit_mm"]:
+                errors.append(f"mechanical/{ref}: mating envelope entry and exit must differ")
         if ref not in fps:
             errors.append(f"mechanical/{ref}: no such footprint")
         if not model.is_hard(constraint) or constraint["source"].get("kind") not in ("board", "user", "datasheet"):

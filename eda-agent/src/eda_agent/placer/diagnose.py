@@ -49,14 +49,18 @@ def _key(row: dict) -> tuple:
 def _drc_rows(report: dict, board_path: Path, report_path: Path) -> list[dict]:
     run = report_path.parent
     native = board_path.with_suffix(".drc.json")
-    if not native.is_file():
+    exact = (report.get("quality") or {}).get("routing", {}).get("drc_report")
+    if exact and Path(exact).is_file():
+        native = Path(exact)
+    elif not native.is_file():
         # Fall back to route_check's final KiCad DRC JSON (sanitized or routed) so dangling warnings surface.
         rc_stage = (report.get("stages") or {}).get("route_check") or {}
         rc_rep_path = Path(rc_stage["run_report"]) if rc_stage.get("run_report") else report_path
         work_dir = rc_rep_path.parent / "work"
         if work_dir.is_dir():
             sanitized = sorted(work_dir.glob("drc_sanitized_*.json"))
-            candidate = sanitized[-1] if sanitized else (work_dir / "drc_routed.json")
+            final = work_dir / "drc_final_saved.json"
+            candidate = final if final.is_file() else sanitized[-1] if sanitized else work_dir / "drc_routed.json"
             if candidate.is_file():
                 native = candidate
     comparison = run / f"{board_path.stem.removesuffix('.placed')}.ref_unrouted.drc.json"
@@ -158,7 +162,8 @@ def diagnose(
     source = str(report_path)
     board = read_board(board_path)
     footprints = {fp.ref: fp for fp in board.footprints}
-    findings = []
+    checks = report.get("quality") or {}
+    findings = [{**row, "source": source} for review in checks.values() for row in review.get("findings", [])]
     for row in _drc_rows(report, board_path, report_path):
         desc = row["description"]
         distances = [float(d) for d in _DISTANCE.findall(desc)]
@@ -390,6 +395,8 @@ def diagnose(
         if unlocalized and localized == _KICAD_OPEN_LINK_LIMIT and kicad_version.startswith("10."):
             locations_status = "kicad_drc_limit"
     value = {"run": source, "board": str(board_path), "finding_counts": dict(counts),
+             "quality": {stage: {key: review[key] for key in ("status", "artifact", "findings_path", "views")
+                                 if key in review} for stage, review in checks.items()},
              "image_scope": "Placement IR with board outline, pads, tracks, mask artwork and zone boundaries; zone fill is omitted",
              "open_link_deltas": open_link_deltas,
              "total_findings": len(ordered_findings),

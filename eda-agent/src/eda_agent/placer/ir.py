@@ -79,6 +79,7 @@ class Footprint:
     schematic_position: Point | None = None  # Symbol origin in its sheet's coordinate system.
     sheet_path: str | None = None  # Full hierarchical sheet path (e.g. /TARGET Port/TARGET PHY/).
     unit_sheets: dict[str, Point] = field(default_factory=dict)  # Multi-unit IC sheets -> average position.
+    body_bounds_mm: Box | None = None  # Native world-space Fab bounds, valid on file readback.
 
     @property
     def position(self) -> Point:
@@ -245,6 +246,7 @@ class Board:
     schematic_branches: dict[str, list[list[list[str]]]] = field(default_factory=dict)
     placement_anchors: dict[str, str] | None = None  # Explicit anchors for a cold placement input.
     silkscreen_texts: list[dict] = field(default_factory=list)  # Extracted overlay/fab texts for DFM audit.
+    artwork: list[dict] = field(default_factory=list)  # Stationary board legend and padless artwork.
 
     def __post_init__(self) -> None:
         self.reindex()
@@ -301,6 +303,9 @@ class Board:
         data.pop("_index", None)
         data.pop("_uuid", None)
         data.pop("silkscreen_texts", None)
+        data.pop("artwork", None)
+        for footprint in data["footprints"]:
+            footprint.pop("body_bounds_mm", None)
         return {"schema": SCHEMA, "schema_version": SCHEMA_VERSION, **data}
 
 

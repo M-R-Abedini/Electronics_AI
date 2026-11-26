@@ -137,12 +137,15 @@ def _drc_signoff(rep: dict) -> dict | None:
         and unrouted == 0
         and dangling_tracks == 0
         and dangling_vias == 0
+        and route_m.get("drc_absolute_errors", 0) == 0
+        and (not rep.get("quality") or rep["quality"].get("routing", {}).get("status") == "approved")
     )
     return {
         "fab_ready": fab_ready,
         "drc_errors": drc_router + drc_new,
         "drc_unconnected": unrouted,
         "drc_track_dangling": dangling_tracks,
+        "drc_absolute_errors": route_m.get("drc_absolute_errors"),
         "drc_via_dangling": dangling_vias,
         "drc_text_mirror_warnings": mirror_warns,
         "unconnected_nets": unconn_nets,
@@ -154,6 +157,14 @@ def _drc_signoff(rep: dict) -> dict | None:
             f"({', '.join(unconn_nets[:8]) or 'see failures'}). Run a closed diagnose -> fix -> re-route loop "
             "before declaring the board DRC-clean or ready for fabrication."
         ),
+    }
+
+
+def _quality_summary(rep):
+    return {
+        stage: {key: row[key] for key in ("status", "reasons", "artifact", "findings_path", "zones_require_refill")
+                if key in row}
+        for stage, row in rep.get("quality", {}).items()
     }
 
 
@@ -469,6 +480,7 @@ class PlacerService:
         lint = rep["metrics"].get("lint")
         return {
             "passed": rep["passed"],
+            "quality": _quality_summary(rep),
             "drc_signoff": _drc_signoff(rep),
             "gates": [{k: g[k] for k in ("name", "value", "op", "threshold", "passed")} for g in rep["gates"]],
             "placed_board": rep["artifacts"]["placed_board"],
@@ -511,6 +523,7 @@ class PlacerService:
                           preserve_routing=preserve_routing, silkscreen_policy=silkscreen_policy,
                           fab_profile=fab_profile)
         return {"passed": rep["passed"], "gates": rep["gates"], "refs": refs,
+                "quality": _quality_summary(rep),
                 "zones_require_refill": rep["stages"]["place"].get("zones_require_refill", False),
                 "preserve_routing": rep["stages"]["place"].get("preserve_routing"),
                 "silkscreen": rep["stages"]["place"].get("silkscreen"),
@@ -532,8 +545,9 @@ class PlacerService:
             rep = json.loads(report.read_text(encoding="utf-8"))
             art = rep.get("artifacts", {})
             board_file = art.get("placed_board") or rep["inputs"]["board"]["path"]
-            route_dir = Path(art.get("run_dir", report.parent)) / "route" / "run_report.json"
-            shown = board_file
+            route_stage = rep.get("stages", {}).get("route_check") or {}
+            route_dir = Path(route_stage.get("run_report") or Path(art.get("run_dir", report.parent)) / "route" / "run_report.json")
+            shown = art.get("routed_board") or board_file
             route_metrics = None
             if route_dir.is_file():
                 rr = json.loads(route_dir.read_text(encoding="utf-8"))
@@ -662,8 +676,11 @@ class PlacerService:
                 s6a_summary["tap_fill_after_ses"] = s6a_mod.verify_taps_after_route(
                     routed["artifacts"]["routed_board"], s6a_stage["live_taps"]
                 )
-        routed_board = read_board(routed["artifacts"]["routed_board"]) if routed else None
-        fixed_map = problem.fixed_parts(board)
+        native_options = {"include_fill": True} if board.source.get("eda") == "kicad" else {}
+        routed_board = read_board(routed["artifacts"]["routed_board"], **native_options) if routed else None
+        if native_options and routed_board is None:
+            routed_board = read_board(src, include_fill=True)
+        fixed_map = problem.fixed_parts(board, intent)
         evaluation = evaluate(
             board, routed["metrics"] if routed else None,
             fixed=set(fixed_map), intent=intent, copper_board=routed_board,
@@ -693,6 +710,7 @@ class PlacerService:
                 {"stage": "legality", "cause": f["kind"], "refs": f["refs"], "waived_by": f["waived_by"]}
                 for f in evaluation["legality"]["findings"] if not f["fixed"]],
             artifacts=artifacts,
+            **({"quality": routed["quality"]} if routed and routed.get("quality") else {}),
             unknowns=board.unknowns, warnings=board.warnings,
         )
         path = run_report.write(rep, run_dir / "run_report.json")
@@ -700,6 +718,7 @@ class PlacerService:
         lint = evaluation["metrics"].get("lint")
         return {
             "passed": rep["passed"],
+            "quality": _quality_summary(rep),
             "drc_signoff": _drc_signoff(rep),
             "gates": [{k: g[k] for k in ("name", "value", "op", "threshold", "passed")} for g in gates],
             "legality": {k: v for k, v in evaluation["legality"].items() if k != "findings"},

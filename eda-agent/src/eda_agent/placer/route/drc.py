@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -54,8 +55,14 @@ def run_cached(board: Path, out_json: Path) -> dict:
     key = hashlib.sha256(("|".join(parts) + "|" + kicad().version).encode()).hexdigest()[:32]
     cache = RUNTIME_DIR / "cache" / "drc" / f"{key}.json"
     if cache.is_file():
-        shutil.copyfile(cache, out_json)
-        return json.loads(cache.read_text(encoding="utf-8"))
+        cached = cache.read_bytes()
+        try:
+            result = json.loads(cached)
+        except ValueError:
+            pass  # replace an incomplete record from an older run
+        else:
+            out_json.write_bytes(cached)
+            return result
     with tempfile.TemporaryDirectory(prefix="eai_drc_") as tmp:
         copy = Path(tmp) / board.name  # never run kicad-cli next to the user's file
         shutil.copyfile(board, copy)
@@ -64,7 +71,16 @@ def run_cached(board: Path, out_json: Path) -> dict:
                 shutil.copyfile(board.with_suffix(s), copy.with_suffix(s))
         result = run(copy, out_json)
     cache.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(out_json, cache)
+    with tempfile.NamedTemporaryFile(dir=cache.parent, prefix=f"{key}-", suffix=".tmp", delete=False) as file:
+        pending = Path(file.name)
+        file.write(out_json.read_bytes())
+    try:
+        os.replace(pending, cache)
+    except PermissionError:
+        if not cache.is_file():
+            raise
+    finally:
+        pending.unlink(missing_ok=True)
     return result
 
 
@@ -125,14 +141,15 @@ class Attribution:
 
 def attribute(routed: dict, reference: dict) -> Attribution:
     """Split the routed board's violations; ``reference`` is DRC of the input board."""
-    known = {_key(v) for v in reference.get("violations", [])}
+    known = Counter(_key(v) for v in reference.get("violations", []) if v.get("severity") in _GATED)
     out = Attribution()
     for v in routed.get("violations", []):
         if v.get("severity") not in _GATED:
             out.warnings.append(v)
         elif any(is_routing_item(i.get("description", "")) for i in v.get("items", [])):
             out.router.append(v)
-        elif _key(v) in known:
+        elif known[key := _key(v)] > 0:
+            known[key] -= 1
             out.pre_existing.append(v)
         else:
             out.new_other.append(v)

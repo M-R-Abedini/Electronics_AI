@@ -120,7 +120,28 @@ def resolve_run(run: str | Path, *, use_routed: bool = True) -> dict[str, Any]:
 
     artifact_kind: str | None = None
     artifact_path: Path | None = None
-    if use_routed and routed_raw and Path(routed_raw).is_file():
+    checked_artifact = None
+    quality_report = rep.get("quality")
+    if quality_report is not None:
+        from .quality import identity
+
+        reviewed_source = (rep.get("inputs") or {}).get("board_artifact")
+        if reviewed_source and (not input_path.is_file() or reviewed_source != identity(input_path)):
+            raise ApplyError("source board or project rules changed since review")
+        artifact_kind = "routed" if use_routed else "placed"
+        checked = quality_report.get("routing" if use_routed else "placement") or {}
+        if checked.get("status") != "approved":
+            raise ApplyError(f"{artifact_kind} output has no current approval ({checked.get('status', 'unreviewed')})")
+        selected = routed_raw if use_routed else placed_raw
+        if not selected or not Path(selected).is_file():
+            raise ApplyError(f"approved {artifact_kind} artifact is missing")
+        artifact_path = Path(selected).resolve()
+        checked_artifact = checked.get("artifact")
+        if checked_artifact != identity(artifact_path):
+            raise ApplyError(f"{artifact_kind} artifact or its project rules changed since review")
+    elif board_input.get("eda") == "kicad" or "kicad_pro" in (rep.get("inputs") or {}):
+        raise ApplyError("legacy design run requires a fresh review before apply")
+    elif use_routed and routed_raw and Path(routed_raw).is_file():
         artifact_kind = "routed"
         artifact_path = Path(routed_raw).resolve()
     elif placed_raw and Path(placed_raw).is_file():
@@ -141,7 +162,8 @@ def resolve_run(run: str | Path, *, use_routed: bool = True) -> dict[str, Any]:
         "input_board_sha256": input_sha,
         "artifact_kind": artifact_kind,
         "artifact_path": artifact_path,
-        "artifact_sha256": sha256_file(artifact_path),
+        "artifact_sha256": checked_artifact["sha256"] if checked_artifact else sha256_file(artifact_path),
+        "artifact_sidecars": checked_artifact["sidecars"] if checked_artifact else None,
     }
 
 
@@ -260,7 +282,8 @@ def apply_run(
 
     resolved = resolve_run(run, use_routed=use_routed)
     rep = resolved["report"]
-    if not rep.get("passed", False) and not allow_failed_gates:
+    stage_approved = rep.get("quality") is not None
+    if not stage_approved and not rep.get("passed", False) and not allow_failed_gates:
         failed_gates = [g["name"] for g in rep.get("gates", []) if not g.get("passed")]
         raise ApplyError(
             f"refusing to apply run with failed gates ({', '.join(failed_gates) or 'passed=False'}); "
@@ -271,6 +294,7 @@ def apply_run(
     input_sha: str | None = resolved["input_board_sha256"]
     artifact_path: Path = resolved["artifact_path"]
     artifact_sha: str = resolved["artifact_sha256"]
+    reviewed_sidecars = resolved["artifact_sidecars"]
 
     if adapter == "kicad_ipc":
         _check_kicad_ipc()
@@ -344,6 +368,14 @@ def apply_run(
             target = input_path.with_name(f"{input_path.stem}{suffix}").resolve()
         live_sha = sha256_file(target) if target.is_file() else None
 
+    if reviewed_sidecars is not None:
+        target_sidecars = {suffix: sha256_file(target.with_suffix(suffix))
+                           for suffix in SIDECARS if target.with_suffix(suffix).is_file()}
+        if in_place and target_sidecars != reviewed_sidecars:
+            raise ApplyError("in-place target rules differ from the reviewed project rules")
+        if not in_place and target_sidecars.keys() - reviewed_sidecars.keys():
+            raise ApplyError("destination contains project rules outside the reviewed artifact")
+
     route_m = (rep.get("metrics") or {}).get("route") or {}
     unrouted_count = int(route_m.get("unrouted") or 0) if route_m else None
     dangling_count = int(route_m.get("drc_track_dangling") or 0) + int(route_m.get("drc_via_dangling") or 0)
@@ -392,27 +424,47 @@ def apply_run(
                 sc_sha = _atomic_copy(sc, sc_b)
                 backup_files.append({"original": str(sc), "backup": str(sc_b), "sha256": sc_sha})
 
-    # Step 2: Atomic swap of the target board + project sidecars (when writing to a new path).
-    after_sha = _atomic_copy(artifact_path, target, expected_sha256=artifact_sha)
-    if not backup_files:
-        created_files.append(str(target))
-    if not in_place:
-        backed_up_paths = {row["original"] for row in backup_files}
-        for suf in SIDECARS:
-            src_sc = artifact_path.with_suffix(suf)
-            if not src_sc.is_file():
-                src_sc = input_path.with_suffix(suf)
-            dst_sc = target.with_suffix(suf).resolve()
-            if src_sc.is_file() and src_sc.resolve() != dst_sc:
+    # Keep the baked-in rule files and the board together if a later copy fails.
+    published = {}
+    try:
+        after_sha = _atomic_copy(artifact_path, target, expected_sha256=artifact_sha)
+        published[target] = after_sha
+        if not backup_files:
+            created_files.append(str(target))
+        if not in_place:
+            backed_up_paths = {row["original"] for row in backup_files}
+            for suf in SIDECARS:
+                src_sc = artifact_path.with_suffix(suf)
+                if reviewed_sidecars is not None:
+                    if suf not in reviewed_sidecars:
+                        continue
+                    if not src_sc.is_file():
+                        raise ApplyError(f"reviewed rule file disappeared: {src_sc}")
+                elif not src_sc.is_file():
+                    src_sc = input_path.with_suffix(suf)
+                dst_sc = target.with_suffix(suf).resolve()
+                if not src_sc.is_file() or src_sc.resolve() == dst_sc:
+                    continue
                 existed = dst_sc.is_file()
                 if existed and str(dst_sc) not in backed_up_paths:
                     sc_b = backup_dir / dst_sc.name
                     sc_sha = _atomic_copy(dst_sc, sc_b)
                     backup_files.append({"original": str(dst_sc), "backup": str(sc_b), "sha256": sc_sha})
                     backed_up_paths.add(str(dst_sc))
-                _atomic_copy(src_sc, dst_sc)
+                published[dst_sc] = _atomic_copy(src_sc, dst_sc, expected_sha256=(reviewed_sidecars or {}).get(suf))
                 if not existed:
                     created_files.append(str(dst_sc))
+    except (OSError, ApplyError):
+        backups = {row["original"]: row for row in backup_files}
+        for written, digest in reversed(list(published.items())):
+            if not written.is_file() or sha256_file(written) != digest:
+                raise ApplyError(f"destination changed during apply; retained backups in {backup_dir}") from None
+            previous = backups.get(str(written))
+            if previous is not None:
+                _atomic_copy(Path(previous["backup"]), written, expected_sha256=previous["sha256"])
+            else:
+                written.unlink()
+        raise
 
     manifest = {
         "schema": SCHEMA,

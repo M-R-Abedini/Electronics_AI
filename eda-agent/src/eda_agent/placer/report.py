@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import operator
+import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -67,5 +69,13 @@ def build(*, kind: str, inputs: dict, config: dict, stages: dict, metrics: dict,
 
 def write(report: dict, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=1, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+    content = json.dumps(report, indent=1, sort_keys=True, ensure_ascii=False)
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False,
+                                     mode="w", encoding="utf-8") as file:
+        pending = Path(file.name)
+        file.write(content)
+    try:
+        os.replace(pending, path)
+    finally:
+        pending.unlink(missing_ok=True)
     return path

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from shapely.geometry import Polygon
 
+from .. import quality
 from .. import report as run_report
 from ..eval import congestion, legality
 from ..eval.metrics import critical_loops_intent, crossings
@@ -28,9 +29,9 @@ from ..eval.score import evaluate
 from ..intent import model
 from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
-from ..route.check import route_check
+from ..route.check import RouteCheckError, route_check
 from ..toolchain import RUNTIME_DIR
-from . import analytical, blocks, decap, escape, mechanical, problem, rigid
+from . import analytical, blocks, decap, escape, mechanical, problem, review, rigid
 
 SA_MOVES_PER_PART = 4000  # declared: annealing budget scales with movable parts ...
 SA_MIN_MOVES = 200_000
@@ -39,6 +40,8 @@ MODES = ("analytical", "sa_only")
 W_CROSS = 2.0  # declared: cost of one pin-pair crossing in mm of wirelength
 LEGALIZE_STEP_MM = 0.2
 LEGALIZE_RETRIES = 2
+LARGE_LEGALIZE_MOVABLE = 300
+LARGE_LEGALIZE_RINGS = 80
 MAX_CORRIDOR_TRIALS = 24
 MAX_INFLATION_ROUNDS = 3
 INFLATION_TIME_GUARD_S = 180.0  # reserve headroom for passive alignment within the 300s S0-S5 gate
@@ -85,12 +88,17 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
                                                                                                 strict=True)])
     t = time.monotonic()
     start_poses = core.positions()
-    failed = core.legalize(LEGALIZE_STEP_MM, diag, priority)
+    large = movable >= LARGE_LEGALIZE_MOVABLE
+    legalize_step = max(LEGALIZE_STEP_MM, diag / LARGE_LEGALIZE_RINGS) if large else LEGALIZE_STEP_MM
+    retry_step = max(LEGALIZE_STEP_MM, legalize_step * 0.75) if large else LEGALIZE_STEP_MM / 2
+    failed = core.legalize(legalize_step, diag, priority)
     retries = 0
     while failed and retries < LEGALIZE_RETRIES:  # deterministic retry: the parts left over go first
         retries += 1
-        core.set_positions(start_poses)
-        failed = core.legalize(LEGALIZE_STEP_MM / 2, diag, sorted(set(failed)))
+        if not large:
+            core.set_positions(start_poses)
+        # On large boards, keep successful coarse poses as the next search targets.
+        failed = core.legalize(retry_step, diag, sorted(set(failed)))
     after_legalize = core.cost()
     timings["s4"] = round(time.monotonic() - t, 2)
     t = time.monotonic()
@@ -118,6 +126,7 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         "fixed": pb.fixed, "decap_affinities": len(pb.affinities) - pb.local_block_links,
         "local_block_links": pb.local_block_links, "s3": s3_info,
         "s4_failed": [solver_pb.refs[i] for i in failed], "s4_retries": retries,
+        "s4_step_mm": legalize_step, "s4_retry_step_mm": retry_step,
         "cost_after_s4": after_legalize, "s5": sa, "cost_final": core.cost(),
         "illegal_after_s5": [solver_pb.refs[i] for i in illegal], "strict_violations": violations, "timings": timings,
         "seconds_s0_s5": round(time.monotonic() - t0, 2),
@@ -428,7 +437,7 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             modes.append(("rigid", True, False))
         if selected:
             modes.extend([("reserve", False, True), ("combined", True, True)])
-    fixed_guess = problem.fixed_parts(board)
+    fixed_guess = problem.fixed_parts(board, intent)
     movable_est = sum(1 for fp in board.footprints if fp.ref not in fixed_guess and not fp.locked)
     # Full 100% S3/S5 iteration budget for normal/medium boards (< 175 movable parts).
     # For large (>= 175 movable) boards, drop redundant variants (keep baseline + blocks + combined/rigid)
@@ -824,6 +833,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
         raise ValueError(f"unsupported fab_profile: {fab_profile!r}")
     src = Path(board_path).resolve()
     reference = read_board(src)
+    source_identity = quality.identity(src) if reference.source.get("eda") == "kicad" else None
     board, cold = reference, None
     if cluster_refs is not None and schematic_path is not None:
         raise ValueError("cluster placement requires the existing layout (no schematic_path)")
@@ -832,25 +842,26 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     if schematic_path is not None:
         from ..io.schematic_input import cold_input
 
-        board, cold = cold_input(reference, Path(schematic_path).resolve(strict=True))
+        declared = resolve(reference, intent_path)[0] if intent_path else None
+        board, cold = cold_input(reference, Path(schematic_path).resolve(strict=True), intent=declared)
     intent, intent_info = resolve(board, intent_path)
     side_policy = policy_of(intent, side_policy)
     if cluster_refs is not None:
         if any(ref not in cluster_refs and claim["value"]["mode"] == "region"
                for ref, claim in intent.get("mechanical", {}).items()):
             raise ValueError("cluster intent cannot relocate an outside footprint")
-        board, cluster_meta = _cluster_input(reference, cluster_refs)
+        board, cluster_meta = _cluster_input(reference, cluster_refs, intent)
         # Cluster placement is a local ECO; all components stay on their current side.
         side_policy = "expert"
     else:
         cluster_meta = None
     outside = set(board.placement_anchors) if cluster_refs is not None else set()
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     run_dir = (Path(out_dir) if out_dir else RUNTIME_DIR / "place" / f"{board.name}-{stamp}").resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     if keep_placement:
         placed = board.copy()
-        fixed_map = problem.fixed_parts(placed)
+        fixed_map = problem.fixed_parts(placed, intent)
         boxes = {fp.ref: problem.local_box(fp) for fp in placed.footprints}
         info = {
             "mode": "keep_placement",
@@ -917,14 +928,38 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
     silk_cfg = silk_mod.build_config(
         placed, intent, policy=silkscreen_policy, fab_profile=fab_profile, dru_rules=dru_rules,
     )
-    out_board = write_board(src, placed, run_dir / f"{board.name}.placed.kicad_pcb",
-                            strip_routing=not eco_preserve,
-                            strip_zones=cold is not None,
-                            unfill_zones=cluster_refs is not None and not eco_preserve,
-                            preserve_outside_routing=eco_preserve,
-                            clean_silkscreen=silkscreen_policy != "off",
-                            silkscreen_config=silk_cfg,
-                            result_out=write_stats)
+    def write_trial(candidate, target):
+        stats: dict = {}
+        cfg = silk_mod.build_config(candidate, intent, policy=silkscreen_policy,
+                                    fab_profile=fab_profile, dru_rules=dru_rules)
+        path = write_board(src, candidate, target, strip_routing=not eco_preserve, strip_zones=cold is not None,
+                           unfill_zones=not eco_preserve, preserve_outside_routing=eco_preserve,
+                           clean_silkscreen=silkscreen_policy != "off", silkscreen_config=cfg, result_out=stats)
+        return path, stats
+
+    out_board, write_stats = write_trial(placed, run_dir / f"{board.name}.placed.kicad_pcb")
+    reviewer = placement_review = None
+    if reference.source.get("eda") == "kicad":
+        reviewer = quality.PlacementReview(reference, intent, info["fixed"], info["mechanical_anchors"],
+                                           cold=cold is not None, fab_profile=fab_profile)
+        out_board, placed, placement_review = review.run(
+            out_board, reviewer, run_dir / "review", write_trial, allow_reference=cold is None and not keep_placement,
+        )
+        write_stats = placement_review.pop("write_stats", write_stats)
+        if len(placement_review["rounds"]) > 1:
+            silk_cfg = silk_mod.build_config(placed, intent, policy=silkscreen_policy,
+                                              fab_profile=fab_profile, dru_rules=dru_rules)
+            boxes = {fp.ref: problem.local_box(fp) for fp in placed.footprints}
+            info["floorplan"]["escape"] = escape.audit(placed, escape.envelopes(placed, intent, boxes))
+            repairs = [row["action"] for row in placement_review["rounds"][1:] if row["accepted"]]
+            if repairs:
+                info["cost_final_stage"] = repairs[-1]
+                if repairs[-1] == "restore_reference":
+                    info["floorplan"]["selected_variant"] = "authored_reference"
+        info["zones_require_refill"] = placement_review["zones_require_refill"]
+        if info["seconds_s0_s5"] > 300 and placement_review["status"] == "approved":
+            placement_review["status"] = "failed"
+            placement_review["reasons"] = ["placement_time_budget"]
     silk_raw = write_stats.get("silkscreen")
     if isinstance(silk_raw, dict):
         post_texts = silk_raw.pop("post_texts", [])
@@ -946,62 +981,64 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
             "moved_footprints": write_stats.get("moved_footprints"),
             "unfilled_zones": write_stats.get("unfilled_zones"),
         }
-    s6a_stage: dict | None = None
-    route_input = out_board
-    if eco_preserve and route:
-        import shutil
+    def run_route_trial(artifact, layout, cfg, root):
+        import json
 
-        from ..io.kicad import PROJECT_SIDECARS, run_helper
-
-        locked_eco = run_dir / f"{board.name}.eco_locked.kicad_pcb"
-        run_helper("lock_routing", out_board, locked_eco, run_dir / "eco_lock.json")
-        for suffix in PROJECT_SIDECARS:
-            side = out_board.with_suffix(suffix)
-            if side.is_file():
-                shutil.copyfile(side, locked_eco.with_suffix(suffix))
-        route_input = locked_eco
-    elif route and s6a:
+        from ..io.kicad import KiCadAdapterError, lock_routing_copy, run_helper
         from ..route import s6a as s6a_mod
 
-        s6a_stage = s6a_mod.apply_to_board(out_board, intent, run_dir / "s6a")
-        if s6a_stage["applied"] and s6a_stage["s6a_board"]:
-            route_input = Path(s6a_stage["s6a_board"])
-    routed = (route_check(route_input, out_dir=run_dir / "route", reference_board=src,
-                          router_timeout_s=router_timeout_s, intent=intent)
-              if route else None)
-    if routed and silkscreen_policy != "off":
-        routed_pcb = Path(routed["artifacts"]["routed_board"])
-        if routed_pcb.is_file() and routed_pcb.read_bytes()[:32].lstrip().startswith(b"(kicad_pcb"):
-            import json
+        trial_silk = {}
+        stage = None
+        route_input = artifact
 
-            from ..io.kicad import run_helper
-
-            pr_cfg = run_dir / "post_route_silk_cfg.json"
-            pr_out = run_dir / "post_route_silk_out.json"
-            pr_cfg.write_text(json.dumps(silk_cfg), encoding="utf-8")
+        def finish_legend(routed_pcb):
+            if not routed_pcb.is_file():
+                return
+            with routed_pcb.open("rb") as artifact_file:
+                if not artifact_file.read(32).lstrip().startswith(b"(kicad_pcb"):
+                    return
+            pr_cfg = root / "post_route_silk_cfg.json"
+            pr_out = root / "post_route_silk_out.json"
+            pr_cfg.write_text(json.dumps(cfg), encoding="utf-8")
             run_helper("clean_silkscreen", routed_pcb, pr_cfg, routed_pcb, pr_out)
-            pr_raw = json.loads(pr_out.read_text(encoding="utf-8"))
-            if isinstance(pr_raw, dict) and not pr_raw.get("skipped"):
-                pr_texts = pr_raw.pop("post_texts", [])
-                pr_audit = silk_mod.audit_texts(
-                    pr_texts, fab_profile=fab_profile, rules=placed.rules, board=placed, dru_rules=dru_rules,
-                )
-                info["silkscreen"] = {
-                    **pr_raw,
-                    "post_route_via_fixup": True,
-                    "density": silk_cfg["density"],
-                    "audit": pr_audit,
-                }
-    s6a_summary: dict | None = None
-    if s6a_stage is not None:
-        s6a_summary = {k: v for k, v in s6a_stage.items() if k not in ("live_taps", "report")}
-        if routed and s6a_stage["applied"] and s6a_stage["live_taps"]:
-            from ..route import s6a as s6a_mod
+            result = json.loads(pr_out.read_text(encoding="utf-8"))
+            if isinstance(result, dict) and not result.get("skipped"):
+                texts = result.pop("post_texts", [])
+                trial_silk.update(result, post_route_via_fixup=True, density=cfg["density"],
+                                  audit=silk_mod.audit_texts(texts, fab_profile=fab_profile, rules=layout.rules,
+                                                             board=layout, dru_rules=dru_rules))
 
-            s6a_summary["tap_fill_after_ses"] = s6a_mod.verify_taps_after_route(
-                routed["artifacts"]["routed_board"], s6a_stage["live_taps"]
-            )
-    routed_board = read_board(routed["artifacts"]["routed_board"]) if routed else None
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            if eco_preserve:
+                route_input = lock_routing_copy(artifact, root / f"{board.name}.eco_locked.kicad_pcb")
+            elif s6a:
+                stage = s6a_mod.apply_to_board(artifact, intent, root / "s6a")
+                if stage["applied"] and stage["s6a_board"]:
+                    route_input = Path(stage["s6a_board"])
+            result = route_check(route_input, out_dir=root / "route", reference_board=src,
+                                 router_timeout_s=router_timeout_s, intent=intent,
+                                 **({"postprocess": finish_legend} if reviewer and silkscreen_policy != "off" else {}))
+            routed_path = Path(result["artifacts"]["routed_board"])
+            if reviewer is None and silkscreen_policy != "off":
+                finish_legend(routed_path)
+            saved = read_board(routed_path, **({"include_fill": True} if reviewer else {}))
+            summary = None
+            if stage is not None:
+                summary = {k: v for k, v in stage.items() if k not in ("live_taps", "report")}
+                if stage["applied"] and stage["live_taps"]:
+                    summary["tap_fill_after_ses"] = s6a_mod.verify_taps_after_route(routed_path, stage["live_taps"])
+            return result, saved, summary, trial_silk, None
+        except (RouteCheckError, KiCadAdapterError) as exc:
+            return None, None, None, {}, str(exc)
+
+    routed = routed_board = s6a_summary = route_problem = None
+    route_root = run_dir
+    placement_blocks_routing = route and placement_review is not None and placement_review["status"] != "approved"
+    if route and not placement_blocks_routing:
+        routed, routed_board, s6a_summary, routed_silk, route_problem = run_route_trial(out_board, placed, silk_cfg, route_root)
+        if routed_silk:
+            info["silkscreen"] = routed_silk
     fixed = set(info["fixed"])
     evaluation = evaluate(placed, routed["metrics"] if routed else None, fixed, intent, copper_board=routed_board)
     reference_for_score = reference
@@ -1013,6 +1050,58 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
                 source.x, source.y, source.rotation, source.side, source.locked
             )
     reference_evaluation = evaluate(reference_for_score, fixed=fixed, intent=intent)
+    if placement_blocks_routing:
+        routing_review = {"status": "blocked", "reasons": ["placement_not_approved"]}
+    else:
+        routing_review = {"status": "failed" if route_problem else "not_requested",
+                          "reasons": [route_problem] if route_problem else []}
+    if routed and reviewer and routed_board is not None:
+        path = Path(routed["artifacts"]["routed_board"])
+        routing_review = review.routed_evidence(path, routed_board, reviewer, routed, placement_review,
+                                                run_dir / "review" / "routed",
+                                                taps=(s6a_summary or {}).get("tap_fill_after_ses"))
+    if (reviewer and routed and routing_review["status"] != "approved" and placement_review["status"] == "approved"
+            and routed["metrics"].get("settled") and routed["metrics"].get("router_stop") != "timeout"
+            and len(placement_review["rounds"]) <= quality.MAX_REPAIRS and cold is None
+            and cluster_refs is None and not keep_placement):
+        alternative = review._candidate(placed, reviewer, "restore_reference", [])
+        if alternative is not None:
+            alternate_root = run_dir / "route-repair"
+            path, _ = write_trial(alternative, alternate_root / out_board.name)
+            saved = read_board(path)
+            from ..route import drc
+
+            reference_drc = drc.run_cached(src, alternate_root / "reference.drc.json")
+            draft = review.draft_evidence(path, saved, reviewer, alternate_root / "review" / "placement",
+                                          reference_drc=reference_drc)
+            attempt = {"action": "reroute_authored_placement", "accepted": False, "placement": draft}
+            if draft["status"] == "approved":
+                cfg = silk_mod.build_config(saved, intent, policy=silkscreen_policy, fab_profile=fab_profile,
+                                            dru_rules=dru_rules)
+                trial, trial_board, trial_s6a, trial_silk, error = run_route_trial(path, saved, cfg, alternate_root)
+                if trial:
+                    trial_routing = review.routed_evidence(
+                        Path(trial["artifacts"]["routed_board"]), trial_board, reviewer, trial, draft,
+                        alternate_root / "review" / "routed", taps=(trial_s6a or {}).get("tap_fill_after_ses"),
+                    )
+                    attempt["routing"] = trial_routing
+                    if trial_routing["status"] == "approved":
+                        attempt["accepted"] = True
+                        original_rounds = placement_review["rounds"]
+                        placement_review = {**draft, "rounds": original_rounds, "stop": "route_repair_approved"}
+                        routing_review = {**trial_routing, "initial_review": routing_review}
+                        out_board, placed = path, saved
+                        routed, routed_board, s6a_summary = trial, trial_board, trial_s6a
+                        route_root = alternate_root
+                        info["floorplan"]["selected_variant"] = "authored_route_repair"
+                        boxes = {fp.ref: problem.local_box(fp) for fp in placed.footprints}
+                        info["floorplan"]["escape"] = escape.audit(placed, escape.envelopes(placed, intent, boxes))
+                        if trial_silk:
+                            info["silkscreen"] = trial_silk
+                        evaluation = evaluate(placed, routed["metrics"], fixed, intent, copper_board=routed_board)
+                elif error:
+                    attempt["error"] = error
+            placement_review["rounds"].append(attempt)
     page = gallery([Panel(f"{board.name} (reference)", reference_for_score, reference_evaluation),
                     Panel(f"{board.name} (placer v2, {mode})",
                           routed_board if routed_board is not None else placed, evaluation,
@@ -1022,19 +1111,27 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
              run_report.gate("s0_s5_seconds", info["seconds_s0_s5"], 300, "<=")]
     if routed:
         gates += [g for g in routed["gates"] if g["name"] != "time_budget_s"]
+    if placement_review is not None:
+        gates[0] = run_report.gate("legality_violations",
+                                   sum(f["kind"] == "new_placement_violation" for f in placement_review["findings"]), 0)
+        gates.append(run_report.gate("placement_review_approved", placement_review["status"], "approved"))
+        if route:
+            gates.append(run_report.gate("routing_review_approved", routing_review["status"], "approved"))
     artifacts = {"run_dir": str(run_dir), "placed_board": str(out_board), "gallery": str(page)}
     if s6a_summary and s6a_summary.get("s6a_board"):
         artifacts["s6a_board"] = s6a_summary["s6a_board"]
+    if routed and reviewer:
+        artifacts["routed_board"] = routed["artifacts"]["routed_board"]
     rep = run_report.build(
         kind="place_cluster" if cluster_refs is not None else "place_board",
-        inputs={"board": board.source, "intent": intent_info},
+        inputs={"board": board.source, "intent": intent_info, **({"board_artifact": source_identity} if source_identity else {})},
         config={"side_policy": side_policy, "mode": info["mode"], "seed": seed, "w_cross": problem.WEIGHT_SIGNAL * W_CROSS,
                 "sa_moves_per_part": SA_MOVES_PER_PART, "floorplan": floorplan, "cluster_refs": cluster_refs,
                 "s6a": s6a, "preserve_routing": preserve_routing, "keep_placement": keep_placement,
                 "router_timeout_s": router_timeout_s,
                 "silkscreen_policy": silkscreen_policy, "fab_profile": fab_profile},
         stages={"place": info, "s6a": s6a_summary,
-                "route_check": {"run_report": str(run_dir / "route" / "run_report.json")} if routed else None},
+                "route_check": {"run_report": str(route_root / "route" / "run_report.json")} if routed else None},
         metrics={**evaluation["metrics"], "pro_score": evaluation["pro_score"], "fanout_escape": info["floorplan"]["escape"],
                  "route": routed["metrics"] if routed else None},
         gates=gates,
@@ -1042,23 +1139,28 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
             {"stage": "legality", "cause": f["kind"], "refs": f["refs"]}
             for f in evaluation["legality"]["findings"] if not f["fixed"]],
         artifacts=artifacts,
+        **({"quality": {"placement": placement_review, "routing": routing_review}} if reviewer else {}),
         reference_evaluation=reference_evaluation if cold is not None or cluster_refs is not None else None,
     )
+    if source_identity is not None and source_identity != quality.identity(src):
+        raise RuntimeError("input board or project rules changed during placement review")
     run_report.write(rep, run_dir / "run_report.json")
     return rep
 
 
-def _cluster_input(reference, refs: list[str]) -> tuple:
+def _cluster_input(reference, refs: list[str], intent: dict | None = None) -> tuple:
     """Limit movable parts to the requested cluster while keeping zone definitions and layer roles intact."""
     requested = set(refs)
     if not requested or requested - {fp.ref for fp in reference.footprints}:
         raise ValueError("cluster must contain existing footprint references")
-    anchors = problem.fixed_parts(reference)
-    if not requested - set(anchors):
+    anchors = problem.fixed_parts(reference, intent)
+    regional = {ref for ref, row in (intent or {}).get("mechanical", {}).items()
+                if row["value"]["mode"] == "region" and ref in requested and not reference.fp(ref).locked}
+    if not (requested - set(anchors) or regional):
         raise ValueError("cluster has no movable footprint")
     board = reference.copy()
     board.placement_anchors = {fp.ref: anchors.get(fp.ref, "outside requested cluster") for fp in reference.footprints
-                               if fp.ref not in requested or fp.ref in anchors}
+                               if fp.ref not in requested or (fp.ref in anchors and fp.ref not in regional)}
     input_fill = copy.deepcopy(reference.zone_fill_by_layer_mm2)
     board.routing, board.routing_items, board.teardrops = {}, 0, 0
     board.zone_fill_by_layer_mm2 = {}

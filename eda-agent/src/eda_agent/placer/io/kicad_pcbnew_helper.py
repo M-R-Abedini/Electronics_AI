@@ -576,7 +576,7 @@ def finish(board_path, ses_path, out_board, out_json):
     pads = _pad_rows(board)
     for zone in copper:
         board.Add(zone)
-    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    _refill_modified_zones(board)
     unrouted_final = _unconnected(board)
     pcbnew.SaveBoard(out_board, board)
     report = {
@@ -730,7 +730,7 @@ def prune_dangling_by_drc(board_path, spec_json, out_board, out_json):
     pads = _pad_rows(board)
     for z in copper:
         board.Add(z)
-    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    _refill_modified_zones(board)
     unrouted_final = _unconnected(board)
     pcbnew.SaveBoard(out_board, board)
     with open(out_json, "w", encoding="utf-8") as fh:
@@ -841,7 +841,7 @@ def inject_return_vias(board_path, spec_json, out_board, out_json):
                 break
 
     if added > 0:
-        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+        _refill_modified_zones(board)
         pcbnew.SaveBoard(out_board, board)
     with open(out_json, "w", encoding="utf-8") as fh:
         json.dump({"added": added, "added_uuids": added_uuids, "unrouted_final": _unconnected(board)}, fh, indent=1)
@@ -966,7 +966,7 @@ def sanitize(board_path, remove_json, out_board, out_json):
     pads = _pad_rows(board)
     for z in copper:
         board.Add(z)
-    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    _refill_modified_zones(board)
     unrouted_final = _unconnected(board)
     pcbnew.SaveBoard(out_board, board)
     report = {
@@ -1028,7 +1028,7 @@ def heal_thermals(board_path, spec_json, out_board, out_json):
     pads = _pad_rows(board)
     for z in copper:
         board.Add(z)
-    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    _refill_modified_zones(board)
     unrouted_final = _unconnected(board)
     pcbnew.SaveBoard(out_board, board)
     report = {
@@ -1119,7 +1119,8 @@ def heal_mask_bridges(board_path, spec_json, out_board, out_json):
             ident = uuid5(NAMESPACE_URL, f"electronics-ai/mask-guard/{uid}/{idx}")
             ra.SetUuidDirect(pcbnew.KIID(str(ident)))
             board.Add(ra)
-            added_rule_areas.append({"mask_uuid": uid, "layer": board.GetLayerName(cu_layer), "index": idx})
+            added_rule_areas.append({"uuid": str(ident), "mask_uuid": uid,
+                                     "layer": board.GetLayerName(cu_layer), "index": idx})
 
     zones = list(board.Zones())
     copper = [z for z in zones if not z.GetIsRuleArea()]
@@ -1130,7 +1131,7 @@ def heal_mask_bridges(board_path, spec_json, out_board, out_json):
     pads = _pad_rows(board)
     for z in copper:
         board.Add(z)
-    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    _refill_modified_zones(board)
     unrouted_final = _unconnected(board)
     pcbnew.SaveBoard(out_board, board)
     report = {
@@ -1341,6 +1342,7 @@ def _footprint_dict(board, fp, max_error):
         "sheet": fp.GetSheetname() if hasattr(fp, "GetSheetname") else None,
         "sheet_path": fp.GetPath().AsString() if hasattr(fp, "GetPath") else None,
         "description": fp.GetLibDescription() if hasattr(fp, "GetLibDescription") else "",
+        "body_bounds_mm": [_mm(coordinate) for coordinate in _footprint_body_box(fp)],
         "courtyard": _courtyard(fp, ox, oy, rot, max_error),
         "pads": [_pad_dict(board, pad, ox, oy, rot) for pad in fp.Pads()],
     }
@@ -1429,7 +1431,16 @@ def _outline(board):
     return {"valid": bool(ok), "polygons": out, "area_mm2": _area_mm2(poly)}
 
 
-def _zones(board):
+def _poly_components(poly, zone=None, layer=None):
+    return [
+        {"outer": _chain_points(poly.Outline(i)),
+         "holes": [_chain_points(poly.Hole(i, h)) for h in range(poly.HoleCount(i))],
+         **({"island": bool(zone.IsIsland(layer, i))} if zone is not None else {})}
+        for i in range(poly.OutlineCount())
+    ]
+
+
+def _zones(board, include_fill=False):
     rows, rule_areas, fill = [], [], {}
     teardrops = 0
     for zone in board.Zones():
@@ -1439,14 +1450,18 @@ def _zones(board):
         layers = list(zone.GetLayerSet().CuStack())
         names = [board.GetLayerName(layer) for layer in layers]
         if zone.GetIsRuleArea():
-            outline = [[[round(x, 6), round(y, 6)] for x, y in ring] for ring in _world_outlines(zone.Outline())]
+            outline = _poly_points(zone.Outline())
             rule_areas.append({"uuid": zone.m_Uuid.AsString(), "name": zone.GetZoneName(),
                                "locked": bool(zone.IsLocked()), "layers": names, "polygons": outline,
+                               "outline_components": _poly_components(zone.Outline()),
                                "keepout": _zone_info(board, zone)["keepout"]})
             continue
-        areas = {}
+        areas, geometry = {}, {}
         for layer, name in zip(layers, names):
-            area = _area_mm2(zone.GetFilledPolysList(layer)) if zone.IsFilled() else 0.0
+            polys = zone.GetFilledPolysList(layer) if zone.HasFilledPolysForLayer(layer) else None
+            area = _area_mm2(polys) if polys is not None else 0.0
+            if include_fill:
+                geometry[name] = _poly_components(polys, zone, layer) if polys is not None else []
             areas[name] = area
             by_net = fill.setdefault(name, {})
             by_net[zone.GetNetname()] = round(by_net.get(zone.GetNetname(), 0.0) + area, 4)
@@ -1454,6 +1469,19 @@ def _zones(board):
                      "priority": int(zone.GetAssignedPriority()), "filled": bool(zone.IsFilled()),
                      "filled_area_mm2": areas, "outline_area_mm2": _area_mm2(zone.Outline()),
                      "name": zone.GetZoneName(), "locked": bool(zone.IsLocked()),
+                     "outline_components": _poly_components(zone.Outline()),
+                     "settings": {"clearance_nm": zone.GetLocalClearance(),
+                                  "min_thickness_nm": zone.GetMinThickness(),
+                                  "pad_connection": int(zone.GetPadConnection()),
+                                  "thermal_gap_nm": zone.GetThermalReliefGap(),
+                                  "thermal_spoke_nm": zone.GetThermalReliefSpokeWidth(),
+                                  "island_removal_mode": int(zone.GetIslandRemovalMode()),
+                                  "min_island_area_nm2": zone.GetMinIslandArea(),
+                                  "fill_mode": int(zone.GetFillMode()),
+                                  "hatch_gap_nm": zone.GetHatchGap(),
+                                  "hatch_thickness_nm": zone.GetHatchThickness(),
+                                  "hatch_orientation_deg": zone.GetHatchOrientation().AsDegrees()},
+                     **({"fill_geometry": geometry} if include_fill else {}),
                      "outline": [[[round(x, 6), round(y, 6)] for x, y in ring]
                                  for ring in _world_outlines(zone.Outline())]})
     return rows, rule_areas, fill, teardrops
@@ -1479,12 +1507,12 @@ def _routing_geometry(board):
     return {"tracks": tracks, "vias": vias}
 
 
-def dump(board_path, out_json):
+def dump(board_path, out_json, include_fill="0"):
     """Everything the Board IR needs, resolved by KiCad itself (net classes, rules, courtyards)."""
     board = pcbnew.LoadBoard(board_path)
     max_error = board.GetDesignSettings().m_MaxError
     classes, nets = _netclasses(board)
-    zones, rule_areas, fill, teardrops = _zones(board)
+    zones, rule_areas, fill, teardrops = _zones(board, include_fill == "1")
     footprints = [_footprint_dict(board, fp, max_error) for fp in board.GetFootprints()]
     counts = {}
     for fp in footprints:
@@ -1510,10 +1538,13 @@ def dump(board_path, out_json):
         "zone_fill_by_layer_mm2": fill,
         "teardrops": teardrops,
         "obstacles": _obstacles(board),
+        "artwork": _fixed_artwork(board),
         "routing_items": len(board.GetTracks()),
         "routing": _routing_geometry(board),
         "silkscreen_texts": _extract_silkscreen_texts(board),
     }
+    if include_fill == "1":
+        data["source"]["native_unconnected"] = _unconnected(board)
     with open(out_json, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
 
@@ -1528,10 +1559,38 @@ def _box_overlap_area(a, b):
     return dx * dy if dx > 0 and dy > 0 else 0
 
 
+def _fab_overlap(a, b):
+    area_a = max(1, (a[2] - a[0]) * (a[3] - a[1]))
+    area_b = max(1, (b[2] - b[0]) * (b[3] - b[1]))
+    return _box_overlap_area(a, b) / min(area_a, area_b) >= 0.15
+
+
 def _box_distance_nm(a, b):
     dx = max(0, max(a[0] - b[2], b[0] - a[2]))
     dy = max(0, max(a[1] - b[3], b[1] - a[3]))
     return math.hypot(dx, dy)
+
+
+class _SilkBoxes:
+    """Index the existing collision boxes without changing geometric decisions."""
+
+    def __init__(self, boxes):
+        self._boxes = boxes
+        self._indexed = 0
+        self._grid = {}
+        self._cell = pcbnew.FromMM(2.0)
+
+    def _cells(self, bounds):
+        x0, y0, x1, y1 = (int(v // self._cell) for v in bounds)
+        return ((x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1))
+
+    def candidates(self, bounds):
+        for i in range(self._indexed, len(self._boxes)):
+            for cell in self._cells(self._boxes[i]):
+                self._grid.setdefault(cell, []).append(i)
+        self._indexed = len(self._boxes)
+        indices = {i for cell in self._cells(bounds) for i in self._grid.get(cell, ())}
+        return (self._boxes[i] for i in indices)
 
 
 def _box_from_bbox(bb, pad=0):
@@ -1580,6 +1639,39 @@ def _footprint_body_box(fp):
             return (min(xs0), min(ys0), max(xs1), max(ys1))
     pbb = fp.GetBoundingBox(False, False)
     return (pbb.GetX(), pbb.GetY(), pbb.GetX() + pbb.GetWidth(), pbb.GetY() + pbb.GetHeight())
+
+
+def _artwork_footprint(fp):
+    name = f"{fp.GetReference()} {fp.GetFPIDAsString()} {fp.GetValue()}".lower()
+    return any(tag in name for tag in ("logo", "qr_code", "qrcode", "barcode", "qr-code", "qr logo"))
+
+
+def _fixed_artwork(board):
+    sides = {pcbnew.F_SilkS: "F", pcbnew.B_SilkS: "B"}
+    rows = []
+    for item in board.GetDrawings():
+        layer = item.GetLayer()
+        if layer not in sides or item.GetClass() not in _GRAPHIC_CLASSES:
+            continue
+        is_text = item.GetClass() in _TEXT_CLASSES
+        if is_text and not item.IsVisible():
+            continue
+        bounds = _text_box(item) if is_text else _box_from_bbox(item.GetBoundingBox())
+        if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
+            rows.append({"uuid": item.m_Uuid.AsString(), "side": sides[layer], "owner": None,
+                         "bounds_mm": [_mm(v) for v in bounds], "label": _item_text(item) if is_text else None})
+    for fp in board.GetFootprints():
+        if not _artwork_footprint(fp):
+            continue
+        for layer, side in sides.items():
+            bounds = [_box_from_bbox(item.GetBoundingBox()) for item in fp.GraphicalItems() if item.GetLayer() == layer
+                      and item.GetClass() in _GRAPHIC_CLASSES]
+            if bounds:
+                x0, y0, x1, y1 = zip(*bounds)
+                rows.append({"uuid": f"{fp.m_Uuid.AsString()}:{side}", "side": side, "owner": fp.GetReference(),
+                             "bounds_mm": [_mm(v) for v in (min(x0), min(y0), max(x1), max(y1))],
+                             "label": fp.GetValue() or fp.GetReference()})
+    return sorted(rows, key=lambda row: row["uuid"])
 
 
 def _item_text(item):
@@ -1683,13 +1775,10 @@ def _extract_silkscreen_texts(board):
                     overlaps_silk = True
                     break
         elif lyr in fab_layers:
-            t_area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
             for o_uid, o_box in fab_boxes[lyr]:
-                if o_uid != uid and _boxes_overlap(box, o_box):
-                    o_area = max(1, (o_box[2] - o_box[0]) * (o_box[3] - o_box[1]))
-                    if _box_overlap_area(box, o_box) / min(t_area, o_area) >= 0.15:
-                        overlaps_fab = True
-                        break
+                if o_uid != uid and _fab_overlap(box, o_box):
+                    overlaps_fab = True
+                    break
             if ref in fp_body_by_ref:
                 bb_fp = fp_body_by_ref[ref]
                 body_long = max(bb_fp[2] - bb_fp[0], bb_fp[3] - bb_fp[1])
@@ -1764,6 +1853,43 @@ def _ensure_fab_reference(board, fp):
     return True
 
 
+def _deconflict_fab_values(board):
+    fab_layers = (pcbnew.F_Fab, pcbnew.B_Fab)
+    retained = {lyr: [] for lyr in fab_layers}
+    optional = []
+    for item in board.GetDrawings():
+        layer = item.GetLayer()
+        if layer in fab_layers and item.GetClass() in _TEXT_CLASSES and item.IsVisible():
+            retained[layer].append((None, _text_box(item)))
+    for fp in sorted(board.GetFootprints(), key=lambda part: part.GetReference()):
+        for text in list(fp.GetFields()) + [g for g in fp.GraphicalItems() if g.GetClass() in _TEXT_CLASSES]:
+            layer = text.GetLayer()
+            if layer not in fab_layers or not text.IsVisible() or not (shown := _item_text(text)):
+                continue
+            raw = text.GetText()
+            field = text.GetName() if text.GetClass() == "PCB_FIELD" else ""
+            if _artwork_footprint(fp):
+                retained[layer].append((None, _text_box(text)))
+                continue
+            if field == "Value" or raw in ("${VALUE}", "%V") or (shown == fp.GetValue() and shown != fp.GetReference()):
+                optional.append((layer, text, _text_box(text)))
+                continue
+            ref = fp.GetReference() if shown in (fp.GetReference(), "${REFERENCE}", "%R") else None
+            bounds = _text_box(text)
+            if ref and any(owner == ref and _fab_overlap(bounds, kept) for owner, kept in retained[layer]):
+                text.SetVisible(False)
+                continue
+            retained[layer].append((ref, bounds))
+    hidden = 0
+    for layer, text, bounds in optional:
+        if any(_fab_overlap(bounds, kept) for _, kept in retained[layer]):
+            text.SetVisible(False)
+            hidden += 1
+        else:
+            retained[layer].append((None, bounds))
+    return hidden
+
+
 def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_miniature, *, ref_only_fab=False):
     """Enforce IPC-A-610 Assembly Drawing typography on F.Fab/B.Fab and fix mirror mismatches.
 
@@ -1782,6 +1908,8 @@ def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_minia
     dense_miniature_fab = bool(ref_only_fab or (is_miniature and len(footprints) > 12))
 
     for fp in footprints:
+        if _artwork_footprint(fp):
+            continue
         # Fix mirror mismatch on ALL visible silkscreen and fab items of this footprint.
         for item in list(fp.GetFields()) + [
             g for g in fp.GraphicalItems() if g.GetClass() in _TEXT_CLASSES
@@ -2107,6 +2235,7 @@ def _clean_silkscreen(board, cfg=None):
         b_box = _footprint_body_box(fp)
         fp_body_map[fp.m_Uuid.AsString()] = b_box
         body_boxes[silk_lyr].append(b_box)
+        fixed_art = _artwork_footprint(fp)
 
         for pad in fp.Pads():
             pbb = pad.GetBoundingBox()
@@ -2120,11 +2249,18 @@ def _clean_silkscreen(board, cfg=None):
                 continue
             if g.GetClass() in _TEXT_CLASSES:
                 if g.IsVisible():
-                    movable_texts.append((fp, g, False, False))
+                    if fixed_art:
+                        static_boxes[lyr].append(_box_from_bbox(g.GetBoundingBox(), silk_margin))
+                    else:
+                        movable_texts.append((fp, g, False, False))
             else:
                 add_shape_boxes(g, lyr)
         for fld in fp.GetFields():
             if fld.GetLayer() not in silk_layers:
+                continue
+            if fixed_art:
+                if fld.IsVisible():
+                    static_boxes[fld.GetLayer()].append(_box_from_bbox(fld.GetBoundingBox(), silk_margin))
                 continue
             fld_name = fld.GetName() if hasattr(fld, "GetName") else ""
             is_ref_field = fld_name == "Reference"
@@ -2161,22 +2297,20 @@ def _clean_silkscreen(board, cfg=None):
                 fab_created += 1
         hidden_ref_candidates = []
 
+    static_index = {layer: _SilkBoxes(values) for layer, values in static_boxes.items()}
+    placed_index = {layer: _SilkBoxes(values) for layer, values in placed_boxes.items()}
+    body_index = {layer: _SilkBoxes(values) for layer, values in body_boxes.items()}
+
     def collides_hard(box, lyr):
-        if has_outline and not _box_inside_outline(box, outline_poly, edge_margin):
-            return True
-        for obs in static_boxes[lyr]:
-            if _boxes_overlap(box, obs):
-                return True
-        for obs in placed_boxes[lyr]:
-            if _boxes_overlap(box, obs):
-                return True
-        return False
+        return (any(_boxes_overlap(box, obs) for obs in static_index[lyr].candidates(box))
+                or any(_boxes_overlap(box, obs) for obs in placed_index[lyr].candidates(box))
+                or (has_outline and not _box_inside_outline(box, outline_poly, edge_margin)))
 
     def hits_body(box, lyr):
         if not avoid_bodies:
             return False
         t_area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
-        for bb in body_boxes[lyr]:
+        for bb in body_index[lyr].candidates(box):
             if _box_overlap_area(box, bb) / t_area >= 0.20:
                 return True
         return False
@@ -2269,18 +2403,24 @@ def _clean_silkscreen(board, cfg=None):
         for tag, sz, th in size_trials:
             item.SetTextSize(sz)
             item.SetTextThickness(int(th))
+            item.SetPosition(pcbnew.VECTOR2I(int(anchor_x), int(anchor_y)))
+            boxes_at_anchor = []
+            for ang in angles:
+                item.SetTextAngleDegrees(ang)
+                boxes_at_anchor.append((ang, _text_box(item)))
             for dx, dy in offsets_list:
-                px = anchor_x + dx * step_nm
-                py = anchor_y + dy * step_nm
-                item.SetPosition(pcbnew.VECTOR2I(int(px), int(py)))
-                for ang in angles:
-                    item.SetTextAngleDegrees(ang)
-                    box = _text_box(item)
+                ox, oy = dx * step_nm, dy * step_nm
+                for ang, (x0, y0, x1, y1) in boxes_at_anchor:
+                    box = x0 + ox, y0 + oy, x1 + ox, y1 + oy
                     if collides_hard(box, lyr):
                         continue
                     if require_outside_body and is_ref and hits_body(box, lyr):
                         continue
-                    return tag, box, int(th)
+                    item.SetPosition(pcbnew.VECTOR2I(int(anchor_x + ox), int(anchor_y + oy)))
+                    item.SetTextAngleDegrees(ang)
+                    actual = _text_box(item)
+                    if not collides_hard(actual, lyr) and not (require_outside_body and is_ref and hits_body(actual, lyr)):
+                        return tag, actual, int(th)
         return None
 
     # Phase B: polarity markers first, then critical refs, then non-critical passive refs.
@@ -2441,6 +2581,7 @@ def _clean_silkscreen(board, cfg=None):
         fab_texts_normalized, fab_values_hidden, mirrors_fixed = _normalize_fab_texts(
             board, outline_poly, has_outline, fp_body_map, is_miniature, ref_only_fab=ref_only_fab
         )
+        fab_values_hidden += _deconflict_fab_values(board)
 
     return {
         "policy": policy,
@@ -2626,28 +2767,21 @@ def place(board_path, placement_json, out_board, strip_routing, out_json, clean_
         placement = json.load(fh)
     by_uuid = {fp.m_Uuid.AsString(): fp for fp in board.GetFootprints()}
 
-    # For Safe ECO mode ('4'), snapshot old pad polygons of footprints that will actually move.
+    # Keep the comparison at KiCad's serialized pose precision, before editing any items.
     moved_fps = []
     old_pad_polys = []
-    if strip_routing == "4":
-        max_error = board.GetDesignSettings().m_MaxError
-        copper_layers = list(board.GetEnabledLayers().CuStack())
-        for uuid, pose in placement.items():
-            fp = by_uuid.get(uuid)
-            if fp is None:
-                continue
-            cur_pos = fp.GetPosition()
-            cur_side = "B" if fp.IsFlipped() else "F"
-            cur_rot = float(fp.GetOrientationDegrees()) % 360.0
-            new_rot = float(pose["rotation"]) % 360.0
-            rot_diff = min(abs(cur_rot - new_rot), 360.0 - abs(cur_rot - new_rot))
-            if (
-                abs(_mm(cur_pos.x) - float(pose["x"])) > 1e-4
-                or abs(_mm(cur_pos.y) - float(pose["y"])) > 1e-4
-                or rot_diff > 1e-3
-                or cur_side != pose["side"]
-            ):
-                moved_fps.append(fp)
+    max_error = board.GetDesignSettings().m_MaxError
+    copper_layers = list(board.GetEnabledLayers().CuStack())
+    for uuid, pose in placement.items():
+        fp = by_uuid.get(uuid)
+        if fp is None:
+            continue
+        cur_rot = float(fp.GetOrientationDegrees())
+        if (fp.GetPosition() != _vec((pose["x"], pose["y"]))
+                or abs((cur_rot - float(pose["rotation"]) + 180) % 360 - 180) > 1e-6
+                or fp.IsFlipped() != (pose["side"] == "B")):
+            moved_fps.append(fp)
+            if strip_routing == "4":
                 for pad in fp.Pads():
                     nc = pad.GetNetCode()
                     lyrs = (
@@ -2680,15 +2814,9 @@ def place(board_path, placement_json, out_board, strip_routing, out_json, clean_
     unfilled = 0
     if strip_routing == "2":
         removed.extend(zone for zone in board.Zones() if not zone.GetIsRuleArea())
-    elif strip_routing in ("3", "4"):
-        for zone in list(board.Zones()):
-            if zone.GetIsRuleArea():
-                continue
-            if hasattr(zone, "IsTeardropArea") and zone.IsTeardropArea():
-                removed.append(zone)
-            else:
-                zone.UnFill()
-                unfilled += 1
+    elif moved_fps or removed or strip_routing in ("3", "4"):
+        teardrops, unfilled = _invalidate_zone_fill(board)
+        removed.extend(teardrops)
     for item in removed:
         board.Remove(item)
     silk_report = None
@@ -2702,7 +2830,7 @@ def place(board_path, placement_json, out_board, strip_routing, out_json, clean_
     with open(out_json, "w", encoding="utf-8") as fh:  # not stdout: SWIG writes leak notices there
         json.dump({"placed": moved, "flipped": flipped, "missing": sorted(set(placement) - set(by_uuid)),
                    "removed_routing": len(removed), "preserved_routing": preserved_routing,
-                   "moved_footprints": len(moved_fps) if strip_routing == "4" else None,
+                   "moved_footprints": len(moved_fps),
                    "unfilled_zones": unfilled, "silkscreen": silk_report}, fh)
     del removed
 
@@ -2712,6 +2840,34 @@ def place(board_path, placement_json, out_board, strip_routing, out_json, clean_
 # --------------------------------------------------------------------------
 def _vec(pt):
     return pcbnew.VECTOR2I(pcbnew.FromMM(float(pt[0])), pcbnew.FromMM(float(pt[1])))
+
+
+def _invalidate_zone_fill(board):
+    teardrops, count = [], 0
+    for zone in board.Zones():
+        if zone.GetIsRuleArea():
+            continue
+        if zone.IsTeardropArea():
+            teardrops.append(zone)
+        else:
+            zone.UnFill()
+            count += 1
+    return teardrops, count
+
+
+def _refill_modified_zones(board):
+    teardrops, _ = _invalidate_zone_fill(board)
+    for item in teardrops:
+        board.Remove(item)
+    if board.Zones() and not pcbnew.ZONE_FILLER(board).Fill(board.Zones()):
+        raise RuntimeError("KiCad could not refill the board")
+
+
+def refill(board_path, out_board):
+    board = pcbnew.LoadBoard(board_path)
+    _refill_modified_zones(board)
+    if not pcbnew.SaveBoard(out_board, board):
+        raise RuntimeError("KiCad could not save the refilled board")
 
 
 def _add_copper(board, spec, lock, seed):
@@ -2805,19 +2961,24 @@ def macro_apply(board_path, spec_json, out_board, out_json):
     identity.update(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     added = _add_copper(board, spec, bool(spec.get("lock", True)), identity.hexdigest())
     if spec.get("fill", True):
-        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+        _refill_modified_zones(board)
+    elif removed or spec.get("poses") or any(added.values()):
+        stale, _ = _invalidate_zone_fill(board)
+        for zone in stale:
+            board.Remove(zone)
     pcbnew.SaveBoard(out_board, board)
     with open(out_json, "w", encoding="utf-8") as fh:
         json.dump({"removed": len(removed), "flipped": flipped, **added}, fh)
     del removed
 
 
-def filled_hits(board_path, points_json, out_json):
+def filled_hits(board_path, points_json, out_json, refresh="1"):
     """For each {x, y, radius, net, layer}: is the whole disc on filled copper of that net on that layer?
 
     The fill is rebuilt first, so the answer is about the copper a fab would get (S6a tap check)."""
     board = pcbnew.LoadBoard(board_path)
-    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+    if refresh == "1":
+        _refill_modified_zones(board)
     with open(points_json, encoding="utf-8") as fh:
         points = json.load(fh)
     names = {board.GetLayerName(layer): layer for layer in board.GetEnabledLayers().CuStack()}
@@ -2863,5 +3024,5 @@ if __name__ == "__main__":
     {"prepare": prepare, "finish": finish, "sanitize": sanitize, "lock_routing": lock_routing,
      "prune_dangling_by_drc": prune_dangling_by_drc, "inject_return_vias": inject_return_vias,
      "heal_thermals": heal_thermals, "heal_mask_bridges": heal_mask_bridges, "dump": dump,
-     "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits,
+     "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits, "refill": refill,
      "clean_silkscreen": clean_silkscreen_cmd}[_cmd](*_args)

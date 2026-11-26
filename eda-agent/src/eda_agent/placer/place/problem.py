@@ -16,7 +16,7 @@ reaching the board through a plane or pour 0.2 without crossings; ground nets 0.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..eval.legality import (
     board_polygon,
@@ -25,13 +25,11 @@ from ..eval.legality import (
     placement_obstacle_holes,
 )
 from ..eval.metrics import zone_nets
-from ..geometry import rotated_box
+from ..geometry import box_union, rotated_box
 from ..intent import model
 from ..ir import Board, Footprint, is_ground_net
 from . import escape
 
-CONNECTOR_PREFIXES = ("J", "P", "CN", "CON", "USB")  # not "X": crystals in some libraries
-EDGE_DISTANCE_MM = 1.5  # declared: a connector this close to the outline edge is an edge connector (StickHub JSTs: 1.125 mm)
 WEIGHT_SIGNAL = 1.0
 WEIGHT_PLANE_NET = 0.2
 DECAP_AFFINITY_WEIGHT = 3.0  # local supply distance in mm, weighted relative to signal HPWL
@@ -116,20 +114,16 @@ def local_box(fp: Footprint) -> tuple[float, float, float, float]:
     return (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
 
 
-def fixed_parts(board: Board) -> dict[str, str]:
+def fixed_parts(board: Board, intent: dict | None = None) -> dict[str, str]:
     """S1: reference -> reason for every part the placer must not move."""
+    from .mechanical import interface_inventory
+
     if board.placement_anchors is not None:
         return {fp.ref: board.placement_anchors.get(fp.ref, "locked in the file") for fp in board.footprints
                 if fp.locked or fp.ref in board.placement_anchors}
     out: dict[str, str] = {}
     outline = board_polygon(board)
-    edge = None
-    if outline is not None:
-        if outline.geom_type == "Polygon":
-            edge = outline.exterior
-        elif outline.geom_type == "MultiPolygon":
-            from shapely.ops import unary_union
-            edge = unary_union([g.exterior for g in outline.geoms])
+    interfaces = {row["ref"]: row for row in interface_inventory(board, intent, outline=outline) if row["protected"]}
     for fp in board.footprints:
         if fp.locked:
             out[fp.ref] = "locked in the file"
@@ -142,13 +136,13 @@ def fixed_parts(board: Board) -> dict[str, str]:
         ) and all((not _is_real_net(p.net)) or is_ground_net(p.net) for p in fp.pads):
             out[fp.ref] = "mechanical (grounded mounting hole)"
             continue
+        if fp.ref in interfaces:
+            out[fp.ref] = interfaces[fp.ref]["reason"]
         shape = courtyard_polygon(fp)
         if shape is None or outline is None:
             continue
         if shape.difference(outline).area > 0.01 and fp.prefix not in _NON_OVERHANGING_PREFIXES:
-            out[fp.ref] = "overhangs the board outline"
-        elif fp.prefix.startswith(CONNECTOR_PREFIXES) and edge is not None and shape.distance(edge) <= EDGE_DISTANCE_MM:
-            out[fp.ref] = "connector on the board edge"
+            out.setdefault(fp.ref, "overhangs the board outline")
     return dict(sorted(out.items()))
 
 
@@ -227,13 +221,16 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
           floorplan: bool = False, reserve: bool | None = None,
           inflations: dict[str, float] | None = None,
           fixed_override: dict[str, str] | None = None) -> PlaceProblem:
-    fixed = dict(fixed_override) if fixed_override is not None else fixed_parts(board)
+    from .mechanical import access_geometry
+
+    fixed = dict(fixed_override) if fixed_override is not None else fixed_parts(board, intent)
     sides = assign_sides(board, side_policy, fixed, intent=intent)
     planes = zone_nets(board)
     pb = PlaceProblem(board=board, refs=[fp.ref for fp in board.footprints], fixed=fixed, sides=sides)
     pin_of: dict[str, list[int]] = {}
     part_pins: dict[tuple[str, str], list[tuple[str, int]]] = {}
     boxes = {fp.ref: local_box(fp) for fp in board.footprints}
+    mechanics = (intent or {}).get("mechanical", {})
     if (floorplan if reserve is None else reserve) and intent:
         pb.exits = escape.select_reservations(escape.envelopes(board, intent, boxes))
     for i, fp in enumerate(board.footprints):
@@ -241,9 +238,14 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         flip = sides[fp.ref] != fp.side
         x0, y0, x1, y1 = boxes[fp.ref]
         subs = local_sub_boxes(fp)
+        access = (mechanics.get(fp.ref) or {}).get("value", {}).get("access") if is_fixed else None
         if fp.ref in pb.exits:
             x0, y0, x1, y1 = escape.reserved_box((x0, y0, x1, y1), pb.exits[fp.ref])
             subs = []
+        if access:
+            access_box = access_geometry(replace(fp, x=0.0, y=0.0, rotation=0.0), access).bounds
+            subs = (subs or [(x0, y0, x1, y1)]) + [access_box]
+            x0, y0, x1, y1 = box_union((x0, y0, x1, y1), access_box)
         if not is_fixed and inflations:
             pad_inf = float(inflations.get(fp.ref, 0.0))
             if pad_inf > 0.0:
@@ -255,7 +257,10 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         on_grid = abs(fp.rotation / 90.0 - round(fp.rotation / 90.0)) < 1e-6
         if is_fixed and not on_grid:
             # a fixed part at an odd angle keeps its true courtyard through its world bounding box
-            if fp.ref in pb.exits:
+            if access:
+                subs = [rotated_box(rect, (0.0, 0.0), fp.rotation) for rect in subs]
+                x0, y0, x1, y1 = rotated_box((x0, y0, x1, y1), (0.0, 0.0), fp.rotation)
+            elif fp.ref in pb.exits:
                 x0, y0, x1, y1 = rotated_box((x0, y0, x1, y1), (0.0, 0.0), fp.rotation)
             elif subs:
                 subs = [rotated_box((sx0, sy0, sx1, sy1), (0.0, 0.0), fp.rotation) for sx0, sy0, sx1, sy1 in subs]
@@ -276,7 +281,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         pb.parts.append((x0, y0, x1, y1, 0 if sides[fp.ref] == "F" else 1, is_fixed, not is_fixed,
                          fp.x, fp.y, r))
         pb.sub_rects.append(subs)
-        pb.cavity_eligible.append(is_shield_cavity_eligible(fp))
+        pb.cavity_eligible.append(not access and is_shield_cavity_eligible(fp))
         for pad in fp.pads:
             if not pad.net:
                 continue

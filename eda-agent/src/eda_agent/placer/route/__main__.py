@@ -23,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     m = report["metrics"]
     print(json.dumps({"passed": report["passed"],
                       "gates": {g["name"]: [g["value"], g["op"], g["threshold"], g["passed"]] for g in report["gates"]},
+                      "routing_status": report.get("quality", {}).get("routing", {}).get("status"),
                       "coverage": m["coverage"], "unrouted": m["unrouted"], "vias": m["vias"],
                       "length_mm": m["track_length_mm"], "session_sha256": m["session_sha256"],
                       "causes": sorted({f["cause"] for f in report["failures"]}),

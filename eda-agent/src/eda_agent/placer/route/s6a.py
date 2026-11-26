@@ -438,13 +438,13 @@ def _instance(copper: list[dict]) -> Instance:
     return Instance({}, tracks, vias, [], [], False)
 
 
-def _filled(board_file: Path, taps: list[tuple[dict, dict, dict]]) -> list[bool]:
+def _filled(board_file: Path, taps: list[tuple[dict, dict, dict]], *, refresh: bool = True) -> list[bool]:
     points = [{"x": via["x"], "y": via["y"], "radius": via["drill"] / 2, "net": via["net"], "layer": row["layer"]}
               for row, _track, via in taps]
     with tempfile.TemporaryDirectory(prefix="eai_s6a_") as tmp:
         src, out = Path(tmp) / "points.json", Path(tmp) / "hits.json"
         src.write_text(json.dumps(points), encoding="utf-8")
-        run_helper("filled_hits", board_file, src, out)
+        run_helper("filled_hits", board_file, src, out, "1" if refresh else "0")
         return json.loads(out.read_text(encoding="utf-8"))
 
 
@@ -605,7 +605,7 @@ def verify_taps_after_route(routed_board: str | Path, live_taps: list) -> dict |
     """Confirm every live S6a plane tap still sits on filled copper after SES import and refill."""
     if not live_taps:
         return None
-    hits = _filled(Path(routed_board), live_taps)
+    hits = _filled(Path(routed_board), live_taps, refresh=False)
     for (row, _track, _via), ok in zip(live_taps, hits, strict=True):
         row["filled_after_ses"] = ok
     return {"passed": all(hits), "filled": sum(hits), "total": len(hits)}
