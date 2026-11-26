@@ -16,22 +16,23 @@ reaching the board through a plane or pour 0.2 without crossings; ground nets 0.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..eval.legality import (
+    board_mask_obstacles,
     board_polygon,
+    copper_layer_map,
     courtyard_polygon,
+    has_opposite_side_copper,
     is_shield_cavity_eligible,
     placement_obstacle_holes,
 )
 from ..eval.metrics import zone_nets
-from ..geometry import rotated_box
+from ..geometry import box_union, rotated_box
 from ..intent import model
 from ..ir import Board, Footprint, is_ground_net
 from . import escape
 
-CONNECTOR_PREFIXES = ("J", "P", "CN", "CON", "USB")  # not "X": crystals in some libraries
-EDGE_DISTANCE_MM = 1.5  # declared: a connector this close to the outline edge is an edge connector (StickHub JSTs: 1.125 mm)
 WEIGHT_SIGNAL = 1.0
 WEIGHT_PLANE_NET = 0.2
 DECAP_AFFINITY_WEIGHT = 3.0  # local supply distance in mm, weighted relative to signal HPWL
@@ -113,23 +114,28 @@ def local_box(fp: Footprint) -> tuple[float, float, float, float]:
             pts.append((pad.local[0] + dx * c - dy * s, pad.local[1] + dx * s + dy * c))
     if not pts:
         return (-0.1, -0.1, 0.1, 0.1)
-    return (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
+    base = (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
+    # Legacy/derived courtyards without explicit F.CrtYd/B.CrtYd wrap pads only, omitting bulky
+    # physical bodies (radial electrolytics, shielded inductors, power diodes, shrouded headers).
+    if fp.courtyard.source == "derived" and len(fp.courtyard.polygons) == 1 and not fp.courtyard.holes and fp.body_bounds_mm:
+        bb = _local_body_box(fp, base)
+        la = max(0.1, (base[2] - base[0]) * (base[3] - base[1]))
+        ba = (bb[2] - bb[0]) * (bb[3] - bb[1])
+        if ba >= 15.0 and 1.15 * la <= ba <= 12.0 * la:
+            return bb
+    return base
 
 
-def fixed_parts(board: Board) -> dict[str, str]:
+def fixed_parts(board: Board, intent: dict | None = None) -> dict[str, str]:
     """S1: reference -> reason for every part the placer must not move."""
+    from .mechanical import interface_inventory
+
     if board.placement_anchors is not None:
         return {fp.ref: board.placement_anchors.get(fp.ref, "locked in the file") for fp in board.footprints
                 if fp.locked or fp.ref in board.placement_anchors}
     out: dict[str, str] = {}
     outline = board_polygon(board)
-    edge = None
-    if outline is not None:
-        if outline.geom_type == "Polygon":
-            edge = outline.exterior
-        elif outline.geom_type == "MultiPolygon":
-            from shapely.ops import unary_union
-            edge = unary_union([g.exterior for g in outline.geoms])
+    interfaces = {row["ref"]: row for row in interface_inventory(board, intent, outline=outline) if row["protected"]}
     for fp in board.footprints:
         if fp.locked:
             out[fp.ref] = "locked in the file"
@@ -137,18 +143,38 @@ def fixed_parts(board: Board) -> dict[str, str]:
         if not any(_is_real_net(p.net) for p in fp.pads):
             out[fp.ref] = "mechanical (no nets)"
             continue
+        if fp.prefix == "FID" or "fiducial" in fp.lib_id.lower():
+            out[fp.ref] = "mechanical (fiducial)"
+            continue
         if (
-            fp.prefix in ("H", "MH", "HOLE", "FID") or "mountinghole" in fp.lib_id.lower()
+            fp.prefix in ("H", "MH", "HOLE") or "mountinghole" in fp.lib_id.lower()
         ) and all((not _is_real_net(p.net)) or is_ground_net(p.net) for p in fp.pads):
             out[fp.ref] = "mechanical (grounded mounting hole)"
             continue
+        if fp.ref in interfaces:
+            out[fp.ref] = interfaces[fp.ref]["reason"]
         shape = courtyard_polygon(fp)
         if shape is None or outline is None:
             continue
         if shape.difference(outline).area > 0.01 and fp.prefix not in _NON_OVERHANGING_PREFIXES:
-            out[fp.ref] = "overhangs the board outline"
-        elif fp.prefix.startswith(CONNECTOR_PREFIXES) and edge is not None and shape.distance(edge) <= EDGE_DISTANCE_MM:
-            out[fp.ref] = "connector on the board edge"
+            out.setdefault(fp.ref, "overhangs the board outline")
+        elif fp.courtyard_area >= 500.0 and (
+            any(p.kind in ("thru_hole", "np_thru_hole") for p in fp.pads)
+            or bool(fp.courtyard.holes)
+        ):
+            # Oversized through-hole assemblies (e.g. elevated toroid/transformer) or hollow RF shield frames
+            # that intentionally enclose/straddle multiple footprints in the authored board are mechanical anchors.
+            if fp.courtyard.holes:
+                out.setdefault(fp.ref, "mechanical (hollow RF shield frame)")
+            else:
+                overlaps = sum(
+                    1 for other in board.footprints
+                    if other.ref != fp.ref and other.side == fp.side
+                    and (osh := courtyard_polygon(other)) is not None
+                    and shape.intersection(osh).area > 0.01
+                )
+                if overlaps >= 5:
+                    out.setdefault(fp.ref, "mechanical (oversized elevated through-hole assembly)")
     return dict(sorted(out.items()))
 
 
@@ -210,6 +236,10 @@ class PlaceProblem:
     exits: dict[str, list[escape.Escape]] = field(default_factory=dict)
     sub_rects: list[list[tuple[float, float, float, float]]] = field(default_factory=list)
     cavity_eligible: list[bool] = field(default_factory=list)
+    outline_locals: list[tuple[float, float, float, float]] = field(default_factory=list)
+    obstacle_locals: list[tuple[float, float, float, float]] = field(default_factory=list)
+    opp_locals: list[tuple[float, float, float, float] | None] = field(default_factory=list)
+    side_obstacles: list[tuple[float, float, float, float, int]] = field(default_factory=list)
     clusters: list[list[int]] = field(default_factory=list)
     repulsions: list[tuple[int, int, float, float]] = field(default_factory=list)
     local_block_links: int = 0
@@ -223,17 +253,118 @@ def _quarter(rotation: float) -> int:
     return round(rotation / 90.0) % 4
 
 
+def _local_body_box(fp: Footprint, base_box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """Union of ``base_box`` and the footprint's physical body bounds in local coordinates."""
+    # World AABB of a non-orthogonal (e.g. 45-degree) footprint is inflated by sqrt(2); un-rotating
+    # it would double-inflate by 2x linear (4x area), so only convert orthogonal footprints.
+    if not fp.body_bounds_mm or abs(fp.rotation / 90.0 - round(fp.rotation / 90.0)) > 1e-3:
+        return base_box
+    bx0, by0, bx1, by1 = fp.body_bounds_mm
+    rad = math.radians(fp.rotation)
+    c, s = math.cos(rad), math.sin(rad)
+    # Inverse of world = (fp.x + lx*c + ly*s, fp.y - lx*s + ly*c) (screen CCW)
+    lx_vals, ly_vals = [], []
+    for wx, wy in ((bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)):
+        dx, dy = wx - fp.x, wy - fp.y
+        lx_vals.append(dx * c - dy * s)
+        ly_vals.append(dx * s + dy * c)
+    return box_union(base_box, (min(lx_vals), min(ly_vals), max(lx_vals), max(ly_vals)))
+
+
+def _opp_th_box(
+    fp: Footprint,
+    lmap: dict[str, str],
+    margin: float,
+    *,
+    flip: bool = False,
+) -> tuple[float, float, float, float] | None:
+    """Local bounding box of pads that protrude onto the opposite copper side (TH pins, thermal vias, NPTH)."""
+    pts: list[tuple[float, float]] = []
+    for pad in fp.pads:
+        if not has_opposite_side_copper(fp, pad, lmap):
+            continue
+        w, h = pad.size[0] + 2.0 * margin, pad.size[1] + 2.0 * margin
+        rad = math.radians(pad.rotation)
+        c, s = math.cos(rad), math.sin(rad)
+        for dx, dy in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)):
+            px = pad.local[0] + dx * c - dy * s
+            py = pad.local[1] + dx * s + dy * c
+            pts.append((px, -py if flip else py))
+    if not pts:
+        return None
+    return (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
+
+
+def _pad_outline_box(fp: Footprint, base_box: tuple[float, float, float, float], edge_clear: float) -> tuple[float, float, float, float]:
+    """Union of ``base_box`` and every copper pad expanded by ``edge_clear`` (outline containment only)."""
+    if edge_clear <= 0.0 or not fp.pads:
+        return base_box
+    margin = edge_clear + 0.03
+    x0, y0, x1, y1 = base_box
+    for pad in fp.pads:
+        w, h = pad.size[0] + 2.0 * margin, pad.size[1] + 2.0 * margin
+        rad = math.radians(pad.rotation)
+        c, s = math.cos(rad), math.sin(rad)
+        for dx, dy in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)):
+            px = pad.local[0] + dx * c - dy * s
+            py = pad.local[1] + dx * s + dy * c
+            x0, y0, x1, y1 = min(x0, px), min(y0, py), max(x1, px), max(y1, py)
+    return (x0, y0, x1, y1)
+
+
+def side_obstacle_rects(board: Board, fixed: set[str]) -> list[tuple[float, float, float, float, int]]:
+    """Per-side fixed obstacles (barcodes + 1.05 mm, mask apertures, authored silkscreen artwork)."""
+    out: list[tuple[float, float, float, float, int]] = []
+    for _uid, side, poly in board_mask_obstacles(board, fixed):
+        if poly.is_empty:
+            continue
+        bx0, by0, bx1, by1 = poly.bounds
+        out.append((bx0 - 0.04, by0 - 0.04, bx1 + 0.04, by1 + 0.04, 0 if side == "F" else 1))
+    board_area = float(board.board_area_mm2 or 0.0)
+    text_area_by_side = {"F": 0.0, "B": 0.0}
+    for row in board.artwork:
+        kind = row.get("kind") or ("text" if row.get("label") else "graphic")
+        if kind == "text":
+            bx0, by0, bx1, by1 = row["bounds_mm"]
+            text_area_by_side[row["side"]] = text_area_by_side.get(row["side"], 0.0) + max(0.0, (bx1 - bx0) * (by1 - by0))
+    for row in board.artwork:
+        bx0, by0, bx1, by1 = row["bounds_mm"]
+        if bx1 <= bx0 or by1 <= by0:
+            continue
+        side_idx = 0 if row["side"] == "F" else 1
+        label = (row.get("label") or "").lower()
+        kind = row.get("kind") or ("barcode" if ("qr" in label or "barcode" in label) else ("text" if label else "graphic"))
+        if kind == "barcode":
+            # KiCad 10 enforces a 1.0 mm visual separation clearance around PCB_BARCODE items.
+            m = 1.05
+            out.append((bx0 - m, by0 - m, bx1 + m, by1 + m, side_idx))
+        elif kind in ("artwork_footprint", "graphic"):
+            m = 0.05
+            out.append((bx0 - m, by0 - m, bx1 + m, by1 + m, side_idx))
+        else:
+            if board_area <= 0.0 or text_area_by_side.get(row["side"], 0.0) <= 0.30 * board_area:
+                m = 0.05
+                out.append((bx0 - m, by0 - m, bx1 + m, by1 + m, side_idx))
+    return out
+
+
 def build(board: Board, *, side_policy: str = "expert", intent: dict | None = None,
           floorplan: bool = False, reserve: bool | None = None,
           inflations: dict[str, float] | None = None,
           fixed_override: dict[str, str] | None = None) -> PlaceProblem:
-    fixed = dict(fixed_override) if fixed_override is not None else fixed_parts(board)
+    from .mechanical import access_geometry
+
+    fixed = dict(fixed_override) if fixed_override is not None else fixed_parts(board, intent)
     sides = assign_sides(board, side_policy, fixed, intent=intent)
     planes = zone_nets(board)
     pb = PlaceProblem(board=board, refs=[fp.ref for fp in board.footprints], fixed=fixed, sides=sides)
     pin_of: dict[str, list[int]] = {}
     part_pins: dict[tuple[str, str], list[tuple[str, int]]] = {}
     boxes = {fp.ref: local_box(fp) for fp in board.footprints}
+    mechanics = (intent or {}).get("mechanical", {})
+    edge_clear = float(board.rules.get("copper_edge_clearance") or 0.0)
+    two_sided = "F" in sides.values() and "B" in sides.values()
+    lmap = copper_layer_map(board)
     if (floorplan if reserve is None else reserve) and intent:
         pb.exits = escape.select_reservations(escape.envelopes(board, intent, boxes))
     for i, fp in enumerate(board.footprints):
@@ -241,21 +372,33 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         flip = sides[fp.ref] != fp.side
         x0, y0, x1, y1 = boxes[fp.ref]
         subs = local_sub_boxes(fp)
+        access = (mechanics.get(fp.ref) or {}).get("value", {}).get("access") if is_fixed else None
         if fp.ref in pb.exits:
             x0, y0, x1, y1 = escape.reserved_box((x0, y0, x1, y1), pb.exits[fp.ref])
             subs = []
+        if access:
+            access_box = access_geometry(replace(fp, x=0.0, y=0.0, rotation=0.0), access).bounds
+            subs = (subs or [(x0, y0, x1, y1)]) + [access_box]
+            x0, y0, x1, y1 = box_union((x0, y0, x1, y1), access_box)
         if not is_fixed and inflations:
             pad_inf = float(inflations.get(fp.ref, 0.0))
             if pad_inf > 0.0:
                 x0, y0, x1, y1 = x0 - pad_inf, y0 - pad_inf, x1 + pad_inf, y1 + pad_inf
                 subs = [(sx0 - pad_inf, sy0 - pad_inf, sx1 + pad_inf, sy1 + pad_inf) for sx0, sy0, sx1, sy1 in subs]
+        ox0, oy0, ox1, oy1 = (x0, y0, x1, y1) if is_fixed else _pad_outline_box(fp, (x0, y0, x1, y1), edge_clear)
+        bx_obs0, by_obs0, bx_obs1, by_obs1 = (x0, y0, x1, y1) if is_fixed else _local_body_box(fp, (x0, y0, x1, y1))
         if flip:  # the footprint frame mirrors in y when the part changes side (KiCad left-right flip)
             y0, y1 = -y1, -y0
+            oy0, oy1 = -oy1, -oy0
+            by_obs0, by_obs1 = -by_obs1, -by_obs0
             subs = [(sx0, -sy1, sx1, -sy0) for sx0, sy0, sx1, sy1 in subs]
         on_grid = abs(fp.rotation / 90.0 - round(fp.rotation / 90.0)) < 1e-6
         if is_fixed and not on_grid:
             # a fixed part at an odd angle keeps its true courtyard through its world bounding box
-            if fp.ref in pb.exits:
+            if access:
+                subs = [rotated_box(rect, (0.0, 0.0), fp.rotation) for rect in subs]
+                x0, y0, x1, y1 = rotated_box((x0, y0, x1, y1), (0.0, 0.0), fp.rotation)
+            elif fp.ref in pb.exits:
                 x0, y0, x1, y1 = rotated_box((x0, y0, x1, y1), (0.0, 0.0), fp.rotation)
             elif subs:
                 subs = [rotated_box((sx0, sy0, sx1, sy1), (0.0, 0.0), fp.rotation) for sx0, sy0, sx1, sy1 in subs]
@@ -270,13 +413,21 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
                     x0, y0, x1, y1 = bx0 - fp.x, by0 - fp.y, bx1 - fp.x, by1 - fp.y
                 else:
                     x0 = y0 = x1 = y1 = 0.0
+            ox0, oy0, ox1, oy1 = x0, y0, x1, y1
+            bx_obs0, by_obs0, bx_obs1, by_obs1 = x0, y0, x1, y1
             r = 0
         else:
             r = _quarter(fp.rotation) if on_grid else 0
         pb.parts.append((x0, y0, x1, y1, 0 if sides[fp.ref] == "F" else 1, is_fixed, not is_fixed,
                          fp.x, fp.y, r))
         pb.sub_rects.append(subs)
-        pb.cavity_eligible.append(is_shield_cavity_eligible(fp))
+        pb.cavity_eligible.append(not access and is_shield_cavity_eligible(fp))
+        pb.outline_locals.append((ox0, oy0, ox1, oy1))
+        pb.obstacle_locals.append((bx_obs0, by_obs0, bx_obs1, by_obs1))
+        opp_margin = max(0.20, float(board.rules.get("min_clearance") or 0.15) + 0.08)
+        pb.opp_locals.append(
+            _opp_th_box(fp, lmap, opp_margin, flip=flip) if (two_sided and not is_fixed) else None
+        )
         for pad in fp.pads:
             if not pad.net:
                 continue
@@ -427,6 +578,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         pb.holes += [[tuple(p) for p in h] for h in o.holes]
     two_sided = "F" in sides.values() and "B" in sides.values()
     pb.holes.extend(placement_obstacle_holes(board, set(fixed), two_sided))
+    pb.side_obstacles = side_obstacle_rects(board, set(fixed))
     return pb
 
 
@@ -452,6 +604,14 @@ def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0,
         kwargs["clusters"] = pb.clusters
     if pb.repulsions:
         kwargs["repulsions"] = pb.repulsions
+    if pb.outline_locals:
+        kwargs["outline_locals"] = pb.outline_locals
+    if pb.obstacle_locals:
+        kwargs["obstacle_locals"] = pb.obstacle_locals
+    if any(pb.opp_locals):
+        kwargs["opp_locals"] = pb.opp_locals
+    if pb.side_obstacles:
+        kwargs["side_obstacles"] = pb.side_obstacles
     return PlacementProblem(*args, **kwargs)
 
 

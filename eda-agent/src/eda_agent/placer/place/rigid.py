@@ -89,15 +89,52 @@ def collapse(pb: PlaceProblem, macros: dict[int, Macro]) -> tuple[PlaceProblem, 
     parts = [pb.parts[i] for i in retained]
     sub_rects = [list(pb.sub_rects[i]) if i < len(pb.sub_rects) else [] for i in retained]
     cavity_eligible = [pb.cavity_eligible[i] if i < len(pb.cavity_eligible) else True for i in retained]
+    outline_locals = [pb.outline_locals[i] if i < len(pb.outline_locals) else pb.parts[i][:4] for i in retained]
+    obstacle_locals = [pb.obstacle_locals[i] if i < len(pb.obstacle_locals) else pb.parts[i][:4] for i in retained]
+    opp_locals = [pb.opp_locals[i] if i < len(pb.opp_locals) else None for i in retained]
     for root, macro in macros.items():
         boxes = [rotated_box(pb.parts[by_ref[p.ref]][:4], (p.x, p.y), p.rotation) for p in macro.parts]
         bounds = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+        out_boxes = [
+            rotated_box(
+                pb.outline_locals[by_ref[p.ref]] if by_ref[p.ref] < len(pb.outline_locals) else pb.parts[by_ref[p.ref]][:4],
+                (p.x, p.y), p.rotation,
+            )
+            for p in macro.parts
+        ]
+        out_bounds = (
+            min(b[0] for b in out_boxes), min(b[1] for b in out_boxes),
+            max(b[2] for b in out_boxes), max(b[3] for b in out_boxes),
+        )
+        obs_boxes = [
+            rotated_box(
+                pb.obstacle_locals[by_ref[p.ref]] if by_ref[p.ref] < len(pb.obstacle_locals) else pb.parts[by_ref[p.ref]][:4],
+                (p.x, p.y), p.rotation,
+            )
+            for p in macro.parts
+        ]
+        obs_bounds = (
+            min(b[0] for b in obs_boxes), min(b[1] for b in obs_boxes),
+            max(b[2] for b in obs_boxes), max(b[3] for b in obs_boxes),
+        )
         r_idx = indexes[root]
         parts[r_idx] = (*bounds, *pb.parts[root][4:])
         sub_rects[r_idx] = []
+        outline_locals[r_idx] = out_bounds
+        obstacle_locals[r_idx] = obs_bounds
         cavity_eligible[r_idx] = all(
             pb.cavity_eligible[by_ref[p.ref]] if by_ref[p.ref] < len(pb.cavity_eligible) else True
             for p in macro.parts
+        )
+        opp_boxes = [
+            rotated_box(opp, (p.x, p.y), p.rotation)
+            for p in macro.parts
+            if by_ref[p.ref] < len(pb.opp_locals) and (opp := pb.opp_locals[by_ref[p.ref]]) is not None
+        ]
+        opp_locals[r_idx] = (
+            (min(b[0] for b in opp_boxes), min(b[1] for b in opp_boxes),
+             max(b[2] for b in opp_boxes), max(b[3] for b in opp_boxes))
+            if opp_boxes else None
         )
     pins = []
     for i, x, y in pb.pins:
@@ -109,6 +146,7 @@ def collapse(pb: PlaceProblem, macros: dict[int, Macro]) -> tuple[PlaceProblem, 
     return replace(
         pb, parts=parts, pins=pins, refs=[pb.refs[i] for i in retained],
         sub_rects=sub_rects, cavity_eligible=cavity_eligible,
+        outline_locals=outline_locals, obstacle_locals=obstacle_locals, opp_locals=opp_locals,
         clusters=[], repulsions=[],
     ), retained
 

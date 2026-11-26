@@ -11,6 +11,7 @@ writes always go to a new path (principle P8).
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -105,6 +106,7 @@ def _footprint(row: dict, name_to_canon: dict[str, str] | None = None) -> Footpr
         ),
         uuid=row["uuid"], sheet=row["sheet"], description=row["description"], attributes=tuple(row["attributes"]),
         sheet_path=row.get("sheet_path") or None,
+        body_bounds_mm=tuple(row["body_bounds_mm"]) if row.get("body_bounds_mm") else None,
     )
 
 
@@ -143,6 +145,7 @@ def board_from_dump(data: dict, stackup: Stackup, name: str) -> Board:
         routing=data["routing"],
         teardrops=data["teardrops"],
         silkscreen_texts=data.get("silkscreen_texts", []),
+        artwork=data.get("artwork", []),
     )
     board.stackup.board_thickness_mm = data["rules"].get("board_thickness")
     return derive(board)
@@ -184,7 +187,14 @@ def _upgrade_legacy_copy(src: Path, tmp_dir: Path) -> Path:
     return dst
 
 
-def read_board(path: str | Path) -> Board:
+def _legacy_file(src: Path) -> bool:
+    with src.open("rb") as board_file:
+        header = board_file.read(4096)
+    version = re.search(rb"\(version\s+(\d+)\)", header)
+    return version is not None and int(version[1]) < 20200101
+
+
+def read_board(path: str | Path, *, include_fill: bool = False) -> Board:
     path = Path(path).resolve()
     if not path.is_file():
         raise KiCadAdapterError(f"board not found: {path}")
@@ -194,11 +204,11 @@ def read_board(path: str | Path) -> Board:
         out = tmp_dir / "dump.json"
         load_path = path
         try:
-            run_helper("dump", load_path, out)
+            run_helper("dump", load_path, out, "1" if include_fill else "0")
         except KiCadAdapterError:
             # Legacy KiCad 4/5 boards fail direct KiCad 10 LoadBoard; upgrade a temp copy (never src, P8).
             load_path = _upgrade_legacy_copy(path, tmp_dir)
-            run_helper("dump", load_path, out)
+            run_helper("dump", load_path, out, "1" if include_fill else "0")
             upgraded = True
         data = json.loads(out.read_text(encoding="utf-8"))
         stackup = read_stackup(load_path.read_text(encoding="utf-8", errors="replace"))
@@ -251,10 +261,36 @@ def write_board(src: str | Path, board: Board, dst: str | Path, *, strip_routing
                 silk_arg = str(silk_cfg_path)
         elif clean_silkscreen:
             silk_arg = "1"
-        run_helper("place", src, placement, dst, mode, result_path, silk_arg)
+        load_path = _upgrade_legacy_copy(src, Path(tmp)) if _legacy_file(src) else src
+        run_helper("place", load_path, placement, dst, mode, result_path, silk_arg)
         result = json.loads(result_path.read_text(encoding="utf-8"))
     if result_out is not None:
         result_out.update(result)
     if result["missing"]:
         raise KiCadAdapterError(f"{len(result['missing'])} footprints of the placement are not on the board")
+    return dst
+
+
+def refill_copy(src: Path, dst: Path) -> Path:
+    """Refill a working copy against its project rules and persist the exact checked geometry."""
+    src, dst = src.resolve(), dst.resolve()
+    if src == dst:
+        raise KiCadAdapterError("refill requires a separate output path")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    for suffix in SIDECARS:
+        sidecar = src.with_suffix(suffix)
+        if sidecar.is_file():
+            shutil.copyfile(sidecar, dst.with_suffix(suffix))
+    run_helper("refill", src, dst)
+    return dst
+
+
+def lock_routing_copy(src: Path, dst: Path) -> Path:
+    """Make retained ECO copper fixed for the router, with the matching rule files."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    run_helper("lock_routing", src, dst, dst.with_suffix(".lock.json"))
+    for suffix in SIDECARS:
+        sidecar = src.with_suffix(suffix)
+        if sidecar.is_file():
+            shutil.copyfile(sidecar, dst.with_suffix(suffix))
     return dst

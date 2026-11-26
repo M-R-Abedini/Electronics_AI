@@ -45,9 +45,10 @@
       "additionalProperties": {"allOf": [{"$ref": "#/$defs/claim"}, {"properties": {"value": {
         "oneOf": [
           {"type": "object", "required": ["mode"], "additionalProperties": false,
-           "properties": {"mode": {"const": "preserve"}}},
+           "properties": {"mode": {"const": "preserve"}, "access": {"$ref": "#/$defs/mating_access"}}},
           {"type": "object", "required": ["mode", "region", "angles_deg"], "additionalProperties": false,
            "properties": {"mode": {"const": "region"}, "region": {"type": "string", "minLength": 1},
+                          "access": {"$ref": "#/$defs/mating_access"},
                           "angles_deg": {"type": "array", "minItems": 1, "uniqueItems": true,
                                          "items": {"enum": [0, 90, 180, 270]}}}}
         ]
@@ -65,6 +66,21 @@
     }
   },
   "$defs": {
+    "mating_point": {
+      "type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2
+    },
+    "mating_access": {
+      "description": "Dimensioned insertion geometry in the footprint's local coordinates on its populated side.",
+      "oneOf": [
+        {"type": "object", "required": ["kind", "entry_mm", "exit_mm", "width_mm"], "additionalProperties": false,
+         "properties": {"kind": {"const": "planar"}, "entry_mm": {"$ref": "#/$defs/mating_point"},
+                        "exit_mm": {"$ref": "#/$defs/mating_point"}, "width_mm": {"type": "number", "exclusiveMinimum": 0},
+                        "max_overhang_mm": {"type": "number", "minimum": 0}}},
+        {"type": "object", "required": ["kind", "center_mm", "diameter_mm"], "additionalProperties": false,
+         "properties": {"kind": {"const": "normal"}, "center_mm": {"$ref": "#/$defs/mating_point"},
+                        "diameter_mm": {"type": "number", "exclusiveMinimum": 0}}}
+      ]
+    },
     "source": {
       "type": "object",
       "required": ["kind"],

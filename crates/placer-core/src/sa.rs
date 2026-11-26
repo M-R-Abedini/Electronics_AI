@@ -461,8 +461,11 @@ mod tests {
         let parts: Vec<Part> = (0..n)
             .map(|i| Part {
                 local,
+                outline_local: local,
+                obstacle_local: local,
                 sub_rects: Vec::new(),
                 cavity_eligible: true,
+                opp_local: None,
                 side: 0,
                 fixed: i == 0,
                 can_rotate: true,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -54,8 +55,14 @@ def run_cached(board: Path, out_json: Path) -> dict:
     key = hashlib.sha256(("|".join(parts) + "|" + kicad().version).encode()).hexdigest()[:32]
     cache = RUNTIME_DIR / "cache" / "drc" / f"{key}.json"
     if cache.is_file():
-        shutil.copyfile(cache, out_json)
-        return json.loads(cache.read_text(encoding="utf-8"))
+        cached = cache.read_bytes()
+        try:
+            result = json.loads(cached)
+        except ValueError:
+            pass  # replace an incomplete record from an older run
+        else:
+            out_json.write_bytes(cached)
+            return result
     with tempfile.TemporaryDirectory(prefix="eai_drc_") as tmp:
         copy = Path(tmp) / board.name  # never run kicad-cli next to the user's file
         shutil.copyfile(board, copy)
@@ -64,7 +71,16 @@ def run_cached(board: Path, out_json: Path) -> dict:
                 shutil.copyfile(board.with_suffix(s), copy.with_suffix(s))
         result = run(copy, out_json)
     cache.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(out_json, cache)
+    with tempfile.NamedTemporaryFile(dir=cache.parent, prefix=f"{key}-", suffix=".tmp", delete=False) as file:
+        pending = Path(file.name)
+        file.write(out_json.read_bytes())
+    try:
+        os.replace(pending, cache)
+    except PermissionError:
+        if not cache.is_file():
+            raise
+    finally:
+        pending.unlink(missing_ok=True)
     return result
 
 
@@ -123,16 +139,77 @@ class Attribution:
                 "failing_by_type": dict(sorted(by_type.items()))}
 
 
-def attribute(routed: dict, reference: dict) -> Attribution:
+def load_exclusions(board_path: Path | None) -> set[tuple[str, frozenset[str]]]:
+    """Load designer DRC exclusions from ``.kicad_pro`` keyed position-invariantly by ``(type, uuids)``."""
+    if board_path is None:
+        return set()
+    pro = Path(board_path).with_suffix(".kicad_pro")
+    if not pro.is_file():
+        return set()
+    try:
+        data = json.loads(pro.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    rows = ((data.get("board") or {}).get("design_settings") or {}).get("drc_exclusions") or []
+    out: set[tuple[str, frozenset[str]]] = set()
+    for row in rows:
+        raw = row[0] if isinstance(row, list) and row else row if isinstance(row, str) else ""
+        parts = raw.split("|")
+        if len(parts) >= 5 and parts[0]:
+            uuids = frozenset(p for p in parts[3:] if p)
+            if uuids:
+                out.add((parts[0], uuids))
+    return out
+
+
+def _is_same_footprint_pad_pair(v: dict) -> bool:
+    """True when a pad-pitch mask-bridge/clearance violation involves only pads of one rigid footprint."""
+    if v.get("type") not in ("solder_mask_bridge", "clearance"):
+        return False
+    items = v.get("items") or []
+    if len(items) < 2:
+        return False
+    refs: set[str] = set()
+    for item in items:
+        desc = item.get("description", "")
+        if is_routing_item(desc):
+            return False
+        m = _PAD_REF.search(desc)
+        if not m:
+            return False
+        refs.add(m.group(1))
+    return len(refs) == 1
+
+
+def _violation_exclusion_key(v: dict) -> tuple[str, frozenset[str]] | None:
+    vtype = v.get("type")
+    if not vtype:
+        return None
+    uuids = frozenset(i["uuid"] for i in v.get("items", []) if i.get("uuid"))
+    return (vtype, uuids) if uuids else None
+
+
+def attribute(
+    routed: dict,
+    reference: dict,
+    *,
+    exclusions: set[tuple[str, frozenset[str]]] | None = None,
+) -> Attribution:
     """Split the routed board's violations; ``reference`` is DRC of the input board."""
-    known = {_key(v) for v in reference.get("violations", [])}
+    known = Counter(_key(v) for v in reference.get("violations", []) if v.get("severity") in _GATED)
     out = Attribution()
     for v in routed.get("violations", []):
         if v.get("severity") not in _GATED:
             out.warnings.append(v)
         elif any(is_routing_item(i.get("description", "")) for i in v.get("items", [])):
             out.router.append(v)
-        elif _key(v) in known:
+        elif known[key := _key(v)] > 0:
+            known[key] -= 1
+            out.pre_existing.append(v)
+        elif (
+            (exclusions and (ek := _violation_exclusion_key(v)) is not None and ek in exclusions)
+            or _is_same_footprint_pad_pair(v)
+        ):
             out.pre_existing.append(v)
         else:
             out.new_other.append(v)

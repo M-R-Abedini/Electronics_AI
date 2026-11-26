@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     info = rep["stages"]["place"]
     route = rep["metrics"]["route"]
     print(json.dumps({"passed": rep["passed"], "gates": {g["name"]: [g["value"], g["passed"]] for g in rep["gates"]},
+                      "quality": {stage: row["status"] for stage, row in rep.get("quality", {}).items()},
                       "mode": info["mode"], "seconds_s0_s5": info["seconds_s0_s5"],
                       "floorplan_variant": info["floorplan"]["selected_variant"],
                       "hpwl_signal_mm": rep["metrics"]["hpwl"]["signal_mm"],

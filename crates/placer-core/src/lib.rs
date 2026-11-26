@@ -63,6 +63,7 @@ fn hpwl(xs: Vec<f64>, ys: Vec<f64>, nets: Vec<Vec<usize>>) -> PyResult<f64> {
 
 type PartRow = (f64, f64, f64, f64, u8, bool, bool, f64, f64, u8);
 type SubRectRow = (f64, f64, f64, f64);
+type SideObstacleRow = (f64, f64, f64, f64, u8);
 
 /// A placement problem: parts (local courtyard box, side, fixed, rotatable, pose), pins, nets, outline.
 #[pyclass]
@@ -73,7 +74,7 @@ struct PlacementProblem {
 #[pymethods]
 impl PlacementProblem {
     #[new]
-    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None, sub_rects=None, cavity_eligible=None, clusters=None, repulsions=None))]
+    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None, sub_rects=None, cavity_eligible=None, clusters=None, repulsions=None, outline_locals=None, both_sides=None, side_obstacles=None, obstacle_locals=None, opp_locals=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parts: Vec<PartRow>,
@@ -89,6 +90,11 @@ impl PlacementProblem {
         cavity_eligible: Option<Vec<bool>>,
         clusters: Option<Vec<Vec<usize>>>,
         repulsions: Option<Vec<(usize, usize, f64, f64)>>,
+        outline_locals: Option<Vec<SubRectRow>>,
+        both_sides: Option<Vec<bool>>,
+        side_obstacles: Option<Vec<SideObstacleRow>>,
+        obstacle_locals: Option<Vec<SubRectRow>>,
+        opp_locals: Option<Vec<Option<SubRectRow>>>,
     ) -> PyResult<Self> {
         let n = parts.len();
         if let Some(bad) = pins.iter().find(|p| p.0 >= n) {
@@ -119,6 +125,10 @@ impl PlacementProblem {
         }
         let sub_vec = sub_rects.unwrap_or_default();
         let elig_vec = cavity_eligible.unwrap_or_default();
+        let out_vec = outline_locals.unwrap_or_default();
+        let obs_vec = obstacle_locals.unwrap_or_default();
+        let both_vec = both_sides.unwrap_or_default();
+        let opp_vec = opp_locals.unwrap_or_default();
         let parts = parts
             .into_iter()
             .enumerate()
@@ -137,8 +147,41 @@ impl PlacementProblem {
                     })
                     .unwrap_or_default();
                 let eligible = elig_vec.get(idx).copied().unwrap_or(true);
+                let local = Rect { x0, y0, x1, y1 };
+                let outline_local = out_vec
+                    .get(idx)
+                    .map(|&(ox0, oy0, ox1, oy1)| Rect {
+                        x0: ox0,
+                        y0: oy0,
+                        x1: ox1,
+                        y1: oy1,
+                    })
+                    .unwrap_or(local);
+                let obstacle_local = obs_vec
+                    .get(idx)
+                    .map(|&(ox0, oy0, ox1, oy1)| Rect {
+                        x0: ox0,
+                        y0: oy0,
+                        x1: ox1,
+                        y1: oy1,
+                    })
+                    .unwrap_or(local);
+                let opp_local = opp_vec
+                    .get(idx)
+                    .and_then(|opt| {
+                        opt.map(|(ox0, oy0, ox1, oy1)| Rect {
+                            x0: ox0,
+                            y0: oy0,
+                            x1: ox1,
+                            y1: oy1,
+                        })
+                    })
+                    .or_else(|| both_vec.get(idx).copied().unwrap_or(false).then_some(local));
                 Part {
-                    local: Rect { x0, y0, x1, y1 },
+                    local,
+                    outline_local,
+                    obstacle_local,
+                    opp_local,
                     sub_rects: srects,
                     cavity_eligible: eligible,
                     side,
@@ -183,6 +226,13 @@ impl PlacementProblem {
         }
         if let Some(rep) = repulsions {
             inner.set_repulsions(rep);
+        }
+        if let Some(obs) = side_obstacles {
+            inner.set_side_obstacles(
+                obs.into_iter()
+                    .map(|(x0, y0, x1, y1, side)| (Rect { x0, y0, x1, y1 }, side))
+                    .collect(),
+            );
         }
         Ok(PlacementProblem { inner })
     }

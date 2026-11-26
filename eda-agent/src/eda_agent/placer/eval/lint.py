@@ -134,6 +134,23 @@ def _build_reference_planes(
     outline = legality.board_polygon(board)
     clearance = _clearance_mm(board)
     role_plane_nets = {n for r in board.stackup.roles if r.role in ("plane", "mixed") for n in r.nets}
+    if any("fill_geometry" in zone for zone in board.zones):
+        native = defaultdict(lambda: defaultdict(list))
+        for zone in board.zones:
+            net = zone.get("net")
+            if not net or not (is_power_net(net) or is_ground_net(net) or net in role_plane_nets):
+                continue
+            for layer, rows in zone.get("fill_geometry", {}).items():
+                canon = name_to_canon.get(layer, layer)
+                if canon not in canon_to_idx:
+                    continue
+                for row in rows:
+                    if not row["island"] and len(row["outer"]) >= 3:
+                        poly = Polygon(row["outer"], row["holes"])
+                        poly = poly if poly.is_valid else poly.buffer(0)
+                        if not poly.is_empty:
+                            native[canon][net].append(poly)
+        return {layer: {net: unary_union(polys) for net, polys in nets.items()} for layer, nets in native.items()}
 
     raw_by_layer_net: dict[str, dict[str, list[Any]]] = defaultdict(lambda: defaultdict(list))
     for zone in board.zones:
@@ -1097,6 +1114,8 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
     return {
         "available": True,
         "has_copper": has_copper,
+        "reference_geometry": ("native_fill" if any("fill_geometry" in zone for zone in board.zones)
+                               else "estimated_from_outline" if board.zones else "no_zones"),
         "score": score,
         "critical_errors": critical_count,
         "warnings": warning_count,

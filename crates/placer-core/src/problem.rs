@@ -12,6 +12,9 @@ use crate::geom::{Outline, Rect, placed_rect, rot90, segments_cross};
 #[derive(Clone, Debug)]
 pub struct Part {
     pub local: Rect,
+    pub outline_local: Rect,
+    pub obstacle_local: Rect,
+    pub opp_local: Option<Rect>,
     pub sub_rects: Vec<Rect>,
     pub cavity_eligible: bool,
     pub side: u8,
@@ -300,6 +303,10 @@ impl PartIndex {
 
     fn candidates(&self, side: u8, r: &Rect, out: &mut Vec<u32>) {
         out.clear();
+        self.candidates_append(side, r, out);
+    }
+
+    fn candidates_append(&self, side: u8, r: &Rect, out: &mut Vec<u32>) {
         let (i0, i1, j0, j1) = self.span(r);
         for j in j0..=j1 {
             for i in i0..=i1 {
@@ -327,6 +334,7 @@ pub struct Problem {
     pub repulsions: Vec<(usize, usize, f64, f64)>, // (part_a, part_b, min_dist_mm, weight)
     part_repulsions: Vec<Vec<usize>>,
     repulsion_cost: f64,
+    pub side_obstacles: [Vec<Rect>; 2],
     pub placed: Vec<bool>, // parts present in the overlap index (all, except during legalization)
     bounds: Rect,
     index: PartIndex,
@@ -426,6 +434,7 @@ impl Problem {
             repulsions: Vec::new(),
             part_repulsions: vec![Vec::new(); n_parts],
             repulsion_cost: 0.0,
+            side_obstacles: [Vec::new(), Vec::new()],
             placed: vec![true; n_parts],
             bounds,
             index: PartIndex::new(bounds, cell),
@@ -444,13 +453,51 @@ impl Problem {
         self.bounds
     }
 
+    #[inline]
+    fn index_insert_part(&mut self, i: usize, r: &Rect) {
+        let side = self.parts[i].side;
+        self.index.insert(side, r, i as u32);
+        if let Some(opp) = self.parts[i].opp_local {
+            let opp_r = placed_rect(&opp, self.parts[i].x, self.parts[i].y, self.parts[i].r)
+                .expand(self.gap / 2.0);
+            self.index.insert(1 - side, &opp_r, i as u32);
+        }
+    }
+
+    #[inline]
+    fn index_remove_part(&mut self, i: usize, r: &Rect) {
+        let side = self.parts[i].side;
+        self.index.remove(side, r, i as u32);
+        if let Some(opp) = self.parts[i].opp_local {
+            let opp_r = placed_rect(&opp, self.parts[i].x, self.parts[i].y, self.parts[i].r)
+                .expand(self.gap / 2.0);
+            self.index.remove(1 - side, &opp_r, i as u32);
+        }
+    }
+
+    #[inline]
+    fn hits_side_obstacle(&self, side: u8, r: &Rect) -> bool {
+        self.side_obstacles[side as usize]
+            .iter()
+            .any(|obs| r.overlap(obs) > 1e-9)
+    }
+
+    pub fn set_side_obstacles(&mut self, obstacles: Vec<(Rect, u8)>) {
+        self.side_obstacles = [Vec::new(), Vec::new()];
+        for (rect, side) in obstacles {
+            if side < 2 {
+                self.side_obstacles[side as usize].push(rect);
+            }
+        }
+    }
+
     /// Recompute every cached quantity from the part poses.
     pub fn rebuild(&mut self) {
         self.index = PartIndex::new(self.bounds, self.index.cell);
         for i in 0..self.parts.len() {
             if self.placed[i] {
                 let r = self.rect(i);
-                self.index.insert(self.parts[i].side, &r, i as u32);
+                self.index_insert_part(i, &r);
             }
         }
         self.hpwl_total = 0.0;
@@ -681,21 +728,39 @@ impl Problem {
         let half_gap = self.gap / 2.0;
         let rect = inner.expand(half_gap);
         if !self.parts[i].fixed {
+            let outline_box = placed_rect(&self.parts[i].outline_local, x, y, r);
             if self.parts[i].sub_rects.is_empty() {
-                if !self.outline.contains_rect(&inner) {
+                if !self.outline.contains_rect(&outline_box) {
                     return false;
                 }
-            } else {
+            } else if !self.outline.contains_rect(&outline_box) {
                 for sr in &self.parts[i].sub_rects {
                     if !self.outline.contains_rect(&placed_rect(sr, x, y, r)) {
                         return false;
                     }
                 }
             }
+            if self.parts[i].sub_rects.is_empty() {
+                let obs_box = placed_rect(&self.parts[i].obstacle_local, x, y, r);
+                if self.hits_side_obstacle(self.parts[i].side, &obs_box) {
+                    return false;
+                }
+            } else {
+                for sr in &self.parts[i].sub_rects {
+                    if self.hits_side_obstacle(self.parts[i].side, &placed_rect(sr, x, y, r)) {
+                        return false;
+                    }
+                }
+            }
         }
         let side = self.parts[i].side;
+        let opp_local = self.parts[i].opp_local;
         let mut cand = std::mem::take(&mut self.scratch);
         self.index.candidates(side, &rect, &mut cand);
+        if let Some(opp) = opp_local {
+            let opp_rect = placed_rect(&opp, x, y, r).expand(half_gap);
+            self.index.candidates_append(1 - side, &opp_rect, &mut cand);
+        }
         let mut ok = true;
         for &j in &cand {
             let j = j as usize;
@@ -706,10 +771,6 @@ impl Problem {
                 continue;
             }
             let pj = &self.parts[j];
-            let rj = placed_rect(&pj.local, pj.x, pj.y, pj.r).expand(half_gap);
-            if rect.overlap(&rj) <= 1e-9 {
-                continue;
-            }
             if parts_collide(&self.parts[i], (x, y, r), pj, (pj.x, pj.y, pj.r), half_gap) {
                 ok = false;
                 break;
@@ -739,23 +800,22 @@ impl Problem {
         if !self.can_place_at(j, xj, yj, rj, Some(i)) {
             return false;
         }
-        if self.parts[i].side == self.parts[j].side
+        let share_side = self.parts[i].side == self.parts[j].side
+            || self.parts[i].opp_local.is_some()
+            || self.parts[j].opp_local.is_some();
+        if share_side
             && self.placed[i]
             && self.placed[j]
             && !(self.parts[i].fixed && self.parts[j].fixed)
         {
             let half_gap = self.gap / 2.0;
-            let rect_i = placed_rect(&self.parts[i].local, xi, yi, ri).expand(half_gap);
-            let rect_j = placed_rect(&self.parts[j].local, xj, yj, rj).expand(half_gap);
-            if rect_i.overlap(&rect_j) > 1e-9
-                && parts_collide(
-                    &self.parts[i],
-                    (xi, yi, ri),
-                    &self.parts[j],
-                    (xj, yj, rj),
-                    half_gap,
-                )
-            {
+            if parts_collide(
+                &self.parts[i],
+                (xi, yi, ri),
+                &self.parts[j],
+                (xj, yj, rj),
+                half_gap,
+            ) {
                 return false;
             }
         }
@@ -768,13 +828,26 @@ impl Problem {
         for &(i, x, y, r) in moves {
             let inner = placed_rect(&self.parts[i].local, x, y, r);
             if !self.parts[i].fixed {
+                let outline_box = placed_rect(&self.parts[i].outline_local, x, y, r);
                 if self.parts[i].sub_rects.is_empty() {
-                    if !self.outline.contains_rect(&inner) {
+                    if !self.outline.contains_rect(&outline_box) {
+                        return false;
+                    }
+                } else if !self.outline.contains_rect(&outline_box) {
+                    for sr in &self.parts[i].sub_rects {
+                        if !self.outline.contains_rect(&placed_rect(sr, x, y, r)) {
+                            return false;
+                        }
+                    }
+                }
+                if self.parts[i].sub_rects.is_empty() {
+                    let obs_box = placed_rect(&self.parts[i].obstacle_local, x, y, r);
+                    if self.hits_side_obstacle(self.parts[i].side, &obs_box) {
                         return false;
                     }
                 } else {
                     for sr in &self.parts[i].sub_rects {
-                        if !self.outline.contains_rect(&placed_rect(sr, x, y, r)) {
+                        if self.hits_side_obstacle(self.parts[i].side, &placed_rect(sr, x, y, r)) {
                             return false;
                         }
                     }
@@ -782,8 +855,13 @@ impl Problem {
             }
             let rect = inner.expand(half_gap);
             let side = self.parts[i].side;
+            let opp_local = self.parts[i].opp_local;
             let mut cand = std::mem::take(&mut self.scratch);
             self.index.candidates(side, &rect, &mut cand);
+            if let Some(opp) = opp_local {
+                let opp_rect = placed_rect(&opp, x, y, r).expand(half_gap);
+                self.index.candidates_append(1 - side, &opp_rect, &mut cand);
+            }
             let mut ok = true;
             for &j in &cand {
                 let j = j as usize;
@@ -794,10 +872,6 @@ impl Problem {
                     continue;
                 }
                 let pj = &self.parts[j];
-                let rj = placed_rect(&pj.local, pj.x, pj.y, pj.r).expand(half_gap);
-                if rect.overlap(&rj) <= 1e-9 {
-                    continue;
-                }
                 if parts_collide(&self.parts[i], (x, y, r), pj, (pj.x, pj.y, pj.r), half_gap) {
                     ok = false;
                     break;
@@ -813,18 +887,17 @@ impl Problem {
             if !self.placed[ia] {
                 continue;
             }
-            let rect_a = placed_rect(&self.parts[ia].local, xa, ya, ra).expand(half_gap);
             for &(ib, xb, yb, rb) in &moves[a + 1..] {
+                let share_side = self.parts[ia].side == self.parts[ib].side
+                    || self.parts[ia].opp_local.is_some()
+                    || self.parts[ib].opp_local.is_some();
                 if !self.placed[ib]
-                    || self.parts[ia].side != self.parts[ib].side
+                    || !share_side
                     || (self.parts[ia].fixed && self.parts[ib].fixed)
                 {
                     continue;
                 }
-                let rect_b = placed_rect(&self.parts[ib].local, xb, yb, rb).expand(half_gap);
-                if rect_a.overlap(&rect_b) > 1e-9
-                    && parts_collide(&self.parts[ia], (xa, ya, ra), &self.parts[ib], (xb, yb, rb), half_gap)
-                {
+                if parts_collide(&self.parts[ia], (xa, ya, ra), &self.parts[ib], (xb, yb, rb), half_gap) {
                     return false;
                 }
             }
@@ -856,14 +929,14 @@ impl Problem {
         };
         let old_rect = self.rect(i);
         if self.placed[i] {
-            self.index.remove(self.parts[i].side, &old_rect, i as u32);
+            self.index_remove_part(i, &old_rect);
         }
         self.parts[i].x = x;
         self.parts[i].y = y;
         self.parts[i].r = r;
         if self.placed[i] {
             let new_rect = self.rect(i);
-            self.index.insert(self.parts[i].side, &new_rect, i as u32);
+            self.index_insert_part(i, &new_rect);
         }
         let rep_delta = if self.part_repulsions[i].is_empty() {
             0.0
@@ -925,14 +998,14 @@ impl Problem {
         let i = u.part;
         let cur_rect = self.rect(i);
         if self.placed[i] {
-            self.index.remove(self.parts[i].side, &cur_rect, i as u32);
+            self.index_remove_part(i, &cur_rect);
         }
         self.parts[i].x = u.old.0;
         self.parts[i].y = u.old.1;
         self.parts[i].r = u.old.2;
         if self.placed[i] {
             let r = self.rect(i);
-            self.index.insert(self.parts[i].side, &r, i as u32);
+            self.index_insert_part(i, &r);
         }
         self.repulsion_cost -= u.rep_delta;
         for (n, h) in u.net_old {
@@ -957,9 +1030,9 @@ impl Problem {
         }
         let r = self.rect(i);
         if placed {
-            self.index.insert(self.parts[i].side, &r, i as u32);
+            self.index_insert_part(i, &r);
         } else {
-            self.index.remove(self.parts[i].side, &r, i as u32);
+            self.index_remove_part(i, &r);
         }
         self.placed[i] = placed;
     }
@@ -980,31 +1053,49 @@ pub struct Undo {
 }
 
 #[inline]
-fn parts_collide(
+fn parts_collide_on_side(
     pa: &Part,
     pose_a: (f64, f64, u8),
     pb: &Part,
     pose_b: (f64, f64, u8),
     half_gap: f64,
+    check_side: u8,
 ) -> bool {
-    if pa.sub_rects.is_empty() && pb.sub_rects.is_empty() {
+    let (a_box, a_subs, a_cav) = if pa.side == check_side {
+        (pa.local, pa.sub_rects.as_slice(), pa.cavity_eligible)
+    } else if let Some(opp) = pa.opp_local {
+        (opp, &[][..], false)
+    } else {
+        return false;
+    };
+    let (b_box, b_subs, b_cav) = if pb.side == check_side {
+        (pb.local, pb.sub_rects.as_slice(), pb.cavity_eligible)
+    } else if let Some(opp) = pb.opp_local {
+        (opp, &[][..], false)
+    } else {
+        return false;
+    };
+    let ra = placed_rect(&a_box, pose_a.0, pose_a.1, pose_a.2).expand(half_gap);
+    let rb = placed_rect(&b_box, pose_b.0, pose_b.1, pose_b.2).expand(half_gap);
+    if ra.overlap(&rb) <= 1e-9 {
+        return false;
+    }
+    if a_subs.is_empty() && b_subs.is_empty() {
         return true;
     }
     // Tall/TH/external parts cannot enter a hollow shield cavity: treat the shield as its full AABB.
-    if (!pa.sub_rects.is_empty() && !pb.cavity_eligible)
-        || (!pb.sub_rects.is_empty() && !pa.cavity_eligible)
-    {
+    if (!a_subs.is_empty() && !b_cav) || (!b_subs.is_empty() && !a_cav) {
         return true;
     }
-    let a_slice: &[Rect] = if pa.sub_rects.is_empty() {
-        std::slice::from_ref(&pa.local)
+    let a_slice: &[Rect] = if a_subs.is_empty() {
+        std::slice::from_ref(&a_box)
     } else {
-        &pa.sub_rects
+        a_subs
     };
-    let b_slice: &[Rect] = if pb.sub_rects.is_empty() {
-        std::slice::from_ref(&pb.local)
+    let b_slice: &[Rect] = if b_subs.is_empty() {
+        std::slice::from_ref(&b_box)
     } else {
-        &pb.sub_rects
+        b_subs
     };
     for sa in a_slice {
         let ra_w = placed_rect(sa, pose_a.0, pose_a.1, pose_a.2).expand(half_gap);
@@ -1016,6 +1107,19 @@ fn parts_collide(
         }
     }
     false
+}
+
+#[inline]
+fn parts_collide(
+    pa: &Part,
+    pose_a: (f64, f64, u8),
+    pb: &Part,
+    pose_b: (f64, f64, u8),
+    half_gap: f64,
+) -> bool {
+    parts_collide_on_side(pa, pose_a, pb, pose_b, half_gap, pa.side)
+        || (pa.opp_local.is_some()
+            && parts_collide_on_side(pa, pose_a, pb, pose_b, half_gap, 1 - pa.side))
 }
 
 /// Edge-grid cell: about 1/40 of the board's longer side, at least 2 mm.
@@ -1063,15 +1167,19 @@ mod tests {
     }
 
     fn part(x: f64, y: f64) -> Part {
+        let local = Rect {
+            x0: -1.0,
+            y0: -0.5,
+            x1: 1.0,
+            y1: 0.5,
+        };
         Part {
-            local: Rect {
-                x0: -1.0,
-                y0: -0.5,
-                x1: 1.0,
-                y1: 0.5,
-            },
+            local,
+            outline_local: local,
+            obstacle_local: local,
             sub_rects: Vec::new(),
             cavity_eligible: true,
+            opp_local: None,
             side: 0,
             fixed: false,
             can_rotate: true,
@@ -1200,6 +1308,8 @@ mod tests {
         let wall_parts = vec![
             Part {
                 local: Rect { x0: -5.5, y0: -5.5, x1: 5.5, y1: 5.5 },
+                outline_local: Rect { x0: -5.5, y0: -5.5, x1: 5.5, y1: 5.5 },
+                obstacle_local: Rect { x0: -5.5, y0: -5.5, x1: 5.5, y1: 5.5 },
                 sub_rects: vec![
                     Rect { x0: -5.5, y0: -5.5, x1: 5.5, y1: -4.5 },
                     Rect { x0: -5.5, y0: 4.5, x1: 5.5, y1: 5.5 },
@@ -1207,6 +1317,7 @@ mod tests {
                     Rect { x0: 4.5, y0: -4.5, x1: 5.5, y1: 4.5 },
                 ],
                 cavity_eligible: false,
+                opp_local: None,
                 side: 0,
                 fixed: true,
                 can_rotate: false,
@@ -1221,5 +1332,33 @@ mod tests {
         assert!(p.can_place_at(1, 10.0, 10.0, 0, Some(2)));
         assert!(!p.can_place_at(1, 15.0, 10.0, 0, Some(2))); // hits right wall
         assert!(!p.can_place_at(2, 10.0, 10.0, 0, Some(1))); // tall part barred from cavity
+    }
+
+    #[test]
+    fn outline_local_both_sides_and_side_obstacles() {
+        let mut th = part(10.0, 10.0);
+        th.side = 0;
+        th.opp_local = Some(th.local);
+        let mut smd_b = part(15.0, 10.0);
+        smd_b.side = 1;
+        let mut edge_p = part(5.0, 5.0);
+        edge_p.outline_local = edge_p.local.expand(0.5);
+        let mut p = Problem::new(vec![th, smd_b, edge_p], vec![], vec![], square(), 0.1, 1.0, 10.0);
+        p.set_side_obstacles(vec![(Rect { x0: 2.0, y0: 14.0, x1: 6.0, y1: 18.0 }, 0)]);
+        // TH on side 0 blocks opposite-side SMD on side 1
+        assert!(!p.can_place_at(1, 10.0, 10.0, 0, None));
+        assert!(p.can_place_at(1, 15.0, 10.0, 0, None));
+        // Moving TH updates both-side index cleanly and undo restores
+        let u = p.apply_pose(0, 15.0, 15.0, 0);
+        assert!(p.can_place_at(1, 10.0, 10.0, 0, None));
+        assert!(!p.can_place_at(1, 15.0, 15.0, 0, None));
+        p.undo(u);
+        assert!(!p.can_place_at(1, 10.0, 10.0, 0, None));
+        // outline_local enforces edge margin without bloating part-to-part spacing
+        assert!(!p.can_place_at(2, 1.2, 5.0, 0, None));
+        assert!(p.can_place_at(2, 1.6, 5.0, 0, None));
+        // side_obstacles blocks side 0 only, not side 1
+        assert!(!p.can_place_at(2, 4.0, 16.0, 0, None));
+        assert!(p.can_place_at(1, 4.0, 16.0, 0, None));
     }
 }

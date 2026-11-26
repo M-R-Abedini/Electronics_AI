@@ -71,6 +71,16 @@ Select these parameters explicitly on `placer__place_board` and `placer__place_c
 
 ## 3. Mandatory Vision-Driven QA Protocol (Law P9 — Closed Visual Feedback Loop)
 
+For new runs, use `quality.placement` and `quality.routing` to qualify the selected artifact.
+Use the saved per-side, assembly, copper-layer and interface views linked from that artifact's
+review. Check the reported repair rounds before comparing the resulting positions or artwork.
+An approved placement can carry unfilled zone definitions. Inspect its separately labeled native
+refill preview for copper geometry. Use the routed artifact and its final saved-board DRC for
+connectivity and fabrication conclusions. A timed-out router or any open connections leaves routing
+at trial status. The combined pipeline starts S6a after placement approval. Apply an approved
+placement with `use_routed=false`. Rerun legacy or edited
+artifacts to obtain a fresh review tied to the board and project-rule hashes.
+
 > **HARD ENGINEERING RULE:** Scalar numbers (`Pro Score`, `strict_violations == 0`, `drc_new_non_routing == 0`, `silkscreen.dfm_score`) are **NEVER** sufficient to sign off a PCB layout. You **MUST** visually inspect rendered board images before declaring a layout clean or proposing `placer__apply`.
 
 ### Why Vision Is Non-Negotiable

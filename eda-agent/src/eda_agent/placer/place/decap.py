@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+import time
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -124,18 +125,186 @@ class CrossingTracker:
         return query, commit
 
 
+def _side_obstacles_by_side(board: Board, fixed: set[str]) -> dict[str, list[tuple[float, float, float, float]]]:
+    from .problem import side_obstacle_rects
+
+    by_side: dict[str, list[tuple[float, float, float, float]]] = {"F": [], "B": []}
+    for x0, y0, x1, y1, side_idx in side_obstacle_rects(board, fixed):
+        by_side["F" if side_idx == 0 else "B"].append((x0, y0, x1, y1))
+    return by_side
+
+
+class _SpatialBoxes:
+    """Lightweight 2D spatial grid for fast same-side blocker lookup in align_passives."""
+
+    def __init__(self, footprints: list[Footprint], box_fn: Callable[[Footprint], Box], cell: float = 3.0) -> None:
+        self._cell = cell
+        self._box_fn = box_fn
+        self._grid: dict[tuple[str, int, int], list[Footprint]] = {}
+        self._cells_of: dict[str, list[tuple[str, int, int]]] = {}
+        for fp in footprints:
+            self.insert(fp)
+
+    def _keys(self, side: str, b: Box) -> list[tuple[str, int, int]]:
+        c = self._cell
+        i0, i1 = math.floor(b[0] / c), math.floor(b[2] / c)
+        j0, j1 = math.floor(b[1] / c), math.floor(b[3] / c)
+        return [(side, i, j) for j in range(j0, j1 + 1) for i in range(i0, i1 + 1)]
+
+    def insert(self, fp: Footprint) -> None:
+        keys = self._keys(fp.side, self._box_fn(fp))
+        self._cells_of[fp.ref] = keys
+        for k in keys:
+            self._grid.setdefault(k, []).append(fp)
+
+    def update(self, fp: Footprint) -> None:
+        old_keys = self._cells_of.get(fp.ref)
+        new_keys = self._keys(fp.side, self._box_fn(fp))
+        if old_keys == new_keys:
+            return
+        if old_keys:
+            for k in old_keys:
+                bucket = self._grid.get(k)
+                if bucket:
+                    try:
+                        bucket.remove(fp)
+                    except ValueError:
+                        pass
+        self._cells_of[fp.ref] = new_keys
+        for k in new_keys:
+            self._grid.setdefault(k, []).append(fp)
+
+    def candidates(self, side: str, b: Box) -> list[Footprint]:
+        seen: set[int] = set()
+        out: list[Footprint] = []
+        for k in self._keys(side, b):
+            for fp in self._grid.get(k, ()):
+                fid = id(fp)
+                if fid not in seen:
+                    seen.add(fid)
+                    out.append(fp)
+        return out
+
+
+class _RegTracker:
+    """Exact group-local regularity oracle matching ``metrics.regularity`` in O(|group|)."""
+
+    def __init__(self, board: Board) -> None:
+        self.total_fps = len(board.footprints)
+        self.passives = [fp for fp in board.footprints if fp.prefix in metrics.PASSIVE_PREFIXES and len(fp.pads) <= 3]
+        self.passive_set = {fp.ref for fp in self.passives}
+        self.n_passives = len(self.passives)
+        self.groups: dict[tuple[str, str], list[Footprint]] = defaultdict(list)
+        for fp in self.passives:
+            self.groups[(fp.lib_id, fp.side)].append(fp)
+        self.group_aligned: dict[tuple[str, str], int] = {
+            gk: self._count_aligned(members) for gk, members in self.groups.items()
+        }
+        self.total_aligned = sum(self.group_aligned.values())
+        self.on_grid = sum(1 for fp in board.footprints if abs(fp.rotation / 90 - round(fp.rotation / 90)) < 1e-6)
+        self.axis = Counter(round(fp.rotation) % 180 for fp in self.passives)
+        self.fp_rot = {fp.ref: fp.rotation for fp in board.footprints}
+
+    @staticmethod
+    def _count_aligned(members: list[Footprint]) -> int:
+        if len(members) < 2:
+            return 0
+        aligned = 0
+        tol = metrics.ALIGN_TOL_MM
+        rad2 = metrics.ALIGN_RADIUS_MM * metrics.ALIGN_RADIUS_MM
+        for i, a in enumerate(members):
+            ax, ay = a.x, a.y
+            for j, b in enumerate(members):
+                if i == j:
+                    continue
+                dx = abs(b.x - ax)
+                dy = abs(b.y - ay)
+                if (dx <= tol or dy <= tol) and (dx * dx + dy * dy <= rad2):
+                    aligned += 1
+                    break
+        return aligned
+
+    def evaluate(self, moved_fps: tuple[Footprint, ...]) -> dict:
+        if not self.n_passives:
+            return {"n": 0}
+        touched_groups: set[tuple[str, str]] = set()
+        on_grid = self.on_grid
+        axis_deltas: dict[int, int] = {}
+        for fp in moved_fps:
+            old_rot = self.fp_rot[fp.ref]
+            if fp.rotation != old_rot:
+                was_on = abs(old_rot / 90 - round(old_rot / 90)) < 1e-6
+                now_on = abs(fp.rotation / 90 - round(fp.rotation / 90)) < 1e-6
+                on_grid += int(now_on) - int(was_on)
+                if fp.ref in self.passive_set:
+                    old_ax = round(old_rot) % 180
+                    new_ax = round(fp.rotation) % 180
+                    if old_ax != new_ax:
+                        axis_deltas[old_ax] = axis_deltas.get(old_ax, 0) - 1
+                        axis_deltas[new_ax] = axis_deltas.get(new_ax, 0) + 1
+            if fp.ref in self.passive_set:
+                touched_groups.add((fp.lib_id, fp.side))
+        aligned = self.total_aligned
+        for gk in touched_groups:
+            aligned += self._count_aligned(self.groups[gk]) - self.group_aligned[gk]
+        if axis_deltas:
+            dom = max(
+                (self.axis.get(k, 0) + axis_deltas.get(k, 0))
+                for k in (self.axis.keys() | axis_deltas.keys())
+            )
+        else:
+            dom = max(self.axis.values())
+        return {
+            "n": self.n_passives,
+            "aligned_fraction": round(aligned / self.n_passives, 4),
+            "rotation_on_90_grid": round(on_grid / self.total_fps, 4),
+            "dominant_axis_fraction": round(dom / self.n_passives, 4),
+        }
+
+    def commit(self, moved_fps: tuple[Footprint, ...]) -> None:
+        touched_groups: set[tuple[str, str]] = set()
+        for fp in moved_fps:
+            old_rot = self.fp_rot[fp.ref]
+            if fp.rotation != old_rot:
+                was_on = abs(old_rot / 90 - round(old_rot / 90)) < 1e-6
+                now_on = abs(fp.rotation / 90 - round(fp.rotation / 90)) < 1e-6
+                self.on_grid += int(now_on) - int(was_on)
+                if fp.ref in self.passive_set:
+                    old_ax = round(old_rot) % 180
+                    new_ax = round(fp.rotation) % 180
+                    if old_ax != new_ax:
+                        self.axis[old_ax] -= 1
+                        if self.axis[old_ax] <= 0:
+                            del self.axis[old_ax]
+                        self.axis[new_ax] += 1
+                self.fp_rot[fp.ref] = fp.rotation
+            if fp.ref in self.passive_set:
+                touched_groups.add((fp.lib_id, fp.side))
+        for gk in touched_groups:
+            new_c = self._count_aligned(self.groups[gk])
+            self.total_aligned += new_c - self.group_aligned[gk]
+            self.group_aligned[gk] = new_c
+
+
 def _find_blockers(board: Board, fp: Footprint, outline_bounds: Box | None,
-                   box: Callable[[Footprint], Box] = Footprint.box) -> list | None:
-    """Return same-side blockers for ``fp``, or None if outside ``outline_bounds``."""
+                   box: Callable[[Footprint], Box] = Footprint.box,
+                   side_obstacles: dict[str, list[tuple[float, float, float, float]]] | None = None,
+                   grid: _SpatialBoxes | None = None) -> list | None:
+    """Return same-side blockers for ``fp``, or None if outside ``outline_bounds`` or on a side obstacle."""
     ax0, ay0, ax1, ay1 = box(fp)
     if outline_bounds is not None:
         bx0, by0, bx1, by1 = outline_bounds
         if ax0 < bx0 or ay0 < by0 or ax1 > bx1 or ay1 > by1:
             return None
+    if side_obstacles:
+        for ox0, oy0, ox1, oy1 in side_obstacles.get(fp.side, ()):
+            if ax0 < ox1 and ax1 > ox0 and ay0 < oy1 and ay1 > oy0:
+                return None
     fp_shape = None
     fp_elig = legality.is_shield_cavity_eligible(fp)
     out = []
-    for other in board.footprints:
+    candidates = grid.candidates(fp.side, (ax0, ay0, ax1, ay1)) if grid is not None else board.footprints
+    for other in candidates:
         if other is fp or other.side != fp.side:
             continue
         ox0, oy0, ox1, oy1 = box(other)
@@ -330,6 +499,7 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
     if not distances and not cand_dists:
         return board, report
     result = board.copy()
+    side_obs = _side_obstacles_by_side(result, fixed)
     tracker = CrossingTracker(result)
     outline = legality.board_polygon(result)
     outline_bounds = outline.bounds if outline is not None else None
@@ -386,7 +556,7 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
                 break
             trials += 1
             fp.x, fp.y, fp.rotation = pose
-            blockers = _find_blockers(result, fp, outline_bounds)
+            blockers = _find_blockers(result, fp, outline_bounds, side_obstacles=side_obs)
             if blockers is None or len(blockers) > 1:
                 continue
             old_stats, old_all = report["after"], report["after_all"]
@@ -415,7 +585,8 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
                 for rot_o in (other_orig[2], (other_orig[2] + 90) % 360,
                               (other_orig[2] + 180) % 360, (other_orig[2] + 270) % 360):
                     _set_body_center_pose(other, ocx, ocy, rot_o)
-                    if _find_blockers(result, fp, outline_bounds) != [] or _find_blockers(result, other, outline_bounds) != []:
+                    if (_find_blockers(result, fp, outline_bounds, side_obstacles=side_obs) != []
+                            or _find_blockers(result, other, outline_bounds, side_obstacles=side_obs) != []):
                         continue
                     t2, tc2, s2, sa2 = _measure(result, intent)
                     if not _stats_improved(t2, tc2, s2, sa2, ref, is_cand, old_stats, old_all):
@@ -473,16 +644,19 @@ def _decap_ok(board: Board, intent: dict | None, has_res: bool, has_all: bool,
 
 
 def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
-                   preserve_escapes: Callable[[Board], bool] | None = None,
+                   preserve_escapes: Callable[..., bool] | None = None,
                    max_trials: int = 48, extend: bool = False,
-                   seed_moved: set[str] | None = None) -> tuple[Board, dict]:
+                   seed_moved: set[str] | None = None,
+                   time_budget_s: float = 25.0) -> tuple[Board, dict]:
     """Align passives locally (``extend=False``) or run full rotation/swap/stacking refinement."""
     before = metrics.regularity(board)
     report = {"before": before, "after": before, "trials": 0, "moved": []}
     if before["n"] < 2 or (not extend and before["aligned_fraction"] >= 1.0):
         return board, report
 
+    deadline = time.monotonic() + time_budget_s
     result = board.copy()
+    side_obs = _side_obstacles_by_side(result, fixed)
     groups: dict[tuple[str, str], list] = defaultdict(list)
     for fp in result.footprints:
         if _passive_prefix(fp.ref) in metrics.PASSIVE_PREFIXES:
@@ -497,6 +671,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
 
     if extend:
         tracker = CrossingTracker(result)
+        reg_tracker = _RegTracker(result)
         outline = legality.board_polygon(result)
         outline_bounds = outline.bounds if outline is not None else None
         boxes = {}
@@ -508,8 +683,10 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                 cached = boxes[fp.ref] = (pose, fp.box())
             return cached[1]
 
+        spatial_grid = _SpatialBoxes(result.footprints, box)
+
         def blockers(fp):
-            return _find_blockers(result, fp, outline_bounds, box)
+            return _find_blockers(result, fp, outline_bounds, box, side_obstacles=side_obs, grid=spatial_grid)
 
         clearance = max(board.rules.get("courtyard_clearance", 0), 0.06)
         base_rudy = metrics.rudy(result).get("over_capacity_fraction", 0.0)
@@ -525,9 +702,18 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                 moved.append(ref)
                 moved_set.add(ref)
 
-        def _full_accept_ok(moved_fps: tuple) -> tuple[bool, dict, dict]:
+        def _check_preserve(moved_fps: tuple, orig_boxes: list[tuple[float, float, float, float, str]]) -> bool:
+            if preserve_escapes is None:
+                return True
+            all_boxes = list(orig_boxes) + [(*box(f), f.side) for f in moved_fps]
+            try:
+                return bool(preserve_escapes(result, moved_boxes=all_boxes))
+            except TypeError:
+                return bool(preserve_escapes(result))
+
+        def _full_accept_ok(moved_fps: tuple, orig_boxes: list[tuple[float, float, float, float, str]]) -> tuple[bool, dict, dict]:
             nonlocal trials
-            if trials >= max_trials:
+            if trials >= max_trials or time.monotonic() >= deadline:
                 return False, cur_res, cur_all
             if any(f.ref in decap_refs for f in moved_fps):
                 ok_d, n_res, n_all = _decap_ok(result, intent, has_res, has_all, before_res, before_all)
@@ -540,7 +726,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
             if not _local_legal(result, moved_fps, fixed, outline_bounds):
                 return False, cur_res, cur_all
             trials += 1
-            if preserve_escapes is not None and not preserve_escapes(result):
+            if not _check_preserve(moved_fps, orig_boxes):
                 return False, cur_res, cur_all
             if any(f.ref in sig_refs for f in moved_fps) and (
                     metrics.rudy(result).get("over_capacity_fraction", 0.0) > base_rudy + 1e-6):
@@ -550,18 +736,19 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
         # Multi-round refinement: rotation/swap (Pass A) + analytic stacking/co-alignment (Pass B).
         prev_round_moved: set[str] | None = set(seed_moved) if seed_moved else None
         for _round in range(4):
-            if trials >= max_trials:
+            if trials >= max_trials or time.monotonic() >= deadline:
                 break
             round_changed = False
             round_moved: set[str] = set()
 
             # Pass A.1: Center-preserving rotation to reduce crossings or improve axis uniformity.
             for fp in movable_fps:
-                if trials >= max_trials:
+                if trials >= max_trials or time.monotonic() >= deadline:
                     break
                 if prev_round_moved is not None and fp.ref not in prev_round_moved:
                     continue
                 ox, oy, orot = fp.x, fp.y, fp.rotation
+                orig_boxes = [(*box(fp), fp.side)]
                 cx, cy = _body_center_world(fp)
                 best_key = (-tracker.total, best_reg["aligned_fraction"], best_reg["dominant_axis_fraction"])
                 best_state = (ox, oy, orot)
@@ -576,7 +763,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                     _set_body_center_pose(fp, cx, cy, r)
                     if blockers(fp) != []:
                         continue
-                    nr = metrics.regularity(result)
+                    nr = reg_tracker.evaluate((fp,))
                     if nr["aligned_fraction"] < best_reg["aligned_fraction"] - 1e-9:
                         continue
                     nc, nmap = query()
@@ -585,7 +772,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                     key = (-nc, nr["aligned_fraction"], nr["dominant_axis_fraction"])
                     if key <= best_key:
                         continue
-                    ok, n_res, n_all = _full_accept_ok((fp,))
+                    ok, n_res, n_all = _full_accept_ok((fp,), orig_boxes)
                     if not ok:
                         continue
                     best_key = key
@@ -594,6 +781,8 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                 fp.x, fp.y, fp.rotation = best_state
                 if best_meta is not None:
                     commit(best_meta[0], best_meta[1])
+                    reg_tracker.commit((fp,))
+                    spatial_grid.update(fp)
                     best_reg, cur_res, cur_all = best_meta[2], best_meta[3], best_meta[4]
                     _mark_moved(fp.ref)
                     round_moved.add(fp.ref)
@@ -601,14 +790,14 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
 
             # Pass A.2: 2-part center swap + optional 180-deg flip within same-group passives.
             for _, grp in sorted(groups.items()):
-                if len(grp) < 2 or trials >= max_trials:
+                if len(grp) < 2 or trials >= max_trials or time.monotonic() >= deadline:
                     continue
                 ordered = sorted(grp, key=lambda f: f.ref)
                 for idx, a in enumerate(ordered):
-                    if a.ref in fixed or a.locked:
+                    if a.ref in fixed or a.locked or time.monotonic() >= deadline:
                         continue
                     for target in ordered[idx + 1:]:
-                        if target.ref in fixed or target.locked or trials >= max_trials:
+                        if target.ref in fixed or target.locked or trials >= max_trials or time.monotonic() >= deadline:
                             continue
                         if (prev_round_moved is not None
                                 and a.ref not in prev_round_moved and target.ref not in prev_round_moved):
@@ -616,6 +805,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         if math.hypot(a.x - target.x, a.y - target.y) > 20.0:
                             continue
                         s0 = (a.x, a.y, a.rotation, target.x, target.y, target.rotation)
+                        orig_boxes = [(*box(a), a.side), (*box(target), target.side)]
                         same_axis = round(s0[2]) % 180 == round(s0[5]) % 180
                         if same_axis and a.ref not in sig_refs and target.ref not in sig_refs:
                             continue
@@ -634,11 +824,11 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                                 nc, nmap = query()
                                 if nc > tracker.total or (same_axis and nc == tracker.total):
                                     continue
-                                nr = best_reg if same_axis else metrics.regularity(result)
+                                nr = best_reg if same_axis else reg_tracker.evaluate((a, target))
                                 key = (-nc, nr["aligned_fraction"], nr["dominant_axis_fraction"])
                                 if key <= best_key:
                                     continue
-                                ok, n_res, n_all = _full_accept_ok((a, target))
+                                ok, n_res, n_all = _full_accept_ok((a, target), orig_boxes)
                                 if not ok:
                                     continue
                                 best_key = key
@@ -647,6 +837,9 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         a.x, a.y, a.rotation, target.x, target.y, target.rotation = best_s
                         if best_meta2 is not None:
                             commit(best_meta2[0], best_meta2[1])
+                            reg_tracker.commit((a, target))
+                            spatial_grid.update(a)
+                            spatial_grid.update(target)
                             best_reg, cur_res, cur_all = best_meta2[2], best_meta2[3], best_meta2[4]
                             _mark_moved(a.ref)
                             _mark_moved(target.ref)
@@ -655,7 +848,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
 
             # Pass B: 1D coordinate snaps + analytic neighbor stacking + pair co-alignment.
             for _, grp in sorted(groups.items()):
-                if len(grp) < 2 or trials >= max_trials:
+                if len(grp) < 2 or trials >= max_trials or time.monotonic() >= deadline:
                     continue
                 ordered = sorted(grp, key=lambda f: f.ref)
 
@@ -673,11 +866,12 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
 
                 unaligned = _unaligned_set(ordered)
                 for a in ordered:
-                    if a.ref in fixed or a.locked or trials >= max_trials:
+                    if a.ref in fixed or a.locked or trials >= max_trials or time.monotonic() >= deadline:
                         continue
                     if prev_round_moved is not None and a.ref not in prev_round_moved and a.ref not in unaligned:
                         continue
                     ox, oy, orot = a.x, a.y, a.rotation
+                    orig_boxes = [(*box(a), a.side)]
                     best_state = (ox, oy, orot)
                     best_key = (best_reg["aligned_fraction"], best_reg["dominant_axis_fraction"], -tracker.total)
                     best_meta3: tuple[int, dict, dict, dict, dict] | None = None
@@ -716,7 +910,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                     query, commit = tracker.prepare((a,))
                     seen_p: set[tuple[float, float, float]] = set()
                     for tx, ty, trot in cands:
-                        if (tx, ty, trot) in seen_p or trials >= max_trials:
+                        if (tx, ty, trot) in seen_p or trials >= max_trials or time.monotonic() >= deadline:
                             continue
                         seen_p.add((tx, ty, trot))
                         if math.hypot(tx - ox, ty - oy) > 22.0:
@@ -724,7 +918,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         a.x, a.y, a.rotation = tx, ty, trot
                         if blockers(a) != []:
                             continue
-                        nr = metrics.regularity(result)
+                        nr = reg_tracker.evaluate((a,))
                         if (nr["aligned_fraction"], nr["dominant_axis_fraction"]) <= best_key[:2]:
                             continue
                         nc, nmap = query()
@@ -733,7 +927,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         key = (nr["aligned_fraction"], nr["dominant_axis_fraction"], -nc)
                         if key <= best_key:
                             continue
-                        ok, n_res, n_all = _full_accept_ok((a,))
+                        ok, n_res, n_all = _full_accept_ok((a,), orig_boxes)
                         if not ok:
                             continue
                         best_key = key
@@ -744,6 +938,8 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                     a.x, a.y, a.rotation = best_state
                     if best_meta3 is not None:
                         commit(best_meta3[0], best_meta3[1])
+                        reg_tracker.commit((a,))
+                        spatial_grid.update(a)
                         best_reg, cur_res, cur_all = best_meta3[2], best_meta3[3], best_meta3[4]
                         _mark_moved(a.ref)
                         round_moved.add(a.ref)
@@ -753,11 +949,11 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                 # Co-alignment for unaligned peer pairs within 25 mm.
                 unaligned = _unaligned_set(ordered)
                 for idx, a in enumerate(ordered):
-                    if a.ref not in unaligned or a.ref in fixed or a.locked or trials >= max_trials:
+                    if a.ref not in unaligned or a.ref in fixed or a.locked or trials >= max_trials or time.monotonic() >= deadline:
                         continue
                     for target in ordered[idx + 1:]:
                         if (target.ref not in unaligned or a.ref not in unaligned
-                                or target.ref in fixed or target.locked or trials >= max_trials):
+                                or target.ref in fixed or target.locked or trials >= max_trials or time.monotonic() >= deadline):
                             continue
                         if (prev_round_moved is not None
                                 and a.ref not in prev_round_moved and target.ref not in prev_round_moved):
@@ -765,28 +961,29 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         if math.hypot(a.x - target.x, a.y - target.y) > 25.0:
                             continue
                         s0 = (a.x, a.y, a.rotation, target.x, target.y, target.rotation)
+                        orig_boxes = [(*box(a), a.side), (*box(target), target.side)]
                         best_key = (best_reg["aligned_fraction"], best_reg["dominant_axis_fraction"], -tracker.total)
                         best_s2 = s0
                         best_meta4: tuple[int, dict, dict, dict, dict] | None = None
                         query, commit = tracker.prepare((a, target))
                         for dtx, dty in ((0, 0), (-2, 0), (2, 0), (0, -2), (0, 2), (-4, 0), (4, 0), (0, -4), (0, 4)):
-                            if best_meta4 is not None or trials >= max_trials:
+                            if best_meta4 is not None or trials >= max_trials or time.monotonic() >= deadline:
                                 break
                             ntx, nty = round(s0[3] + dtx, 4), round(s0[4] + dty, 4)
                             for trot in (s0[5], (s0[5] + 180) % 360, (s0[5] + 90) % 360, (s0[5] + 270) % 360):
-                                if best_meta4 is not None or trials >= max_trials:
+                                if best_meta4 is not None or trials >= max_trials or time.monotonic() >= deadline:
                                     break
                                 target.x, target.y, target.rotation = ntx, nty, trot
                                 if blockers(target) != []:
                                     continue
                                 lx_t, ly_t, rx_t, ry_t = target.box(0.0, 0.0, trot)
                                 for arot in (trot, (trot + 180) % 360):
-                                    if best_meta4 is not None or trials >= max_trials:
+                                    if best_meta4 is not None or trials >= max_trials or time.monotonic() >= deadline:
                                         break
                                     lx_a, ly_a, rx_a, ry_a = a.box(0.0, 0.0, arot)
                                     for gap in (clearance, clearance + 0.4, clearance + 0.9,
                                                 clearance + 1.4, clearance + 2.0):
-                                        if best_meta4 is not None or trials >= max_trials:
+                                        if best_meta4 is not None or trials >= max_trials or time.monotonic() >= deadline:
                                             break
                                         stack_pts = [
                                             (ntx, round(nty + ((ly_t - ry_a) - gap), 4)),
@@ -795,14 +992,14 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                                             (round(ntx + ((rx_t - lx_a) + gap), 4), nty),
                                         ]
                                         for ax, ay in stack_pts:
-                                            if trials >= max_trials:
+                                            if trials >= max_trials or time.monotonic() >= deadline:
                                                 break
                                             if math.hypot(ax - ntx, ay - nty) > metrics.ALIGN_RADIUS_MM:
                                                 continue
                                             a.x, a.y, a.rotation = ax, ay, arot
                                             if blockers(a) != []:
                                                 continue
-                                            nr = metrics.regularity(result)
+                                            nr = reg_tracker.evaluate((a, target))
                                             if (nr["aligned_fraction"], nr["dominant_axis_fraction"]) <= best_key[:2]:
                                                 continue
                                             nc, nmap = query()
@@ -811,7 +1008,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                                             key = (nr["aligned_fraction"], nr["dominant_axis_fraction"], -nc)
                                             if key <= best_key:
                                                 continue
-                                            ok, n_res, n_all = _full_accept_ok((a, target))
+                                            ok, n_res, n_all = _full_accept_ok((a, target), orig_boxes)
                                             if not ok:
                                                 continue
                                             best_key = key
@@ -821,6 +1018,9 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         a.x, a.y, a.rotation, target.x, target.y, target.rotation = best_s2
                         if best_meta4 is not None:
                             commit(best_meta4[0], best_meta4[1])
+                            reg_tracker.commit((a, target))
+                            spatial_grid.update(a)
+                            spatial_grid.update(target)
                             best_reg, cur_res, cur_all = best_meta4[2], best_meta4[3], best_meta4[4]
                             _mark_moved(a.ref)
                             _mark_moved(target.ref)
