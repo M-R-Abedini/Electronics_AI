@@ -186,8 +186,9 @@ def test_silkscreen_policies_end_to_end_on_stickhub(tmp_path: Path) -> None:
     write_board(src, b0, dst_asm, silkscreen_config=cfg_asm, result_out=stats_asm)
     aud_asm = silkscreen.audit_board(read_board(dst_asm))
     assert stats_asm["silkscreen"]["offloaded_to_fab"] >= 30
+    assert stats_asm["silkscreen"]["fab_refs_created"] >= 30
     assert aud_asm["visible_ref_designators"] == 0
-    assert aud_asm["visible_fab_texts"] > aud0["visible_fab_texts"]
+    assert aud_asm["visible_fab_texts"] >= len(b0.footprints) - 5
     attr_asm = drc.attribute(drc.run(dst_asm, tmp_path / "drc_asm.json"), drc_ref)
     assert attr_asm.counts()["new_non_routing"] == 0
 

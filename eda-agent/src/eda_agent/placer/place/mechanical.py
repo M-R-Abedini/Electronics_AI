@@ -8,6 +8,7 @@ import re
 from dataclasses import asdict, replace
 
 from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import box as shapely_box
 from shapely.ops import nearest_points, unary_union
 
 from ..eval.legality import _pad_polygon, board_polygon, courtyard_polygon
@@ -26,7 +27,7 @@ _PROFILES = (
     ("actuator", "normal", 5, r"\b(?:tact(?:ile)?|push ?button|slide switch|toggle switch|switch|ts ?1088)\b"),
     ("flex", "internal", 3, r"\b(?:fpc|ffc|zif)\b"),
     ("mezzanine", "internal", 0, r"\b(?:board to board|mezzanine|sodimm|sodimm socket|pmod)\b"),
-    ("header", "internal", 2, r"\b(?:pin ?header|pin ?socket|box ?header|swd|jtag|tag ?connect)\b"),
+    ("header", "internal", 2, r"\b(?:pin ?header|pin ?socket|box ?header|swd|jtag|tag ?connect|hn[12]x\d+)\b"),
     ("wire", "internal", 2, r"\b(?:jst|molex|jst ph|jst sh|wire to board)\b"),
 )
 _CLASSIFIERS = tuple((kind, mode, margin, re.compile(pattern)) for kind, mode, margin, pattern in _PROFILES)
@@ -50,12 +51,12 @@ def interface_kind(fp, role: str | None = None) -> tuple[str, str, float] | None
         if (kind == "external_jack" and actual and actual[0] == "sma"
                 and re.search(r"\b(?:diodes?|do ?214[a-z]*|rectifier)\b", physical)):
             continue
-        connector = kind != "actuator" and (role == "connector" or re.search(r"\b(?:conn|connector|socket)\b", physical))
+        connector = kind != "actuator" and (role == "connector" or re.search(r"\b(?:conn|connectors?|socket)\b", physical))
         if actual or (connector and pattern.search(identity)):
             if kind == "usb" and re.search(r"\b(?:vertical|top entry)\b", physical):
                 mode = "normal"
             return kind, mode, margin
-    if role in ("connector", "switch") or re.search(r"\b(?:connector|conn|socket)\b", physical):
+    if role in ("connector", "switch") or re.search(r"\b(?:connectors?|conn|socket)\b", physical):
         return ("connector", "internal", 2) if role != "switch" else ("actuator", "normal", 5)
     if fp.prefix in ("J", "P", "CN", "CON", "USB") and len(fp.pads) >= 2:
         return "unclassified_connector", "internal", 1.5
@@ -78,6 +79,9 @@ def interface_inventory(board: Board, intent: dict | None = None, *, outline=Non
             continue
         kind, mode, margin = kind_mode or ("declared", "internal", 0)
         shape = courtyard_polygon(fp)
+        if fp.courtyard.source == "derived" and fp.body_bounds_mm:
+            body_poly = shapely_box(*fp.body_bounds_mm)
+            shape = body_poly if shape is None else shape.union(body_poly)
         usable = valid and shape is not None and shape.intersection(outline).area > 0
         distance = shape.distance(outline.boundary) if usable else None
         near = distance is not None and distance <= margin + 1e-8

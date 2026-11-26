@@ -25,10 +25,10 @@ _PHYSICAL_DRC = {
 }
 
 
-def _drc_findings(candidate, reference):
+def _drc_findings(candidate, reference, *, exclusions=None):
     from ..diagnose import _points
 
-    attribution = drc.attribute(candidate, reference)
+    attribution = drc.attribute(candidate, reference, exclusions=exclusions)
     findings = []
     for row in attribution.router + attribution.new_other:
         if row["type"] not in _PHYSICAL_DRC:
@@ -36,9 +36,11 @@ def _drc_findings(candidate, reference):
         points = _points(row.get("items", []))
         refs = sorted({p["ref"] or match[1] for p in points
                        if (match := re.search(r"\bof ([^\s(]+)", p["description"])) or p["ref"]})
-        # Trackless placement previews do not establish the final thermal connection.
+        # Trackless placement previews do not establish the final thermal connection or run
+        # post-route mask-guard healing on board-level mask graphics vs zones (no footprint refs).
         # The same KiCad finding remains an error in the routed artifact's DRC.
-        placement_severity = "warning" if row["type"] == "starved_thermal" else "error"
+        is_zone_mask_preview = row["type"] == "solder_mask_bridge" and not refs
+        placement_severity = "warning" if (row["type"] == "starved_thermal" or is_zone_mask_preview) else "error"
         findings.append({**quality.finding(row["type"], refs, detail=row["description"], severity=placement_severity),
                          "points": points})
     return findings
@@ -68,7 +70,8 @@ def draft_evidence(path, board, reviewer, folder, *, reference_drc=None, native_
         if reference_drc is not None:
             drc_path = folder / "placement.drc.json"
             result = drc.run(preview, drc_path, refill=False)
-            findings.extend(_drc_findings(result, reference_drc))
+            exclusions = drc.load_exclusions(Path(reviewer.basis.source["path"]))
+            findings.extend(_drc_findings(result, reference_drc, exclusions=exclusions))
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         findings.append(quality.finding("copper_review_unavailable", severity="unknown", detail=str(exc)))
         preview, preview_board = path, board
@@ -87,53 +90,112 @@ def draft_evidence(path, board, reviewer, folder, *, reference_drc=None, native_
 
 
 def _candidate(board, reviewer, action, findings):
-    if action == "restore_reference":
-        refs = {fp.ref for fp in board.footprints}
-    elif action == "restore_protected":
+    if action == "restore_protected":
         refs = {ref for row in findings if row["kind"] == "protected_pose_changed" for ref in row["refs"]}
-    elif action == "restore_blockers":
-        refs = ({ref for row in findings if row["severity"] == "error" for ref in row["refs"]}
-                - reviewer.expected.keys()) & reviewer.source.keys()
+    elif action == "repair_local":
+        refs = set()
+        for row in findings:
+            if row["severity"] != "error":
+                continue
+            # For blocked critical pad exits [ic, *blockers], move the blocker(s) rather than the IC.
+            if row["kind"] == "critical_pad_exit_blocked" and len(row["refs"]) >= 2:
+                refs.update(row["refs"][1:])
+            else:
+                refs.update(row["refs"])
+        refs -= reviewer.expected.keys()
     else:
         refs = set()
     if not refs and action != "refresh_draft":
         return None
     trial = board.copy()
-    artwork_refs = {ref for row in findings if row["kind"] == "artwork_occluded" for ref in row["refs"]}
-    for ref in sorted(refs):
-        current = trial.fp(ref)
-        if (action == "restore_blockers" and ref in artwork_refs
-                and _shift_clear_of_artwork(trial, current, reviewer.basis.artwork)):
-            continue
-        target = reviewer.expected.get(ref) or reviewer.source.get(ref)
-        if target is not None:
-            current.x, current.y, current.rotation, current.side = (target.x, target.y, target.rotation, target.side)
+    if action == "restore_protected":
+        for ref in sorted(refs):
+            current = trial.fp(ref)
+            target = reviewer.expected.get(ref)
+            if target is not None:
+                current.x, current.y, current.rotation, current.side = (target.x, target.y, target.rotation, target.side)
+    elif action == "repair_local":
+        fixed_set = set(reviewer.expected) | set(reviewer.fixed)
+        moved_any = False
+        for ref in sorted(refs):
+            if ref in fixed_set:
+                continue
+            current = trial.fp(ref)
+            if _shift_clear_of_obstacles(trial, current, reviewer, fixed_set):
+                moved_any = True
+        if not moved_any:
+            return None
     if action != "refresh_draft" and all(mechanical.same_pose(fp, board.fp(fp.ref)) for fp in trial.footprints):
         return None
     return trial
 
 
-def _shift_clear_of_artwork(board, fp, authored):
+def _artwork_boxes_for_side(authored, side: str, owner: str) -> list:
+    out = []
+    for row in authored:
+        if row["side"] != side or row["owner"] == owner:
+            continue
+        x0, y0, x1, y1 = row["bounds_mm"]
+        label = (row.get("label") or "").lower()
+        kind = row.get("kind") or ("barcode" if ("qr" in label or "barcode" in label) else "graphic")
+        m = 1.05 if kind == "barcode" else 0.05
+        out.append(box(x0 - m, y0 - m, x1 + m, y1 + m))
+    return out
+
+
+def _critical_blocked_keys(reviewer, board) -> set:
+    out = set()
+    for key in reviewer._blocked(board):
+        if key in reviewer.base_exits:
+            continue
+        _ref, _pin, net = key
+        claim = reviewer.intent.get("nets", {}).get(net, {}).get("class")
+        if claim and model.is_hard(claim) and claim["value"] != "GENERAL":
+            out.add(key)
+    return out
+
+
+def _shift_clear_of_obstacles(board, fp, reviewer, fixed_set):
     shape = legality.courtyard_polygon(fp)
     outline = legality.board_polygon(board)
     if shape is None or outline is None:
         return False
     body = box(*fp.body_bounds_mm) if fp.body_bounds_mm else shape
-    artwork = [box(*row["bounds_mm"]) for row in authored if row["side"] == fp.side and row["owner"] != fp.ref]
+    artwork = _artwork_boxes_for_side(reviewer.basis.artwork, fp.side, fp.ref)
     neighbors = [legality.courtyard_polygon(other) for other in board.footprints
                  if other.ref != fp.ref and other.side == fp.side]
-    clearance = max(board.rules.get("courtyard_clearance", 0.0), 0.02)
-    for step in (0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0):
+    clearance = max(board.rules.get("courtyard_clearance", 0.0), 0.05)
+    before_blocked = _critical_blocked_keys(reviewer, board)
+    orig_x, orig_y, orig_rot, orig_body = fp.x, fp.y, fp.rotation, fp.body_bounds_mm
+    for step in (0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.5, 7.0, 9.0, 12.0):
         for dx, dy in ((-step, 0), (step, 0), (0, -step), (0, step),
                        (-step, -step), (-step, step), (step, -step), (step, step)):
             moved = translate(shape, xoff=dx, yoff=dy)
             ink_bounds = translate(body, xoff=dx, yoff=dy)
-            if (outline.covers(moved) and not any(ink_bounds.intersects(ink) for ink in artwork)
-                    and not any(neighbor is not None and moved.distance(neighbor) < clearance for neighbor in neighbors)):
-                fp.x += dx
-                fp.y += dy
-                fp.body_bounds_mm = ink_bounds.bounds
-                return True
+            if not outline.covers(moved):
+                continue
+            if any(ink_bounds.intersects(ink) or moved.intersects(ink) for ink in artwork):
+                continue
+            if any(neighbor is not None and moved.distance(neighbor) < clearance for neighbor in neighbors):
+                continue
+            fp.x, fp.y = round(orig_x + dx, 4), round(orig_y + dy, 4)
+            fp.body_bounds_mm = ink_bounds.bounds
+            if any(not f.fixed and fp.ref in f.refs for f in legality.check(board, fixed=fixed_set)):
+                fp.x, fp.y, fp.rotation, fp.body_bounds_mm = orig_x, orig_y, orig_rot, orig_body
+                continue
+            after_blocked = _critical_blocked_keys(reviewer, board)
+            if after_blocked - before_blocked:
+                fp.x, fp.y, fp.rotation, fp.body_bounds_mm = orig_x, orig_y, orig_rot, orig_body
+                continue
+            if before_blocked and len(after_blocked) >= len(before_blocked) and not any(
+                ink_bounds.intersects(ink) for ink in artwork
+            ):
+                # Keep searching if this part was moved to clear a critical pad exit and still blocks it.
+                still_blocks = any(fp.ref in row["blocked_by"] for k, row in reviewer._blocked(board).items() if k in after_blocked)
+                if still_blocks:
+                    fp.x, fp.y, fp.rotation, fp.body_bounds_mm = orig_x, orig_y, orig_rot, orig_body
+                    continue
+            return True
     return False
 
 
@@ -141,9 +203,9 @@ def _repair_actions(findings):
     hard = {row["kind"] for row in findings if row["severity"] == "error"}
     if hard == {"stale_zone_fill"}:
         return ("refresh_draft",)
-    # Every pose correction rewrites the draft with invalidated copper. Use
-    # the remaining rounds to resolve geometry and retain a known-good fallback.
-    return ("restore_protected", "restore_blockers", "restore_reference")
+    # Every pose correction rewrites the draft with invalidated copper and performs genuine local
+    # legal repairs without falling back to the untouched authored reference layout.
+    return ("restore_protected", "repair_local")
 
 
 def run(path: Path, reviewer: quality.PlacementReview, folder: Path, write_trial, *, allow_reference=True):
@@ -163,8 +225,6 @@ def run(path: Path, reviewer: quality.PlacementReview, folder: Path, write_trial
         findings = selected["findings"]
         if selected["status"] == "approved" or not quality.rank(findings)[0] or len(rounds) > quality.MAX_REPAIRS:
             break
-        if (action == "restore_reference" and not allow_reference) or (action == "restore_blockers" and reviewer.cold):
-            continue
         trial = _candidate(board, reviewer, action, findings)
         if trial is None:
             continue

@@ -70,8 +70,8 @@ def test_review_catches_protected_rotation_stale_fill_and_artwork():
     reviewer = quality.PlacementReview(original, {}, problem.fixed_parts(original))
     detected = reviewer.compare(candidate)
     assert {row["kind"] for row in detected} >= {"protected_pose_changed", "stale_zone_fill", "artwork_occluded"}
-    assert review._repair_actions(detected)[-1] == "restore_reference"
-    assert len(review._repair_actions(detected)) == quality.MAX_REPAIRS
+    assert review._repair_actions(detected) == ("restore_protected", "repair_local")
+    assert "restore_reference" not in review._repair_actions(detected)
     assert review._repair_actions([quality.finding("stale_zone_fill")]) == ("refresh_draft",)
     fresh = original.copy()
     fresh.zones[0].update(filled=False, filled_area_mm2={"F.Cu": 0})
@@ -185,3 +185,71 @@ def test_apply_rolls_back_board_if_publication_of_reviewed_rules_fails(tmp_path,
     with pytest.raises(ApplyError, match="rule changed during copy"):
         apply_module.apply_run(path, use_routed=False, target_path=target, history_dir=tmp_path / "history")
     assert not target.exists()
+
+
+def test_drc_attribute_honors_position_invariant_exclusions_and_same_fp_pads(tmp_path):
+    from eda_agent.placer.route import drc
+
+    board_path = tmp_path / "demo.kicad_pcb"
+    board_path.write_text("", encoding="utf-8")
+    pro = {
+        "board": {
+            "design_settings": {
+                "drc_exclusions": [
+                    ["solder_mask_bridge|1000|2000|uuid-a|uuid-b", ""],
+                ]
+            }
+        }
+    }
+    board_path.with_suffix(".kicad_pro").write_text(json.dumps(pro), encoding="utf-8")
+    exclusions = drc.load_exclusions(board_path)
+    assert ("solder_mask_bridge", frozenset({"uuid-a", "uuid-b"})) in exclusions
+
+    routed = {
+        "violations": [
+            {
+                "type": "solder_mask_bridge",
+                "severity": "error",
+                "items": [
+                    {"uuid": "uuid-a", "description": "Pad 1 [GND] of U3 on F.Cu"},
+                    {"uuid": "uuid-b", "description": "Pad 48 [VCC] of U3 on F.Cu"},
+                ],
+            },
+            {
+                "type": "solder_mask_bridge",
+                "severity": "error",
+                "items": [
+                    {"uuid": "uuid-c", "description": "Pad 37 [N1] of U3 on F.Cu"},
+                    {"uuid": "uuid-d", "description": "Pad 38 [N2] of U3 on F.Cu"},
+                ],
+            },
+            {
+                "type": "solder_mask_bridge",
+                "severity": "error",
+                "items": [
+                    {"uuid": "uuid-e", "description": "Pad 1 [N1] of C1 on F.Cu"},
+                    {"uuid": "uuid-f", "description": "Pad 2 [N2] of R1 on F.Cu"},
+                ],
+            },
+        ]
+    }
+    attr = drc.attribute(routed, {"violations": []}, exclusions=exclusions)
+    assert len(attr.pre_existing) == 2
+    assert len(attr.new_other) == 1
+
+
+def test_side_obstacle_rects_inflates_barcodes_and_respects_sides():
+    board = _board(_footprint("R1", "Resistor_SMD:R_0402", 8, 15))
+    board.board_area_mm2 = 600.0
+    board.artwork = [
+        {"uuid": "bc1", "side": "F", "owner": None, "kind": "barcode", "bounds_mm": [10.0, 10.0, 14.0, 14.0], "label": "QR"},
+        {"uuid": "txt1", "side": "B", "owner": None, "kind": "text", "bounds_mm": [2.0, 2.0, 5.0, 4.0], "label": "REV1"},
+    ]
+    obs = problem.side_obstacle_rects(board, set())
+    assert len(obs) == 2
+    bc = next(o for o in obs if o[4] == 0)
+    assert bc[0] == pytest.approx(8.95)
+    assert bc[2] == pytest.approx(15.05)
+    txt = next(o for o in obs if o[4] == 1)
+    assert txt[0] == pytest.approx(1.95)
+    assert txt[4] == 1

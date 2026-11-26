@@ -531,7 +531,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
 
     result = drc.run(out_board, work / "drc_routed.json")
     t = tick("drc_routed", t)
-    attribution = drc.attribute(result, reference)
+    ref_exclusions = drc.load_exclusions(Path(reference_board) if reference_board else board)
+    attribution = drc.attribute(result, reference, exclusions=ref_exclusions)
     initial_router_drc = attribution.counts()["router_caused"]
     sanitize_info = {
         "passes": 0,
@@ -567,7 +568,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             finished["routing"] = san["routing"]
             finished["pads"] = san["pads"]
             result = drc.run(out_board, work / f"drc_sanitized_{pass_idx}.json")
-            attribution = drc.attribute(result, reference)
+            attribution = drc.attribute(result, reference, exclusions=ref_exclusions)
             sanitize_info["final_router_drc"] = attribution.counts()["router_caused"]
             if sanitize_info["final_router_drc"] == 0:
                 break
@@ -642,7 +643,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                         if side.is_file() and not rr_board.with_suffix(suffix).is_file():
                             shutil.copyfile(side, rr_board.with_suffix(suffix))
                     rr_drc = drc.run(rr_board, rr_dir / "drc.json")
-                    rr_attr = drc.attribute(rr_drc, reference)
+                    rr_attr = drc.attribute(rr_drc, reference, exclusions=ref_exclusions)
                     rr_info["unrouted_after"] = int(rr_fin["unrouted_final"])
                     rr_info["router_drc_after"] = int(rr_attr.counts()["router_caused"])
                     rr_info["new_other_after"] = int(rr_attr.counts()["new_non_routing"])
@@ -686,7 +687,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             finished["routing"] = healed["routing"]
             finished["pads"] = healed["pads"]
             result = drc.run(out_board, work / f"drc_thermal_{pass_idx}_{mode}.json")
-            attribution = drc.attribute(result, reference)
+            attribution = drc.attribute(result, reference, exclusions=ref_exclusions)
             thermal_heal_info["final_starved"] = len(_starved_thermal_pad_uuids(attribution.new_other))
             if thermal_heal_info["final_starved"] == 0:
                 break
@@ -714,7 +715,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             finished["routing"] = healed["routing"]
             finished["pads"] = healed["pads"]
             result = drc.run(out_board, work / "drc_mask_healed.json")
-            attribution = drc.attribute(result, reference)
+            attribution = drc.attribute(result, reference, exclusions=ref_exclusions)
             mask_heal_info["final_bridges"] = len(_mask_bridge_aperture_uuids(attribution.new_other))
         t = tick("mask_bridge_heal", t)
 
@@ -751,7 +752,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 dp_res = _load(dp_out)
                 if int(dp_res.get("pruned_tracks", 0)) + int(dp_res.get("pruned_vias", 0)) > 0:
                     dp_drc = drc.run(dp_board, work / "drc_dangling_pruned.json")
-                    dp_attr = drc.attribute(dp_drc, reference)
+                    dp_attr = drc.attribute(dp_drc, reference, exclusions=ref_exclusions)
                     after_dangling = sum(
                         1 for v in dp_drc.get("violations", [])
                         if v.get("type") in ("via_dangling", "track_dangling")
@@ -820,7 +821,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             rv_added = int(rv_res.get("added", 0))
             if rv_added > 0:
                 rv_drc = drc.run(rv_board, work / "drc_return_vias.json")
-                rv_attr = drc.attribute(rv_drc, reference)
+                rv_attr = drc.attribute(rv_drc, reference, exclusions=ref_exclusions)
                 cur_vd = sum(1 for v in result.get("violations", []) if v.get("type") == "via_dangling")
                 # Per-via surgical recovery: if only a subset of injected return vias tripped DRC
                 # or via_dangling, drop ONLY those offending injected UUIDs instead of discarding all.
@@ -845,7 +846,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                     rv_added = max(0, rv_added - int(p_res.get("pruned_vias", 0)))
                     rv_res["unrouted_final"] = int(p_res.get("unrouted_final", rv_res.get("unrouted_final", 999999)))
                     rv_drc = drc.run(rv_board, work / "drc_return_vias_pruned.json")
-                    rv_attr = drc.attribute(rv_drc, reference)
+                    rv_attr = drc.attribute(rv_drc, reference, exclusions=ref_exclusions)
                 new_vd = sum(1 for v in rv_drc.get("violations", []) if v.get("type") == "via_dangling")
                 if (rv_added > 0
                         and rv_attr.counts()["router_caused"] == 0
@@ -865,7 +866,7 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         postprocess(out_board)
     final_drc_path = work / "drc_final_saved.json"
     result = drc.run(out_board, final_drc_path, refill=False)
-    attribution = drc.attribute(result, reference)
+    attribution = drc.attribute(result, reference, exclusions=ref_exclusions)
     final_board = read_board(out_board, include_fill=True)
     final_copper = quality.fill_state(final_board)
     generated = [row["uuid"] for row in mask_heal_info.get("added", [])]

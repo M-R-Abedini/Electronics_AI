@@ -1651,14 +1651,16 @@ def _fixed_artwork(board):
     rows = []
     for item in board.GetDrawings():
         layer = item.GetLayer()
-        if layer not in sides or item.GetClass() not in _GRAPHIC_CLASSES:
+        cls = item.GetClass()
+        if layer not in sides or cls not in _GRAPHIC_CLASSES:
             continue
-        is_text = item.GetClass() in _TEXT_CLASSES
+        is_text = cls in _TEXT_CLASSES
         if is_text and not item.IsVisible():
             continue
         bounds = _text_box(item) if is_text else _box_from_bbox(item.GetBoundingBox())
         if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
-            rows.append({"uuid": item.m_Uuid.AsString(), "side": sides[layer], "owner": None,
+            kind = "barcode" if cls == "PCB_BARCODE" else ("text" if is_text else "graphic")
+            rows.append({"uuid": item.m_Uuid.AsString(), "side": sides[layer], "owner": None, "kind": kind,
                          "bounds_mm": [_mm(v) for v in bounds], "label": _item_text(item) if is_text else None})
     for fp in board.GetFootprints():
         if not _artwork_footprint(fp):
@@ -1668,8 +1670,10 @@ def _fixed_artwork(board):
                       and item.GetClass() in _GRAPHIC_CLASSES]
             if bounds:
                 x0, y0, x1, y1 = zip(*bounds)
+                kind = "barcode" if any(t in f"{fp.GetReference()} {fp.GetFPIDAsString()} {fp.GetValue()}".lower()
+                                        for t in ("barcode", "qr_code", "qrcode", "qr-code")) else "artwork_footprint"
                 rows.append({"uuid": f"{fp.m_Uuid.AsString()}:{side}", "side": side, "owner": fp.GetReference(),
-                             "bounds_mm": [_mm(v) for v in (min(x0), min(y0), max(x1), max(y1))],
+                             "kind": kind, "bounds_mm": [_mm(v) for v in (min(x0), min(y0), max(x1), max(y1))],
                              "label": fp.GetValue() or fp.GetReference()})
     return sorted(rows, key=lambda row: row["uuid"])
 
@@ -2474,7 +2478,12 @@ def _clean_silkscreen(board, cfg=None):
                     ("dense_condensed", pcbnew.VECTOR2I(round(dense_h * 0.75), int(dense_h)), _stroke_for(dense_h)),
                 ]
         else:
-            size_trials = [("keep", orig_size, max(min_w, orig_thick))]
+            compact_h = pcbnew.FromMM(0.65)
+            size_trials = [
+                ("keep", orig_size, max(min_w, orig_thick)),
+                ("dense", pcbnew.VECTOR2I(int(dense_h), int(dense_h)), _stroke_for(dense_h)),
+                ("compact", pcbnew.VECTOR2I(int(compact_h), int(compact_h)), _stroke_for(compact_h)),
+            ]
 
         step_nm = pcbnew.FromMM(0.25 if (is_miniature or not is_ref) else 0.45)
 
@@ -2555,6 +2564,16 @@ def _clean_silkscreen(board, cfg=None):
             ):
                 leader_refs.append(ref)
         else:
+            # Never leave a colliding non-reference polarity/marking text printing directly over copper/silk
+            # when the footprint already has silkscreen graphics; offload cleanly instead of causing DRC errors.
+            if not is_ref and orig_hard_collision and not was_hidden:
+                item.SetTextSize(orig_size)
+                item.SetTextThickness(orig_thick)
+                item.SetPosition(orig_pos)
+                item.SetTextAngleDegrees(orig_ang)
+                item.SetVisible(False)
+                offloaded_refs.append(ref)
+                continue
             unresolved += 1
             # Keep original geometry if position could not move.
             item.SetTextSize(orig_size)
@@ -2794,15 +2813,17 @@ def place(board_path, placement_json, out_board, strip_routing, out_json, clean_
                             old_pad_polys.append((lyr, nc, poly))
 
     moved = flipped = 0
+    moved_uuids = {fp.m_Uuid.AsString() for fp in moved_fps}
     for uuid, pose in placement.items():
         fp = by_uuid.get(uuid)
         if fp is None:
             continue
-        if (pose["side"] == "B") != fp.IsFlipped():
-            fp.Flip(fp.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
-            flipped += 1
-        fp.SetOrientationDegrees(float(pose["rotation"]))
-        fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(float(pose["x"])), pcbnew.FromMM(float(pose["y"]))))
+        if uuid in moved_uuids:
+            if (pose["side"] == "B") != fp.IsFlipped():
+                fp.Flip(fp.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+                flipped += 1
+            fp.SetOrientationDegrees(float(pose["rotation"]))
+            fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(float(pose["x"])), pcbnew.FromMM(float(pose["y"]))))
         if "locked" in pose:
             fp.SetLocked(bool(pose["locked"]))
         moved += 1

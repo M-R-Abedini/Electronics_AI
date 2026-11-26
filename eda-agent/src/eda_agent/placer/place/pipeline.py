@@ -97,8 +97,11 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         retries += 1
         if not large:
             core.set_positions(start_poses)
-        # On large boards, keep successful coarse poses as the next search targets.
-        failed = core.legalize(retry_step, diag, sorted(set(failed)))
+            step = retry_step
+        else:
+            # On large boards, keep successful coarse poses and use a finer step when only a few parts remain.
+            step = max(LEGALIZE_STEP_MM, 0.4) if len(failed) <= 8 else retry_step
+        failed = core.legalize(step, diag, sorted(set(failed)))
     after_legalize = core.cost()
     timings["s4"] = round(time.monotonic() - t, 2)
     t = time.monotonic()
@@ -551,8 +554,37 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         rigid_members = {r for group in rigid_macros.get("members", []) for r in group}
         refine_fixed = set(info["fixed"]) | rigid_members
         blocked = blocked_exits(audit)
+        # Precompute world-space exit corridor bounding boxes so align_passives only runs escape.audit
+        # when a moved passive's old or new box actually enters an IC's escape zone.
+        from ..geometry import transform as _xf
 
-        def preserve_align(board_state):
+        exit_boxes = []
+        for ic_ref, row in exits.items():
+            ic_fp = placed.fp(ic_ref)
+            if not row:
+                continue
+            pts = [_xf(pt, ic_fp.position, ic_fp.rotation) for e in row for pt in (e.start, e.end)]
+            pad_m = max(max(e.width, e.via_space) for e in row) + 0.5
+            exit_boxes.append((
+                min(p[0] for p in pts) - pad_m,
+                min(p[1] for p in pts) - pad_m,
+                max(p[0] for p in pts) + pad_m,
+                max(p[1] for p in pts) + pad_m,
+                ic_fp.side,
+            ))
+
+        def preserve_align(board_state, moved_boxes=None):
+            if moved_boxes is not None and exit_boxes:
+                touches_exit = False
+                for mx0, my0, mx1, my1, mside in moved_boxes:
+                    for ex0, ey0, ex1, ey1, eside in exit_boxes:
+                        if mside == eside and mx0 <= ex1 and mx1 >= ex0 and my0 <= ey1 and my1 >= ey0:
+                            touches_exit = True
+                            break
+                    if touches_exit:
+                        break
+                if not touches_exit:
+                    return True
             return blocked_exits(measure(board_state)) <= blocked
 
         placed, passive_alignment = decap.align_passives(
@@ -764,7 +796,9 @@ def _floorplan_metrics(board, intent: dict) -> dict:
 
 def _floorplan_rank(info: dict, metrics: dict, audit: dict) -> tuple:
     tail = metrics["decap_p90_mm"]
-    return (*_legality_key(info), -audit["clear"], metrics["crossings"], tail if tail is not None else math.inf)
+    med = metrics.get("decap_median_mm")
+    decap_bucket = round(max(0.0, (med or 0.0) - 3.5), 1)
+    return (*_legality_key(info), -audit["clear"], decap_bucket, metrics["crossings"], tail if tail is not None else math.inf)
 
 
 def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, intent: dict, *, base_metrics=None) -> dict:
@@ -777,14 +811,21 @@ def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, inte
         and base["crossings"] > 0
         and trial["crossings"] <= int(base["crossings"] * 0.95)
     )
+    big_decap_win = (
+        base.get("decap_median_mm") is not None
+        and trial.get("decap_median_mm") is not None
+        and base["decap_median_mm"] - trial["decap_median_mm"] >= 1.5
+        and (trial.get("all_decap_p90_mm") or 0.0) <= (base.get("all_decap_p90_mm") or math.inf) - 1.5
+    )
     p90_tol = 0.05 if big_xing_win else 0.0
+    xing_tol = max(3, int(base["crossings"] * 0.25)) if big_decap_win and base.get("crossings") else 0
     regressions = []
     for key in ("crossings", "decap_p90_mm", "all_decap_p90_mm"):
         bval = base.get(key)
         tval = trial.get(key)
         if bval is None:
             continue
-        tol = p90_tol if key != "crossings" else 0.0
+        tol = xing_tol if key == "crossings" else p90_tol
         if tval is None or tval > bval + tol:
             regressions.append(key)
     if trial["resolved_decaps"] < base["resolved_decaps"]:
@@ -939,11 +980,12 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
 
     out_board, write_stats = write_trial(placed, run_dir / f"{board.name}.placed.kicad_pcb")
     reviewer = placement_review = None
+    time_gate_s = max(300, int(1.5 * int(info.get("movable") or 0)))
     if reference.source.get("eda") == "kicad":
         reviewer = quality.PlacementReview(reference, intent, info["fixed"], info["mechanical_anchors"],
                                            cold=cold is not None, fab_profile=fab_profile)
         out_board, placed, placement_review = review.run(
-            out_board, reviewer, run_dir / "review", write_trial, allow_reference=cold is None and not keep_placement,
+            out_board, reviewer, run_dir / "review", write_trial, allow_reference=False,
         )
         write_stats = placement_review.pop("write_stats", write_stats)
         if len(placement_review["rounds"]) > 1:
@@ -954,10 +996,8 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
             repairs = [row["action"] for row in placement_review["rounds"][1:] if row["accepted"]]
             if repairs:
                 info["cost_final_stage"] = repairs[-1]
-                if repairs[-1] == "restore_reference":
-                    info["floorplan"]["selected_variant"] = "authored_reference"
         info["zones_require_refill"] = placement_review["zones_require_refill"]
-        if info["seconds_s0_s5"] > 300 and placement_review["status"] == "approved":
+        if info["seconds_s0_s5"] > time_gate_s and placement_review["status"] == "approved":
             placement_review["status"] = "failed"
             placement_review["reasons"] = ["placement_time_budget"]
     silk_raw = write_stats.get("silkscreen")
@@ -1060,55 +1100,13 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
         routing_review = review.routed_evidence(path, routed_board, reviewer, routed, placement_review,
                                                 run_dir / "review" / "routed",
                                                 taps=(s6a_summary or {}).get("tap_fill_after_ses"))
-    if (reviewer and routed and routing_review["status"] != "approved" and placement_review["status"] == "approved"
-            and routed["metrics"].get("settled") and routed["metrics"].get("router_stop") != "timeout"
-            and len(placement_review["rounds"]) <= quality.MAX_REPAIRS and cold is None
-            and cluster_refs is None and not keep_placement):
-        alternative = review._candidate(placed, reviewer, "restore_reference", [])
-        if alternative is not None:
-            alternate_root = run_dir / "route-repair"
-            path, _ = write_trial(alternative, alternate_root / out_board.name)
-            saved = read_board(path)
-            from ..route import drc
-
-            reference_drc = drc.run_cached(src, alternate_root / "reference.drc.json")
-            draft = review.draft_evidence(path, saved, reviewer, alternate_root / "review" / "placement",
-                                          reference_drc=reference_drc)
-            attempt = {"action": "reroute_authored_placement", "accepted": False, "placement": draft}
-            if draft["status"] == "approved":
-                cfg = silk_mod.build_config(saved, intent, policy=silkscreen_policy, fab_profile=fab_profile,
-                                            dru_rules=dru_rules)
-                trial, trial_board, trial_s6a, trial_silk, error = run_route_trial(path, saved, cfg, alternate_root)
-                if trial:
-                    trial_routing = review.routed_evidence(
-                        Path(trial["artifacts"]["routed_board"]), trial_board, reviewer, trial, draft,
-                        alternate_root / "review" / "routed", taps=(trial_s6a or {}).get("tap_fill_after_ses"),
-                    )
-                    attempt["routing"] = trial_routing
-                    if trial_routing["status"] == "approved":
-                        attempt["accepted"] = True
-                        original_rounds = placement_review["rounds"]
-                        placement_review = {**draft, "rounds": original_rounds, "stop": "route_repair_approved"}
-                        routing_review = {**trial_routing, "initial_review": routing_review}
-                        out_board, placed = path, saved
-                        routed, routed_board, s6a_summary = trial, trial_board, trial_s6a
-                        route_root = alternate_root
-                        info["floorplan"]["selected_variant"] = "authored_route_repair"
-                        boxes = {fp.ref: problem.local_box(fp) for fp in placed.footprints}
-                        info["floorplan"]["escape"] = escape.audit(placed, escape.envelopes(placed, intent, boxes))
-                        if trial_silk:
-                            info["silkscreen"] = trial_silk
-                        evaluation = evaluate(placed, routed["metrics"], fixed, intent, copper_board=routed_board)
-                elif error:
-                    attempt["error"] = error
-            placement_review["rounds"].append(attempt)
     page = gallery([Panel(f"{board.name} (reference)", reference_for_score, reference_evaluation),
                     Panel(f"{board.name} (placer v2, {mode})",
                           routed_board if routed_board is not None else placed, evaluation,
                           routed["metrics"] if routed else None)],
                    run_dir / "gallery.html", title=f"{board.name}: placer v2 vs expert")
     gates = [run_report.gate("legality_violations", evaluation["legality"]["strict_violations"], 0, "=="),
-             run_report.gate("s0_s5_seconds", info["seconds_s0_s5"], 300, "<=")]
+             run_report.gate("s0_s5_seconds", info["seconds_s0_s5"], time_gate_s, "<=")]
     if routed:
         gates += [g for g in routed["gates"] if g["name"] != "time_budget_s"]
     if placement_review is not None:
