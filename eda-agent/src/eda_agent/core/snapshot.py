@@ -63,6 +63,8 @@ class SnapPin:
     refdes: str
     pin: str
     net: str = ""
+    pinfunction: str = ""
+    pintype: str = ""
 
 
 @dataclass
@@ -145,6 +147,8 @@ class DesignSnapshot:
                 refdes=str(pin.get("refdes", "")),
                 pin=str(pin.get("pin", "")),
                 net=net_name,
+                pinfunction=str(pin.get("pinfunction", "") or pin.get("function", "") or ""),
+                pintype=str(pin.get("pintype", "") or pin.get("pin_type", "") or ""),
             )
             net = by_net.get(net_name)
             if net is None:

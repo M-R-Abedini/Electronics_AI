@@ -236,11 +236,14 @@ def _stats(snap: DesignSnapshot,
 
 def review_snapshot(snap: DesignSnapshot) -> dict[str, Any]:
     """Run the full agnostic review on a snapshot and return one result dict."""
+    from .electrical_safety import electrical_safety_findings
+
     part_pins = _part_pin_index(snap)
     findings: list[dict] = []
     findings += _annotation_findings(snap)
     findings += _connectivity_findings(snap, part_pins)
     findings += _power_findings(snap, part_pins)
+    findings += electrical_safety_findings(snap)
 
     order = {"error": 0, "warning": 1, "info": 2}
     findings.sort(key=lambda f: (order.get(f["severity"], 3), f["dimension"],
