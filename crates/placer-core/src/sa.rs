@@ -353,6 +353,60 @@ pub fn anneal(
                 continue;
             }
             undos.push(p.apply_pose(i, nx, ny, nr));
+        } else if (kind == 3 || (kind == 2 && f >= 0.55))
+            && f >= 0.25
+            && p.w_reg > 0.0
+            && p.reg_groups.get(i).copied().unwrap_or(0) > 0
+            && p.reg_members[p.reg_groups[i] as usize].len() >= 2
+        {
+            // Peer-align move: snap passive X or Y onto a nearby same-group peer (and align axis).
+            let g = p.reg_groups[i] as usize;
+            let members = &p.reg_members[g];
+            let mut best_peer = None;
+            let mut best_d2 = 64.0_f64; // within 8.0 mm ALIGN_RADIUS_MM
+            for &m in members {
+                if m == i {
+                    continue;
+                }
+                let dx = p.parts[m].x - x;
+                let dy = p.parts[m].y - y;
+                let d2 = dx * dx + dy * dy;
+                if d2 <= best_d2 && (best_peer.is_none() || rng.random_bool(0.35)) {
+                    best_d2 = d2;
+                    best_peer = Some(m);
+                }
+            }
+            let j = best_peer.unwrap_or_else(|| {
+                let idx = rng.random_range(0..(members.len() - 1));
+                if members[idx] == i {
+                    members[members.len() - 1]
+                } else {
+                    members[idx]
+                }
+            });
+            let (jx, jy, jr) = (p.parts[j].x, p.parts[j].y, p.parts[j].r);
+            let snap_x = if (jx - x).abs() <= (jy - y).abs() {
+                rng.random_bool(0.75)
+            } else {
+                rng.random_bool(0.25)
+            };
+            let jit = if rng.random_bool(0.55) { 0.0 } else { radius.min(1.2) };
+            let (nx, ny) = if snap_x {
+                (jx, if jit == 0.0 { y } else { round3(y + rng.random_range(-jit..=jit)) })
+            } else {
+                (if jit == 0.0 { x } else { round3(x + rng.random_range(-jit..=jit)) }, jy)
+            };
+            let nr = if p.parts[i].can_rotate && rng.random_bool(0.70) {
+                (jr & 1) | (r & 2)
+            } else {
+                r
+            };
+            stats.iterations += 1;
+            if !p.can_place_at(i, nx, ny, nr, None) {
+                stats.illegal += 1;
+                continue;
+            }
+            undos.push(p.apply_pose(i, nx, ny, nr));
         } else if kind < 6 || (kind < 8 && !p.parts[i].can_rotate) || (kind >= 8 && !swap) {
             let nx = round3(x + rng.random_range(-radius..=radius));
             let ny = round3(y + rng.random_range(-radius..=radius));

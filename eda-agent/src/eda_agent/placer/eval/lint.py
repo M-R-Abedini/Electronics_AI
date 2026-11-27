@@ -669,6 +669,16 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
         )
 
     if has_copper and adj_ref_union:
+        # Pre-index through-hole pads by net so a fast trace ending on a TH connector pin
+        # is not falsely flagged for crossing its own unavoidable PTH antipad.
+        clr_val = _clearance_mm(board)
+        pth_pads_by_net: dict[str, list[tuple[float, float, float]]] = defaultdict(list)
+        for fp in board.footprints:
+            for pad, (px, py) in fp.pads_world():
+                if pad.kind == "thru_hole" and pad.net:
+                    antipad_r = max(0.5 * max(pad.size[0], pad.size[1]), 0.5 * max(pad.drill or (0.0, 0.0))) + clr_val + 0.20
+                    pth_pads_by_net[pad.net].append((px, py, antipad_r))
+
         for t in tracks:
             net = t.get("net") or ""
             if not net or _is_rail_net(net):
@@ -703,14 +713,23 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                     )
                     p_start = Point(line.coords[0])
                     p_end = Point(line.coords[-1])
+                    net_pths = pth_pads_by_net.get(net, ())
                     for piece in pieces:
                         plen = float(piece.length)
                         if plen <= gap_limit:
                             continue
-                        # Ignore tiny endpoint pad/via antipad escapes; flag interior splits or long gaps.
-                        at_endpoint = piece.distance(p_start) < 0.05 or piece.distance(p_end) < 0.05
-                        if at_endpoint and plen < max(1.0, 4.0 * width):
-                            continue
+                        # Ignore unavoidable endpoint pad/via/PTH antipad escapes; flag interior splits or long gaps.
+                        at_start = piece.distance(p_start) < 0.05
+                        at_end = piece.distance(p_end) < 0.05
+                        if at_start or at_end:
+                            ep_lim = max(1.0, 4.0 * width)
+                            if net_pths:
+                                end_pt = p_start if at_start else p_end
+                                for px, py, ap_r in net_pths:
+                                    if math.hypot(end_pt.x - px, end_pt.y - py) <= ap_r + 0.15:
+                                        ep_lim = max(ep_lim, ap_r)
+                            if plen <= ep_lim:
+                                continue
                         mid = piece.interpolate(0.5, normalized=True)
                         key = (net, canon)
                         prev = worst_split.get(key)
@@ -759,6 +778,35 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
     escape_perforations = 0
     if has_copper and ref_union_by_layer and n_layers >= 4:
         outline = legality.board_polygon(board)
+        # Pre-build intentional zone-keepout polygons (e.g. galvanic isolation moats) per layer
+        # and authored reference zone envelopes so ICs in unpoured domains (e.g. AC primary)
+        # or straddling an isolation moat are judged only over their intended copper plane area.
+        moat_by_layer: dict[str, Any] = {}
+        for ra in board.rule_areas:
+            if not (ra.get("keepout") or {}).get("zones", False):
+                continue
+            rp = _polygon_from_rings(ra.get("polygons") or [])
+            if rp is None:
+                continue
+            for lname in ra.get("layers") or ():
+                c = name_to_canon.get(lname, lname)
+                if c in canon_to_idx:
+                    moat_by_layer[c] = rp if c not in moat_by_layer else unary_union([moat_by_layer[c], rp])
+        authored_ref_by_layer: dict[str, Any] = {}
+        for z in board.zones:
+            znet = z.get("net") or ""
+            if not znet or not _is_rail_net(znet):
+                continue
+            zpoly = _polygon_from_rings(z.get("outline") or [])
+            if zpoly is None:
+                continue
+            for lname in z.get("layers") or ():
+                c = name_to_canon.get(lname, lname)
+                if c in ref_union_by_layer:
+                    authored_ref_by_layer[c] = (
+                        zpoly if c not in authored_ref_by_layer
+                        else unary_union([authored_ref_by_layer[c], zpoly])
+                    )
         for fp in board.footprints:
             if len(fp.pads) < 16:
                 continue
@@ -777,7 +825,12 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                 r_poly = ref_union_by_layer.get(r_lyr)
                 if r_poly is None:
                     continue
-                filled_frac = float(cy.intersection(r_poly).area) / float(cy.area)
+                cy_eff = cy.difference(moat_by_layer[r_lyr]) if r_lyr in moat_by_layer else cy
+                if r_lyr in authored_ref_by_layer:
+                    cy_eff = cy_eff.intersection(authored_ref_by_layer[r_lyr])
+                if cy_eff.is_empty or cy_eff.area < 2.0:
+                    continue
+                filled_frac = float(cy_eff.intersection(r_poly).area) / float(cy_eff.area)
                 void_frac = 1.0 - filled_frac
                 if void_frac > ESCAPE_PERFORATION_LIMIT:
                     escape_perforations += 1
@@ -845,6 +898,12 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                     for r_lyr in adj_ref_layers.get(lyr, ())
                     if rn in ref_planes.get(r_lyr, {})
                 }
+                # Return stitching via is only physically meaningful when the signal transitions
+                # between two distinct physical reference planes on the same net (e.g. In1 <-> In4
+                # or In1 <-> B.Cu pour). When both layers reference the exact same single plane,
+                # a standalone through-via on that net touches only 1 layer (dangling stub).
+                if len(req_ref_layers) < 2:
+                    continue
                 ref_vias = vias_by_net.get(rn) or gnd_vias
                 nearest = min(
                     (math.hypot(vx - gx, vy - gy) for gx, gy, g_lyrs in ref_vias

@@ -828,6 +828,8 @@ def inject_return_vias(board_path, spec_json, out_board, out_json):
                 via.SetDrill(pcbnew.FromMM(vdr_mm))
                 via.SetNet(ref_net)
                 via.SetLocked(True)
+                if hasattr(via, "SetIsFree"):
+                    via.SetIsFree(True)
                 ident = uuid5(NAMESPACE_URL, f"electronics-ai/return-via/{added}/{cx:.4f}/{cy:.4f}")
                 uid_str = str(ident)
                 via.SetUuidDirect(pcbnew.KIID(uid_str))

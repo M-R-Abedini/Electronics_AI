@@ -24,8 +24,8 @@ from shapely.geometry import Polygon
 from .. import quality
 from .. import report as run_report
 from ..eval import congestion, legality
-from ..eval.metrics import critical_loops_intent, crossings
-from ..eval.score import evaluate
+from ..eval.metrics import critical_loops_intent, crossings, regularity, rudy
+from ..eval.score import DECAP_BAD_MM, DECAP_GOOD_MM, evaluate
 from ..intent import model
 from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
@@ -184,6 +184,9 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         )
         placed, core, findings = _resolve_mask_aperture_collisions(
             placed, pb, solver_pb, core, retained, macros, diag, findings
+        )
+        placed, core, findings = _resolve_hv_clearances(
+            placed, pb, solver_pb, core, retained, macros, findings
         )
     violations = sum(not finding.fixed for finding in findings)
     info = {
@@ -430,6 +433,50 @@ def _resolve_mask_aperture_collisions(placed, pb, solver_pb, core, retained, mac
     return placed, core, findings
 
 
+def _resolve_hv_clearances(placed, pb, solver_pb, core, retained, macros, findings):
+    """Nudge any movable part that violates DRU/netclass HV pad-to-pad clearance against fixed or movable neighbors."""
+    clr_guard = domains.make_clearance_guard(placed)
+    if clr_guard is None or macros:
+        return placed, core, findings
+    idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
+    dom_regions = domains.ref_regions(placed, set(pb.fixed))
+    offenders = [
+        fp for fp in placed.footprints
+        if fp.ref not in pb.fixed and not fp.locked and fp.ref in idx_by_ref and not clr_guard(placed, (fp,))
+    ]
+    if not offenders:
+        return placed, core, findings
+    poses_now = list(core.positions())
+    moved_any = False
+    for fp in offenders:
+        ox, oy, orot = fp.x, fp.y, fp.rotation
+        idx = idx_by_ref[fp.ref]
+        found = False
+        for radius in (0.6, 1.1, 1.6, 2.2, 3.0, 4.0):
+            for k in range(16):
+                ang = (2.0 * math.pi * k) / 16.0
+                nx = round(ox + radius * math.cos(ang), 4)
+                ny = round(oy + radius * math.sin(ang), 4)
+                fp.x, fp.y = nx, ny
+                if (
+                    domains.footprints_in_domains((fp,), dom_regions)
+                    and clr_guard(placed, (fp,))
+                    and not any(not f.fixed for f in legality.check(placed, fixed=set(pb.fixed)))
+                ):
+                    poses_now[idx] = (nx, ny, poses_now[idx][2])
+                    found = True
+                    moved_any = True
+                    break
+            if found:
+                break
+        if not found:
+            fp.x, fp.y, fp.rotation = ox, oy, orot
+    if moved_any:
+        core.set_positions(poses_now)
+        findings = legality.check(placed, fixed=set(pb.fixed))
+    return placed, core, findings
+
+
 def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None, floorplan: bool,
            reserve: bool = False, rigid_blocks: bool = False, budget_divisor: int = 1) -> tuple:
     """S1 to S5.  ``best`` (default) runs both global stages and keeps the legal result of lower cost.
@@ -448,7 +495,11 @@ def _solve(board, *, side_policy: str, mode: str, seed: int, intent: dict | None
                for m in MODES]
 
     def rank(item):
-        _m, _placed, info = item
+        _m, cand_board, info = item
+        if intent:
+            fm = _floorplan_metrics(cand_board, intent)
+            return (*_legality_key(info), bool(rigid_blocks and not info.get("rigid_macros")),
+                    -round(fm["placement_pro_score"], 2), info["cost_final"]["total"])
         return (*_legality_key(info), bool(rigid_blocks and not info.get("rigid_macros")), info["cost_final"]["total"])
 
     mode, placed, info = min(results, key=rank)
@@ -481,7 +532,8 @@ _ORIGINAL_SOLVE = _solve
 
 
 def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int = 0,
-          intent: dict | None = None, floorplan: bool = False, parallel: bool = True) -> tuple:
+          intent: dict | None = None, floorplan: bool = False, parallel: bool = True,
+          restarts: int | None = None) -> tuple:
     """Place the board, comparing independent floorplan candidates when requested."""
     t0 = time.monotonic()
     original = board
@@ -531,16 +583,31 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         def preserve(board_state):
             return blocked_exits(measure(board_state)) <= blocked
 
-        cand, ref_report = decap.refine(cand, intent, refine_fixed, preserve_escapes=preserve)
+        cand, ref_report = decap.refine(cand, intent, refine_fixed, max_trials=480, preserve_escapes=preserve)
         if ref_report["moved"]:
             cand_audit = measure(cand)
             cand_info["cost_final_stage"] = "before_decap_refinement"
             ref_report["output_metrics"] = _floorplan_metrics(cand, intent)
         return cand, cand_audit, ref_report
 
-    specs = [("baseline", False, False, False)] + [
-        (name, use_blocks, reserve, name == "rigid") for name, use_blocks, reserve in modes
+    eff_restarts = (
+        restarts
+        if restarts is not None
+        else (2 if (use_floorplan and movable_est < 175 and _solve is _ORIGINAL_SOLVE) else 1)
+    )
+    specs = [("baseline", False, False, False, seed)] + [
+        (name, use_blocks, reserve, name == "rigid", seed) for name, use_blocks, reserve in modes
     ]
+    extra_mode_names: list[tuple[str, bool, bool]] = []
+    if use_floorplan and eff_restarts >= 2:
+        seed2 = seed + 17
+        specs.append(("baseline_s2", False, False, False, seed2))
+        extra_mode_names.append(("baseline_s2", False, False))
+        specs.append(("blocks_s2", True, False, False, seed2))
+        extra_mode_names.append(("blocks_s2", True, False))
+        if selected:
+            specs.append(("combined_s2", True, True, False, seed2))
+            extra_mode_names.append(("combined_s2", True, True))
     workers = 1
     use_pool = (
         parallel
@@ -551,24 +618,24 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
     )
     solved_by_name: dict[str, tuple] = {}
     if use_pool:
-        workers = min(len(specs), os.cpu_count() or 1, PARALLEL_MAX_WORKERS)
+        workers = min(len(specs), os.cpu_count() or 1, max(PARALLEL_MAX_WORKERS, min(len(specs), 7)))
         payloads = [
-            (name, board, side_policy, mode, seed, intent, use_blocks, reserve, is_rigid, divisor)
-            for name, use_blocks, reserve, is_rigid in specs
+            (name, board, side_policy, mode, s_seed, intent, use_blocks, reserve, is_rigid, divisor)
+            for name, use_blocks, reserve, is_rigid, s_seed in specs
         ]
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for name, cand_b, cand_i in pool.map(_run_floorplan_candidate, payloads):
                 solved_by_name[name] = (cand_b, cand_i)
     if not solved_by_name:
-        for name, use_blocks, reserve, is_rigid in specs:
-            if name == "baseline":
+        for name, use_blocks, reserve, is_rigid, s_seed in specs:
+            if name.startswith("baseline"):
                 solved_by_name[name] = _solve(
-                    board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                    board, side_policy=side_policy, mode=mode, seed=s_seed, intent=intent,
                     floorplan=False, **budget,
                 )
             else:
                 solved_by_name[name] = _solve(
-                    board, side_policy=side_policy, mode=mode, seed=seed, intent=intent,
+                    board, side_policy=side_policy, mode=mode, seed=s_seed, intent=intent,
                     floorplan=use_blocks, reserve=reserve, rigid_blocks=is_rigid, **budget,
                 )
 
@@ -582,7 +649,7 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         baseline, baseline_info = placed, info
         base_metrics = _floorplan_metrics(baseline, intent)
         rank = _floorplan_rank(baseline_info, base_metrics, audit)
-        for name, _use_blocks, _reserve in modes:
+        for name, _use_blocks, _reserve in list(modes) + extra_mode_names:
             other, other_info = solved_by_name[name]
             other_audit = measure(other)
             other_refinement = None
@@ -602,7 +669,7 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
                 variant, placed, info, audit, rank, tail_refinement = (
                     name, other, other_info, other_audit, other_rank, other_refinement
                 )
-    reservations_used = variant in ("reserve", "combined")
+    reservations_used = variant in ("reserve", "combined", "combined_s2")
     congestion_refinement = None
     passive_alignment = None
     rigid_macros = info.get("rigid_macros") or {}
@@ -851,23 +918,86 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
     return cur_placed, cur_audit, report
 
 
+def _esd_max_connector_mm(board, intent: dict | None) -> float | None:
+    parts = (intent or {}).get("parts") or {}
+    by_ref = {fp.ref: fp for fp in board.footprints}
+    worst: float | None = None
+    for ref, meta in parts.items():
+        rc = meta.get("role")
+        tc = meta.get("target")
+        if not rc or model.is_uncertain(rc) or rc.get("value") != "esd" or not tc or model.is_uncertain(tc):
+            continue
+        conn_ref = (tc.get("value") or {}).get("ref")
+        if ref not in by_ref or not conn_ref or conn_ref not in by_ref:
+            continue
+        esd_fp, conn_fp = by_ref[ref], by_ref[conn_ref]
+        shared = (esd_fp.nets & conn_fp.nets)
+        for net in shared:
+            sp = [pt for p, pt in esd_fp.pads_world() if p.net == net]
+            cp = [pt for p, pt in conn_fp.pads_world() if p.net == net]
+            if sp and cp:
+                d = min(math.hypot(a[0] - b[0], a[1] - b[1]) for a in sp for b in cp)
+                worst = d if worst is None else max(worst, d)
+    return round(worst, 3) if worst is not None else None
+
+
 def _floorplan_metrics(board, intent: dict) -> dict:
     loops = critical_loops_intent(board, intent)
     distance = loops["resolved_decap_pin_distance"]
-    return {"crossings": crossings(board)["count"], "decap_p90_mm": distance.get("p90_mm"),
-            "resolved_decaps": distance["n"], "all_decap_p90_mm": loops["decap_pin_distance"].get("p90_mm"),
-            "decap_median_mm": loops["decap_pin_distance"].get("median_mm")}
+    xings = crossings(board)
+    reg = regularity(board)
+    rudy_m = rudy(board)
+    reg_score = (
+        100.0 * (0.5 * reg["aligned_fraction"] + 0.3 * reg["rotation_on_90_grid"] + 0.2 * reg["dominant_axis_fraction"])
+        if reg.get("n") else None
+    )
+    ratsnest_score = 100.0 / (1.0 + 4.0 * xings["per_edge"])
+    d_all = loops["decap_pin_distance"]
+    loop_score = (
+        max(0.0, min(100.0, 100.0 * (DECAP_BAD_MM - d_all["median_mm"]) / (DECAP_BAD_MM - DECAP_GOOD_MM)))
+        if d_all.get("n") else None
+    )
+    rout_score = (100.0 * (1.0 - rudy_m["over_capacity_fraction"])) if rudy_m.get("available") else None
+    weighted_terms = [
+        (rout_score, 35.0),
+        (loop_score, 25.0),
+        (ratsnest_score, 15.0),
+        (reg_score, 15.0),
+    ]
+    w_sum = sum(w for v, w in weighted_terms if v is not None)
+    pro_est = round(sum(v * w for v, w in weighted_terms if v is not None) / w_sum, 2) if w_sum > 0 else 0.0
+    return {
+        "crossings": xings["count"],
+        "decap_p90_mm": distance.get("p90_mm"),
+        "resolved_decaps": distance["n"],
+        "all_decap_p90_mm": d_all.get("p90_mm"),
+        "decap_median_mm": d_all.get("median_mm"),
+        "regularity_score": round(reg_score, 2) if reg_score is not None else None,
+        "placement_pro_score": pro_est,
+        "esd_max_mm": _esd_max_connector_mm(board, intent),
+    }
 
 
 def _floorplan_rank(info: dict, metrics: dict, audit: dict) -> tuple:
     tail = metrics["decap_p90_mm"]
     med = metrics.get("decap_median_mm")
     decap_bucket = round(max(0.0, (med or 0.0) - 3.5), 1)
-    return (*_legality_key(info), -audit["clear"], decap_bucket, metrics["crossings"], tail if tail is not None else math.inf)
+    esd_pen = 1 if (metrics.get("esd_max_mm") or 0.0) > 10.0 else 0
+    pro = float(metrics.get("placement_pro_score") or 0.0)
+    # Primary ranker: legality -> ESD safety -> decap median gate -> unified Pro Score v1 -> escape clarity -> crossings.
+    return (
+        *_legality_key(info),
+        esd_pen,
+        decap_bucket,
+        -round(pro, 2),
+        -audit["clear"],
+        metrics["crossings"],
+        tail if tail is not None else math.inf,
+    )
 
 
 def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, intent: dict, *, base_metrics=None) -> dict:
-    """Prefer the baseline when an equally legal trial worsens a measured objective."""
+    """Prefer the baseline when an equally legal trial worsens measured objectives without a Pro Score gain."""
     trial = _floorplan_metrics(candidate, intent)
     base = base_metrics if base_metrics is not None else _floorplan_metrics(baseline, intent)
     big_xing_win = (
@@ -882,8 +1012,13 @@ def _compare_floorplans(candidate, candidate_info, baseline, baseline_info, inte
         and base["decap_median_mm"] - trial["decap_median_mm"] >= 1.5
         and (trial.get("all_decap_p90_mm") or 0.0) <= (base.get("all_decap_p90_mm") or math.inf) - 1.5
     )
-    p90_tol = 0.05 if big_xing_win else 0.0
-    xing_tol = max(3, int(base["crossings"] * 0.25)) if big_decap_win and base.get("crossings") else 0
+    pro_win = (
+        float(trial.get("placement_pro_score") or 0.0) >= float(base.get("placement_pro_score") or 0.0) + 1.0
+        and (trial.get("decap_median_mm") or 0.0) <= max((base.get("decap_median_mm") or 0.0) + 0.25, 2.2)
+        and (trial.get("all_decap_p90_mm") or 0.0) <= max((base.get("all_decap_p90_mm") or 0.0) + 1.2, 3.6)
+    )
+    p90_tol = 1.2 if pro_win else (0.15 if big_xing_win else 0.0)
+    xing_tol = max(3, int(base["crossings"] * 0.25)) if big_decap_win and base.get("crossings") else (2 if pro_win else 0)
     regressions = []
     for key in ("crossings", "decap_p90_mm", "all_decap_p90_mm"):
         bval = base.get(key)
@@ -921,7 +1056,8 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
                 floorplan: bool = False, schematic_path: str | Path | None = None,
                 cluster_refs: list[str] | None = None, s6a: bool = True,
                 preserve_routing: str = "none", silkscreen_policy: str = "auto",
-                fab_profile: str = "ipc_standard", keep_placement: bool = False) -> dict:
+                fab_profile: str = "ipc_standard", keep_placement: bool = False,
+                restarts: int | None = None, monotonic: bool = False) -> dict:
     """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""
     from .. import silkscreen as silk_mod
     from ..intent.resolve import resolve
@@ -987,7 +1123,33 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
             },
         }
     else:
-        placed, info = solve(board, side_policy=side_policy, mode=mode, seed=seed, intent=intent, floorplan=floorplan)
+        solve_kwargs: dict = {
+            "side_policy": side_policy, "mode": mode, "seed": seed, "intent": intent,
+            "floorplan": floorplan,
+        }
+        if restarts is not None:
+            solve_kwargs["restarts"] = restarts
+        placed, info = solve(board, **solve_kwargs)
+        if monotonic and cold is None and cluster_refs is None and intent:
+            ref_fixed = set(info["fixed"])
+            ref_viols = sum(not f.fixed for f in legality.check(board, fixed=ref_fixed))
+            if ref_viols == 0 and info["strict_violations"] == 0:
+                ref_m = _floorplan_metrics(board, intent)
+                cand_m = _floorplan_metrics(placed, intent)
+                if float(ref_m["placement_pro_score"]) > float(cand_m["placement_pro_score"]) + 0.5:
+                    placed = board.copy()
+                    info["floorplan"]["selected_variant"] = "monotonic_reference"
+                    info["monotonic_guard"] = {
+                        "kept_reference": True,
+                        "reference_pro_score": ref_m["placement_pro_score"],
+                        "candidate_pro_score": cand_m["placement_pro_score"],
+                    }
+                else:
+                    info["monotonic_guard"] = {
+                        "kept_reference": False,
+                        "reference_pro_score": ref_m["placement_pro_score"],
+                        "candidate_pro_score": cand_m["placement_pro_score"],
+                    }
     if cluster_refs is not None:
         relocates = any(row["mode"] == "region" for row in info["mechanical_anchors"])
         if info["movable"] == 0 and not relocates:

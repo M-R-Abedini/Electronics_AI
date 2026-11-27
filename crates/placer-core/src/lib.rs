@@ -74,7 +74,7 @@ struct PlacementProblem {
 #[pymethods]
 impl PlacementProblem {
     #[new]
-    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None, sub_rects=None, cavity_eligible=None, clusters=None, repulsions=None, outline_locals=None, both_sides=None, side_obstacles=None, obstacle_locals=None, opp_locals=None))]
+    #[pyo3(signature = (parts, pins, nets, outers, holes, gap, w_hpwl, w_cross, affinities=None, sub_rects=None, cavity_eligible=None, clusters=None, repulsions=None, outline_locals=None, both_sides=None, side_obstacles=None, obstacle_locals=None, opp_locals=None, reg_groups=None, w_reg=0.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parts: Vec<PartRow>,
@@ -95,6 +95,8 @@ impl PlacementProblem {
         side_obstacles: Option<Vec<SideObstacleRow>>,
         obstacle_locals: Option<Vec<SubRectRow>>,
         opp_locals: Option<Vec<Option<SubRectRow>>>,
+        reg_groups: Option<Vec<u16>>,
+        w_reg: f64,
     ) -> PyResult<Self> {
         let n = parts.len();
         if let Some(bad) = pins.iter().find(|p| p.0 >= n) {
@@ -234,6 +236,9 @@ impl PlacementProblem {
                     .collect(),
             );
         }
+        if let Some(rg) = reg_groups {
+            inner.set_regularity(rg, w_reg);
+        }
         Ok(PlacementProblem { inner })
     }
 
@@ -258,6 +263,7 @@ impl PlacementProblem {
         HashMap::from([
             ("hpwl".to_string(), self.inner.hpwl()),
             ("crossings".to_string(), self.inner.crossings() as f64),
+            ("regularity".to_string(), self.inner.regularity_cost()),
             ("total".to_string(), self.inner.cost()),
         ])
     }

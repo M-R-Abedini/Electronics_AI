@@ -898,11 +898,15 @@ def plan_qfn_thermal_vias(
             ys = [cy] if ny == 1 else [cy + (j - 0.5 * (ny - 1)) * pitch for j in range(ny)]
 
             site = _Site(board, pad.net, cur_fixed, dru_eff=dru_eff)
-            # Build obstacle geometry excluding THIS exposed pad (since thermal vias intentionally sit in-pad).
+            # Build obstacle geometry excluding THIS exposed pad and non-copper stencil/paste pads.
             other_pads = [
                 pad_polygon(ofp, opad, max(clr, site.clearance) + 0.02)
                 for ofp in board.footprints for opad in ofp.pads
                 if not (ofp is fp and opad is pad)
+                and (
+                    opad.kind in ("thru_hole", "np_thru_hole")
+                    or any(str(lyr).endswith(".Cu") for lyr in (opad.layers or ()))
+                )
                 and (opad.net != pad.net or opad.kind in ("smd", "np_thru_hole"))
             ]
             other_pad_union = prep(unary_union(other_pads)) if other_pads else None
