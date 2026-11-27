@@ -455,6 +455,11 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             f"project defines custom netclasses ({', '.join(custom_ncs)}) but 0 nets are assigned "
             "(KiCad 10 requires netclass_patterns in .kicad_pro)"
         )
+    if len(ir.copper_layers) >= 4 and ir.stackup.source == "missing":
+        warnings.append(
+            f"{len(ir.copper_layers)}-layer board has no explicit (stackup ...) definition in .kicad_pcb "
+            "(needed for accurate dielectric, impedance, and creepage/fab constraints)"
+        )
     if dru_compiled["untranslated"]:
         warnings.append(
             f"custom .kicad_dru rules are not translated to Specctra DSN: {', '.join(dru_compiled['untranslated'])}"

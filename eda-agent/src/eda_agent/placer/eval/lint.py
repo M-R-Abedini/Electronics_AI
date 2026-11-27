@@ -33,7 +33,7 @@ from shapely.prepared import prep
 
 from ..intent import model
 from ..ir import ROLE_MIN_NET_FRACTION, Board, Footprint, is_ground_net, is_power_net
-from . import legality
+from . import emc_safety, legality
 
 # Declared physical thresholds (architecture 8.3)
 RETURN_VIA_MAX_MM = 1.5
@@ -220,9 +220,24 @@ def _build_reference_planes(
                 if c is not None:
                     vias_by_layer[c].append((pnet, disk, db))
 
+    # Subtract pour-blocking rule areas (mounting hole keepouts, isolation moats, antenna keepouts)
+    rule_area_voids_by_layer: dict[str, list[Any]] = defaultdict(list)
+    for ra in board.rule_areas:
+        ko = ra.get("keepout") or {}
+        if not ko.get("zones", False):
+            continue
+        ra_poly = _polygon_from_rings(ra.get("polygons") or [])
+        if ra_poly is None:
+            continue
+        for lname in ra.get("layers") or ():
+            canon = name_to_canon.get(lname, lname)
+            if canon in canon_to_idx:
+                rule_area_voids_by_layer[canon].append(ra_poly)
+
     planes: dict[str, dict[str, Any]] = {}
     for canon, by_net in raw_by_layer_net.items():
         layer_planes: dict[str, Any] = {}
+        ra_cutouts = rule_area_voids_by_layer.get(canon, ())
         for net, polys in by_net.items():
             geom = unary_union(polys)
             if outline is not None:
@@ -238,6 +253,7 @@ def _build_reference_planes(
                 g for vnet, g, (x0, y0, x1, y1) in vias_by_layer.get(canon, ())
                 if vnet != net and x1 >= gx0 and x0 <= gx1 and y1 >= gy0 and y0 <= gy1
             ]
+            cutouts += [g for g in ra_cutouts if g.bounds[2] >= gx0 and g.bounds[0] <= gx1 and g.bounds[3] >= gy0 and g.bounds[1] <= gy1]
             if cutouts:
                 voids = unary_union(cutouts)
                 geom = geom.difference(voids)
@@ -1084,6 +1100,18 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                     value=largest_frac, limit=0.75,
                 )
 
+    # ------------------------------------------------------------------
+    # Rules 10-14: First-principles EMI/EMC, HV safety & thermal DFM
+    # ------------------------------------------------------------------
+    emc_checks = emc_safety.run_emc_safety_checks(
+        board,
+        has_copper=has_copper,
+        tracks=tracks,
+        vias=vias,
+        ref_planes=ref_planes,
+        add_finding=add_finding,
+    )
+
     # Deterministic finding order
     sev_order = {"critical": 0, "warning": 1, "info": 2}
     findings.sort(key=lambda f: (sev_order.get(f["severity"], 9), f["rule"], f["net"] or "", tuple(f["refs"])))
@@ -1150,6 +1178,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
             "buck_hot_loop": hot_loops,
             "esd_to_connector": esd_distances,
             "two_layer_gnd_continuity": two_layer_gnd,
+            "emc_safety": emc_checks,
         },
         "findings": findings,
     }

@@ -26,18 +26,31 @@ def parse_kicadxml_netlist(xml_path: str) -> dict[str, Any]:
     comps = root.find("components")
     if comps is not None:
         for c in comps.findall("comp"):
+            ls = c.find("libsource")
+            lib_ref = ""
+            if ls is not None:
+                lib_n, part_n = ls.get("lib", ""), ls.get("part", "")
+                lib_ref = f"{lib_n}:{part_n}" if (lib_n and part_n) else (part_n or lib_n)
             components.append({
                 "reference": c.get("ref", ""),
                 "value": c.findtext("value") or "",
                 "footprint": c.findtext("footprint") or "",
+                "lib_ref": lib_ref,
             })
 
     nets: list[dict[str, Any]] = []
     nsec = root.find("nets")
     if nsec is not None:
         for n in nsec.findall("net"):
-            nodes = [{"reference": nd.get("ref", ""), "pin": nd.get("pin", "")}
-                     for nd in n.findall("node")]
+            nodes = [
+                {
+                    "reference": nd.get("ref", ""),
+                    "pin": nd.get("pin", ""),
+                    "pinfunction": nd.get("pinfunction", ""),
+                    "pintype": nd.get("pintype", ""),
+                }
+                for nd in n.findall("node")
+            ]
             nets.append({
                 "name": n.get("name", ""),
                 "class": n.get("class", ""),
@@ -52,14 +65,19 @@ def snapshot_from_netlist(sch_netlist: dict[str, Any], board_name: str = ""):
     engine can run on the intended (schematic) connectivity."""
     from .snapshot import DesignSnapshot
     parts = [{"refdes": c.get("reference", ""), "value": c.get("value", ""),
-              "footprint": c.get("footprint", "")}
+              "footprint": c.get("footprint", ""), "lib_ref": c.get("lib_ref", "")}
              for c in sch_netlist.get("components", [])]
     pins: list[dict[str, Any]] = []
     for n in sch_netlist.get("nets", []):
         name = n.get("name", "")
         for node in n.get("nodes", []):
-            pins.append({"refdes": node.get("reference", ""),
-                         "pin": node.get("pin", ""), "net": name})
+            pins.append({
+                "refdes": node.get("reference", ""),
+                "pin": node.get("pin", ""),
+                "net": name,
+                "pinfunction": node.get("pinfunction", ""),
+                "pintype": node.get("pintype", ""),
+            })
     return DesignSnapshot.build("kicad-sch", parts, pins,
                                 board_name=board_name)
 

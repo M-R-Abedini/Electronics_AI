@@ -883,6 +883,7 @@ packages:
   - kicad-python>=0.7 ; extra == 'kicad'
   - pytest>=7.0 ; extra == 'dev'
   - pytest-asyncio>=0.21 ; extra == 'dev'
+  - pytest-xdist>=3.5,<4 ; extra == 'dev'
   - matplotlib>=3.11.2,<4 ; extra == 'dev'
   - flask>=3.0 ; extra == 'dev'
   - flask>=3.0 ; extra == 'web'

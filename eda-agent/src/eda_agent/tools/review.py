@@ -246,6 +246,24 @@ REVIEW_QUALITY_RULES: list[str] = [
     "evidenced problems that can cause a malfunction or a respin. "
     "Something you could not confirm is not 'critical'. Verified-OK "
     "and positive observations are 'info'. Do not inflate counts.",
+
+    (
+        "ELECTRICAL STRESS & SAFETY VERIFICATION. Whenever a design "
+        "contains power regulators, mains/HV circuits, isolated flybacks, "
+        "or external I/O protection, explicitly verify from datasheets and "
+        "the netlist: (1) every regulator EN/SHDN/FB/FWD/VOUT pin's "
+        "Absolute Maximum voltage vs its actual connected rail and transient "
+        "swing (e.g. LDO EN clamped at 6-7 V tied to 24 V, or flyback FWD "
+        "negative swing on high-side rectification); (2) fuse voltage rating "
+        "(>=300 VAC HBC for 230 VAC +15-20% mains), bridge V_RRM vs MOV "
+        "clamping voltage, and HV/snubber passive package working voltage, "
+        "creepage, and surge wattage; (3) TVS polarity (unidirectional vs "
+        "bidirectional) against unipolar IC supply rails; (4) Kelvin "
+        "+VSENSE loops around series protection resistors; and (5) on KiCad "
+        "10 projects, verify .kicad_pro netclass_patterns (v5), valid "
+        "hasNetclass .kicad_dru rules, and an explicit multilayer stackup "
+        "before trusting a 0-error DRC."
+    ),
 ]
 
 
