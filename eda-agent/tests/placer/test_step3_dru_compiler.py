@@ -122,3 +122,65 @@ def test_dru_compiler_handles_netclass_outer_layer_and_p5_untranslated(tmp_path:
     assert "zse_50R_outer" in meta["translated"]
     assert "length_DDR" in meta["untranslated"]
     assert "clearance_under_fpga" in meta["untranslated"]
+
+
+def test_dru_compiler_handles_kicad10_hasnetclass_compound_and_invalid_tokens(tmp_path: Path):
+    layers = [
+        CopperLayer("F.Cu", "F.Cu", 0, "signal"),
+        CopperLayer("In1.Cu", "In1.Cu", 1, "power"),
+        CopperLayer("In2.Cu", "In2.Cu", 2, "signal"),
+        CopperLayer("B.Cu", "B.Cu", 3, "signal"),
+    ]
+    b = Board(
+        name="iso_test",
+        footprints=[],
+        outline=[Outline([(0.0, 0.0), (100.0, 0.0), (100.0, 80.0), (0.0, 80.0)])],
+        copper_layers=layers,
+        netclasses=[
+            NetClass("Default", 0.15, 0.15, 0.55, 0.25),
+            NetClass("AUX_PRIMARY_HV", 0.30, 0.55, 0.75, 0.35),
+            NetClass("AUX_PRIMARY", 0.18, 0.35, 0.65, 0.30),
+            NetClass("DOMAIN_OUT", 0.15, 0.20, 0.55, 0.25),
+        ],
+        nets=[
+            Net("HV_BUS", "AUX_PRIMARY_HV", 2),
+            Net("PRI_RET", "AUX_PRIMARY", 2),
+            Net("VOUT", "DOMAIN_OUT", 2),
+        ],
+    )
+    derive(b)
+    dsn_in = (
+        "(pcb board\n  (resolution um 10)\n  (unit um)\n"
+        "  (structure\n    (layer F.Cu (type signal))\n    (layer In1.Cu (type power))\n  )\n"
+        "  (network\n"
+        "    (class kicad_default \"\" SIG\n      (rule (width 150) (clearance 150))\n    )\n"
+        "    (class AUX_PRIMARY_HV \"\" HV_BUS\n      (rule (width 550) (clearance 300))\n    )\n"
+        "    (class AUX_PRIMARY \"\" PRI_RET\n      (rule (width 350) (clearance 180))\n    )\n"
+        "    (class DOMAIN_OUT \"\" VOUT\n      (rule (width 200) (clearance 150))\n    )\n"
+        "  )\n  (wiring)\n)\n"
+    )
+    dru_file = tmp_path / "iso.kicad_dru"
+    dru_file.write_text(
+        '(version 1)\n'
+        '(rule "Iso_Pri_Sec_8mm"\n'
+        '  (condition "(A.hasNetclass(\'AUX_PRIMARY\') || A.hasNetclass(\'AUX_PRIMARY_HV\')) && B.hasNetclass(\'DOMAIN_OUT\')")\n'
+        '  (constraint clearance (min 8.0mm)))\n'
+        '(rule "Mains_HV_1_5mm"\n'
+        '  (condition "A.hasNetclass(\'AUX_PRIMARY_HV\') && B.hasNetclass(\'AUX_PRIMARY_HV\') && (A.Type == \'Track\' || B.Type == \'Track\')")\n'
+        '  (constraint clearance (min 1.5mm)))\n'
+        '(rule "Broken_Footprint_Rule"\n'
+        '  (condition "A.hasNetclass(\'AUX_PRIMARY_HV\') && A.Footprint != B.Footprint")\n'
+        '  (constraint clearance (min 2.0mm)))\n',
+        encoding="utf-8",
+    )
+    out_dsn, meta = dru.compile_dru_to_dsn(dsn_in, dru_file, b)
+    assert "Iso_Pri_Sec_8mm" in meta["translated"]
+    assert "Mains_HV_1_5mm" in meta["translated"]
+    assert "Broken_Footprint_Rule" in meta["untranslated"]
+    assert len(meta["invalid_syntax"]) == 1
+    assert "(class_class kicad_dru_AUX_PRIMARY_DOMAIN_OUT AUX_PRIMARY DOMAIN_OUT" in out_dsn
+    assert "(class_class kicad_dru_AUX_PRIMARY_HV_DOMAIN_OUT AUX_PRIMARY_HV DOMAIN_OUT" in out_dsn
+    assert "(clearance 8000)" in out_dsn
+    assert "(clearance 1500)" in out_dsn
+    # Ensure Default netclass clearance was NOT polluted by hasNetclass rules
+    assert "(class kicad_default \"\" SIG\n      (rule (width 150) (clearance 150))" in out_dsn

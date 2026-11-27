@@ -17,10 +17,17 @@ if TYPE_CHECKING:
 _RULE_START = re.compile(r'\(rule\s+("[^"]+"|[^\s()]+)')
 _COND_RE = re.compile(r'\(condition\s+"([^"]*)"\)')
 _LAYER_RE = re.compile(r'\(layer\s+"?([^"\s()]+)"?\)')
-_NETCLASS_COND = re.compile(r"^\(?A\.NetClass\s*==\s*['\"]([^'\"]+)['\"]\)?$")
-_NETCLASS_PAIR_COND = re.compile(
-    r"^\(?A\.NetClass\s*==\s*['\"]([^'\"]+)['\"]\s*(?:&&|\|\|)\s*B\.NetClass\s*==\s*['\"]([^'\"]+)['\"]\)?$"
+_NETCLASS_COND = re.compile(
+    r"^\(?(?:A\.NetClass\s*==\s*['\"]([^'\"]+)['\"]|A\.hasNetclass\(\s*['\"]([^'\"]+)['\"]\s*\))\)?$"
 )
+_NETCLASS_PAIR_COND = re.compile(
+    r"^\(?(?:A\.NetClass\s*==\s*['\"]([^'\"]+)['\"]|A\.hasNetclass\(\s*['\"]([^'\"]+)['\"]\s*\))"
+    r"\s*(?:&&|\|\|)\s*"
+    r"(?:B\.NetClass\s*==\s*['\"]([^'\"]+)['\"]|B\.hasNetclass\(\s*['\"]([^'\"]+)['\"]\s*\))\)?$"
+)
+_A_NC_TERM = re.compile(r"A\.(?:NetClass\s*==\s*['\"]([^'\"]+)['\"]|hasNetclass\(\s*['\"]([^'\"]+)['\"]\s*\))")
+_B_NC_TERM = re.compile(r"B\.(?:NetClass\s*==\s*['\"]([^'\"]+)['\"]|hasNetclass\(\s*['\"]([^'\"]+)['\"]\s*\))")
+_INVALID_DRU_TOKEN = re.compile(r"\b[AB]\.Footprint\b")
 _CLEARANCE_RE = re.compile(r"\(constraint\s+clearance\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _WIDTH_RE = re.compile(r"\(constraint\s+track_width\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _HOLE_CLR_RE = re.compile(r"\(constraint\s+hole_clearance\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
@@ -217,6 +224,60 @@ def _update_layer_rule(dsn: str, layer_name: str, scale: float, *, width_mm: flo
     return dsn[:struct_start] + new_header + dsn[struct_end:], True
 
 
+def _insert_class_class_clearance(dsn: str, left_classes: list[str], right_classes: list[str],
+                                  scale: float, clearance_mm: float) -> tuple[str, bool]:
+    """Insert or tighten Specctra ``(class_class ...)`` clearance rules inside ``(network ...)``."""
+    if clearance_mm <= 0 or not left_classes or not right_classes:
+        return dsn, False
+    net_start = dsn.find("(network")
+    if net_start < 0:
+        return dsn, False
+    net_end = _sexp_end(dsn, net_start)
+    if net_end < 0:
+        return dsn, False
+    val = _num(clearance_mm * scale)
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for a in left_classes:
+        for b in right_classes:
+            key = (a, b) if a <= b else (b, a)
+            if key not in seen:
+                seen.add(key)
+                pairs.append(key)
+    entries = []
+    for a, b in pairs:
+        entries.append(
+            f"    (class_class kicad_dru_{_token(a)}_{_token(b)} {_token(a)} {_token(b)}\n"
+            f"      (rule (clearance {val}))\n    )"
+        )
+    if not entries:
+        return dsn, False
+    net_block = dsn[net_start:net_end]
+    updated = net_block[:-1].rstrip() + "\n" + "\n".join(entries) + "\n  )"
+    return dsn[:net_start] + updated + dsn[net_end:], True
+
+
+def _extract_compound_netclasses(cond: str) -> tuple[list[str], list[str]] | None:
+    """Extract (A_patterns, B_patterns) from KiCad 8/9/10 compound netclass conditions.
+
+    Handles both simple and OR-grouped expressions such as:
+    ``(A.hasNetclass('P1') || A.hasNetclass('P2')) && (B.hasNetclass('S1') || B.hasNetclass('S2'))``
+    and intra-class rules with simple ``A.Type`` / ``B.Type`` qualifiers.
+    """
+    a_pats = [m.group(1) or m.group(2) for m in _A_NC_TERM.finditer(cond)]
+    b_pats = [m.group(1) or m.group(2) for m in _B_NC_TERM.finditer(cond)]
+    if not a_pats and not b_pats:
+        return None
+    # Strip matched netclass terms, type qualifiers, boolean ops, and parentheses to verify no unsupported clauses remain
+    stripped = _A_NC_TERM.sub("", cond)
+    stripped = _B_NC_TERM.sub("", stripped)
+    stripped = re.sub(r"[AB]\.Type\s*[=!]=\s*['\"][^'\"]+['\"]", "", stripped)
+    stripped = re.sub(r"(&&|\|\||!|\(|\)|\s)+", "", stripped)
+    if stripped:
+        return None
+    return (list(dict.fromkeys(a_pats)), list(dict.fromkeys(b_pats)))
+
+
 def _is_global_copper_cond(cond: str) -> bool:
     """Return True for simple board-wide different-net copper clearance conditions."""
     c = re.sub(r"\s+", " ", cond.strip()).lower()
@@ -233,7 +294,7 @@ def _is_global_copper_cond(cond: str) -> bool:
         "a.isplated()",
         "b.isplated()",
     )
-    return "a.netclass" not in c and any(p in c for p in allowed_patterns)
+    return "a.netclass" not in c and "hasnetclass" not in c and any(p in c for p in allowed_patterns)
 
 
 def extract_effective_rules(dru_path: Path) -> dict[str, float]:
@@ -294,7 +355,7 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
     ``hole_clearance_mm``, ``hole_to_hole_mm``, ``edge_clearance_mm``, ``min_via_diameter_mm``,
     ``min_via_drill_mm``, ``min_via_annular_width_mm``, and silkscreen floors for downstream stages.
     """
-    empty = {"translated": [], "untranslated": [], "applied_rules": 0, "effective_rules": {}}
+    empty = {"translated": [], "untranslated": [], "invalid_syntax": [], "applied_rules": 0, "effective_rules": {}}
     if not dru_path.is_file():
         return dsn, empty
     unit = _UNIT.search(dsn)
@@ -305,6 +366,7 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
     text = dru_path.read_text(encoding="utf-8", errors="replace")
     translated: list[str] = []
     untranslated: list[str] = []
+    invalid_syntax: list[str] = []
     eff: dict[str, float] = {}
     dsn_classes = _dsn_class_names(dsn)
 
@@ -318,6 +380,10 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
         found_constraints = {m.group(1) for m in _OTHER_CONSTRAINT_RE.finditer(block)}
         cond_m = _COND_RE.search(block)
         cond = cond_m.group(1).strip() if cond_m else ""
+        if cond and _INVALID_DRU_TOKEN.search(cond):
+            invalid_syntax.append(f"{rule_name}: invalid KiCad DRU token in condition {cond!r}")
+            untranslated.append(rule_name)
+            continue
         cond_low = re.sub(r"\s+", " ", cond).lower()
         lyr_m = _LAYER_RE.search(block)
         lyr_spec = lyr_m.group(1).strip() if lyr_m else None
@@ -381,27 +447,50 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
 
         # 2) DSN class or layer width/clearance rules
         if clr_mm is not None or wid_mm is not None:
-            nc_m = _NETCLASS_COND.match(cond)
-            nc_pair_m = _NETCLASS_PAIR_COND.match(cond)
-            if nc_m:
-                pattern = nc_m.group(1)
-                matched_classes = [c for c in dsn_classes if fnmatch.fnmatchcase(c, pattern)]
-                if not matched_classes and "*" not in pattern and "?" not in pattern:
-                    matched_classes = [pattern]
-                for cname in matched_classes:
-                    dsn, ok = _update_class_rule(dsn, cname, scale, width_mm=wid_mm, clearance_mm=clr_mm)
-                    applied |= ok
-            elif nc_pair_m:
-                patterns = (nc_pair_m.group(1), nc_pair_m.group(2))
-                matched_classes = []
+            def _resolve_nc(patterns: list[str]) -> list[str]:
+                out_c: list[str] = []
                 for pat in patterns:
                     hits = [c for c in dsn_classes if fnmatch.fnmatchcase(c, pat)]
                     if not hits and "*" not in pat and "?" not in pat:
                         hits = [pat]
-                    matched_classes.extend(hits)
-                for cname in dict.fromkeys(matched_classes):
+                    out_c.extend(hits)
+                return list(dict.fromkeys(out_c))
+
+            nc_m = _NETCLASS_COND.match(cond)
+            nc_pair_m = _NETCLASS_PAIR_COND.match(cond)
+            compound_nc = _extract_compound_netclasses(cond) if not (nc_m or nc_pair_m) else None
+            if nc_m:
+                pattern = nc_m.group(1) or nc_m.group(2)
+                for cname in _resolve_nc([pattern]):
                     dsn, ok = _update_class_rule(dsn, cname, scale, width_mm=wid_mm, clearance_mm=clr_mm)
                     applied |= ok
+            elif nc_pair_m:
+                a_pat = nc_pair_m.group(1) or nc_pair_m.group(2)
+                b_pat = nc_pair_m.group(3) or nc_pair_m.group(4)
+                a_cls = _resolve_nc([a_pat])
+                b_cls = _resolve_nc([b_pat])
+                if a_cls == b_cls or "||" in cond:
+                    for cname in dict.fromkeys(a_cls + b_cls):
+                        dsn, ok = _update_class_rule(dsn, cname, scale, width_mm=wid_mm, clearance_mm=clr_mm)
+                        applied |= ok
+                elif clr_mm is not None and wid_mm is None:
+                    dsn, ok = _insert_class_class_clearance(dsn, a_cls, b_cls, scale, clr_mm)
+                    applied |= ok
+                else:
+                    for cname in dict.fromkeys(a_cls + b_cls):
+                        dsn, ok = _update_class_rule(dsn, cname, scale, width_mm=wid_mm, clearance_mm=clr_mm)
+                        applied |= ok
+            elif compound_nc is not None:
+                a_pats, b_pats = compound_nc
+                a_cls = _resolve_nc(a_pats)
+                b_cls = _resolve_nc(b_pats)
+                if a_cls and b_cls and a_cls != b_cls and clr_mm is not None and wid_mm is None:
+                    dsn, ok = _insert_class_class_clearance(dsn, a_cls, b_cls, scale, clr_mm)
+                    applied |= ok
+                elif a_cls or b_cls:
+                    for cname in dict.fromkeys(a_cls + b_cls):
+                        dsn, ok = _update_class_rule(dsn, cname, scale, width_mm=wid_mm, clearance_mm=clr_mm)
+                        applied |= ok
             elif _is_global_copper_cond(cond):
                 target_layers = _resolve_layers(lyr_spec, board)
                 if lyr_spec:
@@ -423,6 +512,7 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
     return dsn, {
         "translated": sorted(set(translated)),
         "untranslated": sorted(set(untranslated)),
+        "invalid_syntax": invalid_syntax,
         "applied_rules": len(translated),
         "effective_rules": eff,
     }

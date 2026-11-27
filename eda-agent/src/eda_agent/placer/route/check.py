@@ -445,6 +445,16 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
         {cl.name: ("power" if cl.name in pwr_set else "signal") for cl in ir.copper_layers},
     )
     text, dru_compiled = dru.compile_dru_to_dsn(text, dru_sidecar, ir)
+    if dru_compiled.get("invalid_syntax"):
+        warnings.append(
+            f"invalid .kicad_dru syntax detected: {'; '.join(dru_compiled['invalid_syntax'])}"
+        )
+    custom_ncs = [nc.name for nc in ir.netclasses if nc.name != "Default"]
+    if custom_ncs and not any(n.netclass in custom_ncs for n in ir.nets):
+        warnings.append(
+            f"project defines custom netclasses ({', '.join(custom_ncs)}) but 0 nets are assigned "
+            "(KiCad 10 requires netclass_patterns in .kicad_pro)"
+        )
     if dru_compiled["untranslated"]:
         warnings.append(
             f"custom .kicad_dru rules are not translated to Specctra DSN: {', '.join(dru_compiled['untranslated'])}"
