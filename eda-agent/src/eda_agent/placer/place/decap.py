@@ -13,7 +13,7 @@ from shapely import STRtree
 from shapely.geometry import LineString
 
 from ..eval import legality, metrics
-from ..geometry import transform
+from ..geometry import box_union, rotated_box, transform
 from ..intent import model
 from ..ir import Board, Box, Footprint
 
@@ -130,8 +130,21 @@ def _side_obstacles_by_side(board: Board, fixed: set[str]) -> dict[str, list[tup
 
     by_side: dict[str, list[tuple[float, float, float, float]]] = {"F": [], "B": []}
     for x0, y0, x1, y1, side_idx in side_obstacle_rects(board, fixed):
-        by_side["F" if side_idx == 0 else "B"].append((x0, y0, x1, y1))
+        by_side["F" if (side_idx & 1) == 0 else "B"].append((x0, y0, x1, y1))
     return by_side
+
+
+def _local_obs_boxes(board: Board) -> dict[str, Box]:
+    from .problem import _local_body_box, local_box
+
+    out: dict[str, Box] = {}
+    for fp in board.footprints:
+        if fp.courtyard.source == "derived" and fp.body_bounds_mm:
+            base = local_box(fp)
+            obs = _local_body_box(fp, base)
+            if obs != base:
+                out[fp.ref] = obs
+    return out
 
 
 class _SpatialBoxes:
@@ -289,7 +302,8 @@ class _RegTracker:
 def _find_blockers(board: Board, fp: Footprint, outline_bounds: Box | None,
                    box: Callable[[Footprint], Box] = Footprint.box,
                    side_obstacles: dict[str, list[tuple[float, float, float, float]]] | None = None,
-                   grid: _SpatialBoxes | None = None) -> list | None:
+                   grid: _SpatialBoxes | None = None,
+                   obs_locals: dict[str, Box] | None = None) -> list | None:
     """Return same-side blockers for ``fp``, or None if outside ``outline_bounds`` or on a side obstacle."""
     ax0, ay0, ax1, ay1 = box(fp)
     if outline_bounds is not None:
@@ -297,8 +311,13 @@ def _find_blockers(board: Board, fp: Footprint, outline_bounds: Box | None,
         if ax0 < bx0 or ay0 < by0 or ax1 > bx1 or ay1 > by1:
             return None
     if side_obstacles:
+        sx0, sy0, sx1, sy1 = (
+            box_union((ax0, ay0, ax1, ay1), rotated_box(obs_locals[fp.ref], fp.position, fp.rotation))
+            if obs_locals and fp.ref in obs_locals
+            else (ax0, ay0, ax1, ay1)
+        )
         for ox0, oy0, ox1, oy1 in side_obstacles.get(fp.side, ()):
-            if ax0 < ox1 and ax1 > ox0 and ay0 < oy1 and ay1 > oy0:
+            if sx0 < ox1 and sx1 > ox0 and sy0 < oy1 and sy1 > oy0:
                 return None
     fp_shape = None
     fp_elig = legality.is_shield_cavity_eligible(fp)
@@ -500,6 +519,7 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
         return board, report
     result = board.copy()
     side_obs = _side_obstacles_by_side(result, fixed)
+    obs_locals = _local_obs_boxes(board)
     tracker = CrossingTracker(result)
     outline = legality.board_polygon(result)
     outline_bounds = outline.bounds if outline is not None else None
@@ -556,7 +576,7 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
                 break
             trials += 1
             fp.x, fp.y, fp.rotation = pose
-            blockers = _find_blockers(result, fp, outline_bounds, side_obstacles=side_obs)
+            blockers = _find_blockers(result, fp, outline_bounds, side_obstacles=side_obs, obs_locals=obs_locals)
             if blockers is None or len(blockers) > 1:
                 continue
             old_stats, old_all = report["after"], report["after_all"]
@@ -585,8 +605,8 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
                 for rot_o in (other_orig[2], (other_orig[2] + 90) % 360,
                               (other_orig[2] + 180) % 360, (other_orig[2] + 270) % 360):
                     _set_body_center_pose(other, ocx, ocy, rot_o)
-                    if (_find_blockers(result, fp, outline_bounds, side_obstacles=side_obs) != []
-                            or _find_blockers(result, other, outline_bounds, side_obstacles=side_obs) != []):
+                    if (_find_blockers(result, fp, outline_bounds, side_obstacles=side_obs, obs_locals=obs_locals) != []
+                            or _find_blockers(result, other, outline_bounds, side_obstacles=side_obs, obs_locals=obs_locals) != []):
                         continue
                     t2, tc2, s2, sa2 = _measure(result, intent)
                     if not _stats_improved(t2, tc2, s2, sa2, ref, is_cand, old_stats, old_all):
@@ -657,6 +677,7 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
     deadline = time.monotonic() + time_budget_s
     result = board.copy()
     side_obs = _side_obstacles_by_side(result, fixed)
+    obs_locals = _local_obs_boxes(board)
     groups: dict[tuple[str, str], list] = defaultdict(list)
     for fp in result.footprints:
         if _passive_prefix(fp.ref) in metrics.PASSIVE_PREFIXES:
@@ -686,7 +707,8 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
         spatial_grid = _SpatialBoxes(result.footprints, box)
 
         def blockers(fp):
-            return _find_blockers(result, fp, outline_bounds, box, side_obstacles=side_obs, grid=spatial_grid)
+            return _find_blockers(result, fp, outline_bounds, box, side_obstacles=side_obs,
+                                  grid=spatial_grid, obs_locals=obs_locals)
 
         clearance = max(board.rules.get("courtyard_clearance", 0), 0.06)
         base_rudy = metrics.rudy(result).get("over_capacity_fraction", 0.0)
