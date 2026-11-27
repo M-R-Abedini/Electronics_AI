@@ -140,6 +140,7 @@ def _drc_signoff(rep: dict) -> dict | None:
         and route_m.get("drc_absolute_errors", 0) == 0
         and (not rep.get("quality") or rep["quality"].get("routing", {}).get("status") == "approved")
     )
+    drc_abs = route_m.get("drc_absolute_errors", 0)
     return {
         "fab_ready": fab_ready,
         "drc_errors": drc_router + drc_new,
@@ -152,7 +153,7 @@ def _drc_signoff(rep: dict) -> dict | None:
         "note": (
             "DRC clean and 100% connected (0 violations, 0 unconnected items, 0 dangling tracks/vias)."
             if fab_ready else
-            f"NOT fab-ready: {drc_router + drc_new} DRC errors, {unrouted} Unconnected Items, "
+            f"NOT fab-ready: {drc_router + drc_new} DRC errors ({drc_abs} absolute), {unrouted} Unconnected Items, "
             f"{dangling_tracks} dangling tracks, {dangling_vias} dangling vias "
             f"({', '.join(unconn_nets[:8]) or 'see failures'}). Run a closed diagnose -> fix -> re-route loop "
             "before declaring the board DRC-clean or ready for fabrication."

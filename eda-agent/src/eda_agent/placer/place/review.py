@@ -90,6 +90,7 @@ def draft_evidence(path, board, reviewer, folder, *, reference_drc=None, native_
 
 
 def _candidate(board, reviewer, action, findings):
+    fallback_ics = set()
     if action == "restore_protected":
         refs = {ref for row in findings if row["kind"] == "protected_pose_changed" for ref in row["refs"]}
     elif action == "repair_local":
@@ -97,15 +98,18 @@ def _candidate(board, reviewer, action, findings):
         for row in findings:
             if row["severity"] != "error":
                 continue
-            # For blocked critical pad exits [ic, *blockers], move the blocker(s) rather than the IC.
+            # For blocked critical pad exits [ic, *blockers], try moving the blocker(s) first;
+            # keep the IC as fallback only if no blocker can move.
             if row["kind"] == "critical_pad_exit_blocked" and len(row["refs"]) >= 2:
                 refs.update(row["refs"][1:])
+                fallback_ics.add(row["refs"][0])
             else:
                 refs.update(row["refs"])
         refs -= reviewer.expected.keys()
+        fallback_ics -= reviewer.expected.keys()
     else:
         refs = set()
-    if not refs and action != "refresh_draft":
+    if not refs and not fallback_ics and action != "refresh_draft":
         return None
     trial = board.copy()
     if action == "restore_protected":
@@ -123,6 +127,13 @@ def _candidate(board, reviewer, action, findings):
             current = trial.fp(ref)
             if _shift_clear_of_obstacles(trial, current, reviewer, fixed_set):
                 moved_any = True
+        if not moved_any and fallback_ics:
+            for ref in sorted(fallback_ics):
+                if ref in fixed_set:
+                    continue
+                current = trial.fp(ref)
+                if _shift_clear_of_obstacles(trial, current, reviewer, fixed_set):
+                    moved_any = True
         if not moved_any:
             return None
     if action != "refresh_draft" and all(mechanical.same_pose(fp, board.fp(fp.ref)) for fp in trial.footprints):

@@ -390,8 +390,6 @@ def placement_obstacle_holes(board: Board, fixed: set[str], two_sided: bool) -> 
             if ref in existing:
                 fp_fix = board.fp(ref)
                 holes.extend(thru_hole_hole_rings(fp_fix, margin_mm=0.08, layer_map=lmap))
-                if fp_fix.prefix == "FID" or "fiducial" in fp_fix.lib_id.lower():
-                    holes.extend(thru_hole_hole_rings(fp_fix, margin_mm=1.10, thru_hole_only=False, layer_map=lmap))
     return holes
 
 

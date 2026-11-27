@@ -2565,14 +2565,13 @@ def _clean_silkscreen(board, cfg=None):
                 leader_refs.append(ref)
         else:
             # Never leave a colliding non-reference polarity/marking text printing directly over copper/silk
-            # when the footprint already has silkscreen graphics; offload cleanly instead of causing DRC errors.
+            # when the footprint already has silkscreen graphics; hide cleanly without counting as ref offload.
             if not is_ref and orig_hard_collision and not was_hidden:
                 item.SetTextSize(orig_size)
                 item.SetTextThickness(orig_thick)
                 item.SetPosition(orig_pos)
                 item.SetTextAngleDegrees(orig_ang)
                 item.SetVisible(False)
-                offloaded_refs.append(ref)
                 continue
             unresolved += 1
             # Keep original geometry if position could not move.

@@ -51,10 +51,18 @@ def inventory(out):
 
 def _engine_source():
     root = Path(placer.__file__).resolve().parent
+    repo = root.parents[3]
     digest = hashlib.sha256()
     for path in sorted(path for path in root.rglob("*") if path.suffix in (".py", ".json")):
         digest.update(path.relative_to(root).as_posix().encode())
         digest.update(bytes.fromhex(sha256_file(path)))
+    rust_root = repo / "crates" / "placer-core"
+    if rust_root.is_dir():
+        for path in sorted(p for p in rust_root.rglob("*") if p.suffix in (".rs", ".toml")):
+            if "target" in path.parts:
+                continue
+            digest.update(path.relative_to(repo).as_posix().encode())
+            digest.update(bytes.fromhex(sha256_file(path)))
     return {"path": str(root), "tree_sha256": digest.hexdigest(),
             "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()}
 

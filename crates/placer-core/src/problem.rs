@@ -335,6 +335,7 @@ pub struct Problem {
     part_repulsions: Vec<Vec<usize>>,
     repulsion_cost: f64,
     pub side_obstacles: [Vec<Rect>; 2],
+    pub opp_side_obstacles: [Vec<Rect>; 2],
     pub placed: Vec<bool>, // parts present in the overlap index (all, except during legalization)
     bounds: Rect,
     index: PartIndex,
@@ -435,6 +436,7 @@ impl Problem {
             part_repulsions: vec![Vec::new(); n_parts],
             repulsion_cost: 0.0,
             side_obstacles: [Vec::new(), Vec::new()],
+            opp_side_obstacles: [Vec::new(), Vec::new()],
             placed: vec![true; n_parts],
             bounds,
             index: PartIndex::new(bounds, cell),
@@ -482,11 +484,23 @@ impl Problem {
             .any(|obs| r.overlap(obs) > 1e-9)
     }
 
+    #[inline]
+    fn hits_opp_side_obstacle(&self, side: u8, r: &Rect) -> bool {
+        self.opp_side_obstacles[side as usize]
+            .iter()
+            .any(|obs| r.overlap(obs) > 1e-9)
+    }
+
     pub fn set_side_obstacles(&mut self, obstacles: Vec<(Rect, u8)>) {
         self.side_obstacles = [Vec::new(), Vec::new()];
+        self.opp_side_obstacles = [Vec::new(), Vec::new()];
         for (rect, side) in obstacles {
             if side < 2 {
                 self.side_obstacles[side as usize].push(rect);
+            } else if side < 4 {
+                let s = (side - 2) as usize;
+                self.side_obstacles[s].push(rect);
+                self.opp_side_obstacles[s].push(rect);
             }
         }
     }
@@ -752,6 +766,12 @@ impl Problem {
                     }
                 }
             }
+            if let Some(opp) = self.parts[i].opp_local {
+                let opp_box = placed_rect(&opp, x, y, r);
+                if self.hits_opp_side_obstacle(1 - self.parts[i].side, &opp_box) {
+                    return false;
+                }
+            }
         }
         let side = self.parts[i].side;
         let opp_local = self.parts[i].opp_local;
@@ -850,6 +870,12 @@ impl Problem {
                         if self.hits_side_obstacle(self.parts[i].side, &placed_rect(sr, x, y, r)) {
                             return false;
                         }
+                    }
+                }
+                if let Some(opp) = self.parts[i].opp_local {
+                    let opp_box = placed_rect(&opp, x, y, r);
+                    if self.hits_opp_side_obstacle(1 - self.parts[i].side, &opp_box) {
+                        return false;
                     }
                 }
             }
@@ -1357,8 +1383,14 @@ mod tests {
         // outline_local enforces edge margin without bloating part-to-part spacing
         assert!(!p.can_place_at(2, 1.2, 5.0, 0, None));
         assert!(p.can_place_at(2, 1.6, 5.0, 0, None));
-        // side_obstacles blocks side 0 only, not side 1
+        // side_obstacles blocks side 0 only, not side 1; side=3 blocks opposite-side TH opp_local too,
+        // while side=1 (silkscreen text/logo) does not falsely block opposite-side TH pads.
         assert!(!p.can_place_at(2, 4.0, 16.0, 0, None));
         assert!(p.can_place_at(1, 4.0, 16.0, 0, None));
+        p.set_side_obstacles(vec![(Rect { x0: 14.0, y0: 2.0, x1: 18.0, y1: 6.0 }, 1)]);
+        assert!(p.can_place_at(0, 16.0, 4.0, 0, None));
+        p.set_side_obstacles(vec![(Rect { x0: 14.0, y0: 2.0, x1: 18.0, y1: 6.0 }, 3)]);
+        assert!(!p.can_place_at(0, 16.0, 4.0, 0, None));
+        assert!(p.can_place_at(2, 16.0, 4.0, 0, None));
     }
 }

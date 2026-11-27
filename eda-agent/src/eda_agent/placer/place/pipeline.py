@@ -558,12 +558,14 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
         # when a moved passive's old or new box actually enters an IC's escape zone.
         from ..geometry import transform as _xf
 
+        flipped_ic = {fp.ref for fp in placed.footprints if fp.side != board.fp(fp.ref).side}
         exit_boxes = []
         for ic_ref, row in exits.items():
             ic_fp = placed.fp(ic_ref)
             if not row:
                 continue
-            pts = [_xf(pt, ic_fp.position, ic_fp.rotation) for e in row for pt in (e.start, e.end)]
+            mirror = -1.0 if ic_ref in flipped_ic else 1.0
+            pts = [_xf((pt[0], pt[1] * mirror), ic_fp.position, ic_fp.rotation) for e in row for pt in (e.start, e.end)]
             pad_m = max(max(e.width, e.via_space) for e in row) + 0.5
             exit_boxes.append((
                 min(p[0] for p in pts) - pad_m,

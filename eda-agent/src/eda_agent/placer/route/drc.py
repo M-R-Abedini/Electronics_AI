@@ -155,7 +155,7 @@ def load_exclusions(board_path: Path | None) -> set[tuple[str, frozenset[str]]]:
     for row in rows:
         raw = row[0] if isinstance(row, list) and row else row if isinstance(row, str) else ""
         parts = raw.split("|")
-        if len(parts) >= 5 and parts[0]:
+        if len(parts) >= 4 and parts[0]:
             uuids = frozenset(p for p in parts[3:] if p)
             if uuids:
                 out.add((parts[0], uuids))

@@ -313,13 +313,27 @@ def _pad_outline_box(fp: Footprint, base_box: tuple[float, float, float, float],
 
 
 def side_obstacle_rects(board: Board, fixed: set[str]) -> list[tuple[float, float, float, float, int]]:
-    """Per-side fixed obstacles (barcodes + 1.05 mm, mask apertures, authored silkscreen artwork)."""
+    """Per-side fixed obstacles: 0/1 = same-side silkscreen only, 2/3 = same-side AND opp-side TH pads."""
     out: list[tuple[float, float, float, float, int]] = []
     for _uid, side, poly in board_mask_obstacles(board, fixed):
         if poly.is_empty:
             continue
         bx0, by0, bx1, by1 = poly.bounds
-        out.append((bx0 - 0.04, by0 - 0.04, bx1 + 0.04, by1 + 0.04, 0 if side == "F" else 1))
+        out.append((bx0 - 0.04, by0 - 0.04, bx1 + 0.04, by1 + 0.04, 2 if side == "F" else 3))
+    # Fixed fiducials require a >= 1.016 mm copper/mask optical keepout on their own side only
+    # (blocks same-side parts and opposite-side TH pads without blocking opposite-side SMD parts).
+    existing = {fp.ref for fp in board.footprints}
+    for ref in sorted(fixed):
+        if ref not in existing:
+            continue
+        fp_fix = board.fp(ref)
+        if fp_fix.prefix == "FID" or "fiducial" in fp_fix.lib_id.lower():
+            side_idx = 2 if fp_fix.side == "F" else 3
+            for pad in fp_fix.pads:
+                wx, wy = fp_fix.pad_world(pad)
+                rx = pad.size[0] / 2.0 + 1.10
+                ry = pad.size[1] / 2.0 + 1.10
+                out.append((wx - rx, wy - ry, wx + rx, wy + ry, side_idx))
     board_area = float(board.board_area_mm2 or 0.0)
     text_area_by_side = {"F": 0.0, "B": 0.0}
     for row in board.artwork:
@@ -337,7 +351,7 @@ def side_obstacle_rects(board: Board, fixed: set[str]) -> list[tuple[float, floa
         if kind == "barcode":
             # KiCad 10 enforces a 1.0 mm visual separation clearance around PCB_BARCODE items.
             m = 1.05
-            out.append((bx0 - m, by0 - m, bx1 + m, by1 + m, side_idx))
+            out.append((bx0 - m, by0 - m, bx1 + m, by1 + m, side_idx + 2))
         elif kind in ("artwork_footprint", "graphic"):
             m = 0.05
             out.append((bx0 - m, by0 - m, bx1 + m, by1 + m, side_idx))

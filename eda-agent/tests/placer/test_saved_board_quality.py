@@ -205,6 +205,13 @@ def test_drc_attribute_honors_position_invariant_exclusions_and_same_fp_pads(tmp
     exclusions = drc.load_exclusions(board_path)
     assert ("solder_mask_bridge", frozenset({"uuid-a", "uuid-b"})) in exclusions
 
+    pro["board"]["design_settings"]["drc_exclusions"].append(
+        ["silk_over_copper|10000|20000|uuid-single"]
+    )
+    board_path.with_suffix(".kicad_pro").write_text(json.dumps(pro), encoding="utf-8")
+    exclusions_4 = drc.load_exclusions(board_path)
+    assert ("silk_over_copper", frozenset({"uuid-single"})) in exclusions_4
+
     routed = {
         "violations": [
             {
@@ -247,9 +254,25 @@ def test_side_obstacle_rects_inflates_barcodes_and_respects_sides():
     ]
     obs = problem.side_obstacle_rects(board, set())
     assert len(obs) == 2
-    bc = next(o for o in obs if o[4] == 0)
+    bc = next(o for o in obs if o[4] == 2)
     assert bc[0] == pytest.approx(8.95)
     assert bc[2] == pytest.approx(15.05)
     txt = next(o for o in obs if o[4] == 1)
     assert txt[0] == pytest.approx(1.95)
     assert txt[4] == 1
+
+
+def test_fiducials_are_side_specific_obstacles_not_dual_side_holes():
+    from eda_agent.placer.eval import legality
+
+    fid_f = _footprint("FID1", "Fiducial:Fiducial_1mm_Mask2mm", 5.0, 5.0, side="F")
+    r1 = _footprint("R1", "Resistor_SMD:R_0402", 15.0, 15.0, side="B")
+    board = _board(fid_f, r1)
+    obs = problem.side_obstacle_rects(board, {"FID1"})
+    fid_obs = [o for o in obs if o[4] == 2]
+    assert len(fid_obs) == 1
+    assert fid_obs[0][0] == pytest.approx(5.0 - 0.1 - 1.10)
+    assert fid_obs[0][2] == pytest.approx(5.0 + 0.1 + 1.10)
+    assert not [o for o in obs if (o[4] & 1) == 1]
+    # Single-sided fiducial must NOT create a dual-side outline hole blocking B.Cu
+    assert legality.placement_obstacle_holes(board, {"FID1"}, two_sided=True) == []
