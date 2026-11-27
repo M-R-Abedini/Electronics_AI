@@ -85,6 +85,51 @@ def _extract_mm(body: str, *, allow_opt: bool = False) -> float | None:
     return None
 
 
+def _parse_rules_for_pair_clearances(dru_text: str) -> dict[tuple[str, str], float]:
+    """Extract (nc_a, nc_b) -> min clearance (mm) from KiCad custom .kicad_dru rules."""
+    out: dict[tuple[str, str], float] = {}
+    for _name, block in _iter_rules(dru_text):
+        cond_m = _COND_RE.search(block)
+        if not cond_m:
+            continue
+        cond = cond_m.group(1)
+        clr_m = _CLEARANCE_RE.search(block)
+        if not clr_m:
+            continue
+        mm_val = _extract_mm(clr_m.group(1), allow_opt=False)
+        if mm_val is None or mm_val <= 0.0:
+            continue
+        a_ncs = [m.group(1) or m.group(2) for m in _A_NC_TERM.finditer(cond)]
+        b_ncs = [m.group(1) or m.group(2) for m in _B_NC_TERM.finditer(cond)]
+        if a_ncs and b_ncs:
+            for a in a_ncs:
+                for b in b_ncs:
+                    key = (a, b) if a <= b else (b, a)
+                    out[key] = max(out.get(key, 0.0), mm_val)
+        elif a_ncs and not b_ncs:
+            for a in a_ncs:
+                out[(a, a)] = max(out.get((a, a), 0.0), mm_val)
+    return out
+
+
+def extract_netclass_clearances(dru_path: Path | None, board: Board) -> dict[tuple[str, str], float]:
+    """Return canonical (nc_a, nc_b) -> min clearance (mm) for all pairs >= 1.2 mm.
+
+    Combines KiCad custom ``.kicad_dru`` clearance rules with high-clearance
+    netclasses declared in ``board.netclasses`` so the placement solver respects
+    galvanic isolation domains and HV clearances from first principles.
+    """
+    raw: dict[tuple[str, str], float] = {}
+    for nc in board.netclasses:
+        if nc.clearance and float(nc.clearance) >= 1.2:
+            raw[(nc.name, nc.name)] = max(raw.get((nc.name, nc.name), 0.0), float(nc.clearance))
+    if dru_path is not None and dru_path.is_file():
+        for key, val in _parse_rules_for_pair_clearances(dru_path.read_text(encoding="utf-8")).items():
+            if val >= 1.2:
+                raw[key] = max(raw.get(key, 0.0), val)
+    return raw
+
+
 def _iter_rules(text: str) -> list[tuple[str, str]]:
     clean = _strip_comments(text)
     out: list[tuple[str, str]] = []

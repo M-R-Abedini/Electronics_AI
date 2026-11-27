@@ -420,14 +420,17 @@ def infer_layer_roles(board: Board) -> list[LayerRole]:
         frac = round(min(1.0, total / area), 4) if area else 0.0
         top = max(counted.items(), key=lambda kv: (kv[1], kv[0]), default=(None, 0.0))
         share = top[1] / total if total else 0.0
+        gnd_total = sum(a for n, a in counted.items() if is_ground_net(n) or _is_return_net(n))
+        gnd_share = gnd_total / total if total else 0.0
+        eff_share = max(share, gnd_share)
         inner = 0 < cl.index < last
         nets = sorted(counted, key=lambda n: (-counted[n], n))
         if frac < ROLE_POUR_FRACTION:
             role, net = "signal", None
             conf = 1.0 - frac / ROLE_POUR_FRACTION * 0.5
-        elif inner and share >= ROLE_PLANE_SHARE and foreign.get(cl.canonical, 0.0) <= ROLE_SIGNAL_TRACK_MM:
+        elif inner and eff_share >= ROLE_PLANE_SHARE and foreign.get(cl.canonical, 0.0) <= ROLE_SIGNAL_TRACK_MM:
             role, net = "plane", top[0]
-            conf = min(1.0, 0.5 + (share - ROLE_PLANE_SHARE) / (1 - ROLE_PLANE_SHARE) * 0.5)
+            conf = min(1.0, 0.5 + (eff_share - ROLE_PLANE_SHARE) / (1 - ROLE_PLANE_SHARE) * 0.5)
         else:
             role, net = "mixed", top[0]
             conf = 0.75
@@ -484,6 +487,13 @@ def is_ground_net(name: str | None) -> bool:
         return False
     upper = name.upper().lstrip("/")
     return any(upper == h or upper.startswith(h + "_") or upper.endswith("_" + h) for h in GROUND_HINTS)
+
+
+def _is_return_net(name: str | None) -> bool:
+    if not name:
+        return False
+    tail = name.upper().rsplit("/", 1)[-1]
+    return tail.endswith(("_RET", "_RTN", "_RETURN")) or tail in ("RET", "RTN")
 
 
 def is_power_net(name: str | None) -> bool:

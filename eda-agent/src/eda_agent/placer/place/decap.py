@@ -16,6 +16,7 @@ from ..eval import legality, metrics
 from ..geometry import box_union, rotated_box, transform
 from ..intent import model
 from ..ir import Board, Box, Footprint
+from . import domains
 
 
 def _tail(distances: dict[str, float]) -> float:
@@ -518,6 +519,8 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
     if not distances and not cand_dists:
         return board, report
     result = board.copy()
+    dom_regions = domains.ref_regions(result, fixed)
+    clr_guard = domains.make_clearance_guard(result)
     side_obs = _side_obstacles_by_side(result, fixed)
     obs_locals = _local_obs_boxes(board)
     tracker = CrossingTracker(result)
@@ -588,6 +591,8 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
                 if next_cross > tracker.total:
                     continue
                 if (_touches_same_side_neighbor(result, fp)
+                        or not domains.footprints_in_domains((fp,), dom_regions)
+                        or (clr_guard is not None and not clr_guard(result, (fp,)))
                         or not _local_legal(result, (fp,), fixed, outline_bounds)
                         or (preserve_escapes is not None and not preserve_escapes(result))):
                     continue
@@ -615,6 +620,8 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
                     if nc2 > tracker.total:
                         continue
                     if (_touches_same_side_neighbor(result, fp) or _touches_same_side_neighbor(result, other)
+                            or not domains.footprints_in_domains((fp, other), dom_regions)
+                            or (clr_guard is not None and not clr_guard(result, (fp, other)))
                             or not _local_legal(result, (fp, other), fixed, outline_bounds)
                             or (preserve_escapes is not None and not preserve_escapes(result))):
                         continue
@@ -676,6 +683,8 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
 
     deadline = time.monotonic() + time_budget_s
     result = board.copy()
+    dom_regions = domains.ref_regions(result, fixed)
+    clr_guard = domains.make_clearance_guard(result)
     side_obs = _side_obstacles_by_side(result, fixed)
     obs_locals = _local_obs_boxes(board)
     groups: dict[tuple[str, str], list] = defaultdict(list)
@@ -744,6 +753,10 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
             else:
                 n_res, n_all = cur_res, cur_all
             if any(_touches_same_side_neighbor(result, f) for f in moved_fps):
+                return False, cur_res, cur_all
+            if not domains.footprints_in_domains(moved_fps, dom_regions):
+                return False, cur_res, cur_all
+            if clr_guard is not None and not clr_guard(result, moved_fps):
                 return False, cur_res, cur_all
             if not _local_legal(result, moved_fps, fixed, outline_bounds):
                 return False, cur_res, cur_all
@@ -1121,6 +1134,8 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
             return False, False, ox, oy, best_reg, cur_res, cur_all
         trials += 1
         if (_touches_same_side_neighbor(result, fp)
+                or not domains.footprints_in_domains((fp,), dom_regions)
+                or (clr_guard is not None and not clr_guard(result, (fp,)))
                 or any(not f.fixed for f in legality.check(result, fixed=fixed))
                 or (preserve_escapes is not None and not preserve_escapes(result))):
             fp.x, fp.y = ox, oy
