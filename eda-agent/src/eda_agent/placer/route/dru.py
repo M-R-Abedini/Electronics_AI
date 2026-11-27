@@ -85,7 +85,9 @@ def _extract_mm(body: str, *, allow_opt: bool = False) -> float | None:
     return None
 
 
-def _parse_rules_for_pair_clearances(dru_text: str) -> dict[tuple[str, str], float]:
+def _parse_rules_for_pair_clearances(
+    dru_text: str, all_ncs: set[str] | None = None,
+) -> dict[tuple[str, str], float]:
     """Extract (nc_a, nc_b) -> min clearance (mm) from KiCad custom .kicad_dru rules."""
     out: dict[tuple[str, str], float] = {}
     for _name, block in _iter_rules(dru_text):
@@ -107,8 +109,11 @@ def _parse_rules_for_pair_clearances(dru_text: str) -> dict[tuple[str, str], flo
                     key = (a, b) if a <= b else (b, a)
                     out[key] = max(out.get(key, 0.0), mm_val)
         elif a_ncs and not b_ncs:
+            targets = all_ncs if all_ncs else set(a_ncs)
             for a in a_ncs:
-                out[(a, a)] = max(out.get((a, a), 0.0), mm_val)
+                for b in targets:
+                    key = (a, b) if a <= b else (b, a)
+                    out[key] = max(out.get(key, 0.0), mm_val)
     return out
 
 
@@ -117,14 +122,25 @@ def extract_netclass_clearances(dru_path: Path | None, board: Board) -> dict[tup
 
     Combines KiCad custom ``.kicad_dru`` clearance rules with high-clearance
     netclasses declared in ``board.netclasses`` so the placement solver respects
-    galvanic isolation domains and HV clearances from first principles.
+    galvanic isolation domains and HV clearances from first principles. In KiCad,
+    a netclass's own clearance applies against every other netclass via
+    ``max(clearance(A), clearance(B))``.
     """
     raw: dict[tuple[str, str], float] = {}
+    all_ncs: set[str] = (
+        {nc.name for nc in board.netclasses}
+        | {n.netclass for n in board.nets if n.netclass}
+        | {"Default"}
+    )
     for nc in board.netclasses:
         if nc.clearance and float(nc.clearance) >= 1.2:
-            raw[(nc.name, nc.name)] = max(raw.get((nc.name, nc.name), 0.0), float(nc.clearance))
+            val = float(nc.clearance)
+            for other in all_ncs:
+                key = (nc.name, other) if nc.name <= other else (other, nc.name)
+                raw[key] = max(raw.get(key, 0.0), val)
     if dru_path is not None and dru_path.is_file():
-        for key, val in _parse_rules_for_pair_clearances(dru_path.read_text(encoding="utf-8")).items():
+        parsed = _parse_rules_for_pair_clearances(dru_path.read_text(encoding="utf-8"), all_ncs=all_ncs)
+        for key, val in parsed.items():
             if val >= 1.2:
                 raw[key] = max(raw.get(key, 0.0), val)
     return raw

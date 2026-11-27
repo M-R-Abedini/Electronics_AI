@@ -27,7 +27,7 @@ from ..eval.legality import (
     is_shield_cavity_eligible,
     placement_obstacle_holes,
 )
-from ..eval.metrics import zone_nets
+from ..eval.metrics import PASSIVE_PREFIXES, zone_nets
 from ..geometry import box_union, rotated_box
 from ..intent import model
 from ..ir import Board, Footprint, is_ground_net
@@ -242,6 +242,8 @@ class PlaceProblem:
     side_obstacles: list[tuple[float, float, float, float, int]] = field(default_factory=list)
     clusters: list[list[int]] = field(default_factory=list)
     repulsions: list[tuple[int, int, float, float]] = field(default_factory=list)
+    reg_groups: list[int] = field(default_factory=list)
+    w_reg: float = 0.0
     local_block_links: int = 0
     sheet_cohesion_links: int = 0
 
@@ -419,7 +421,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
             fp_ncs = {net_to_nc[p.net] for p in fp.pads if p.net and p.net in net_to_nc}
             hv_clr = max((nc_clearances.get((nc, nc), 0.0) for nc in fp_ncs), default=0.0)
             if hv_clr >= 1.2:
-                hv_inflations[fp.ref] = min(0.85, 0.5 * max(0.0, hv_clr - 0.15))
+                hv_inflations[fp.ref] = min(1.15, max(0.5 * hv_clr, hv_clr - 0.45))
     if hv_inflations:
         merged_inf = dict(inflations or {})
         for r, v in hv_inflations.items():
@@ -523,7 +525,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
         if model.is_uncertain(role) or not claim:
             continue
         kind = role["value"]
-        if kind != "decap" and (not floorplan or kind not in LOCAL_BLOCK_ROLES):
+        if kind not in ("decap", "esd") and (not floorplan or kind not in LOCAL_BLOCK_ROLES):
             continue
         target = claim["value"]
         net, target_ref = target.get("net"), target.get("ref")
@@ -553,9 +555,17 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
             pins = [index for number, index in part_pins.get((target_ref, common_net), [])
                     if not numbers or number in numbers]
             if len(source) == 1 and pins:
-                pb.affinities.append(([source[0][1], *pins], DECAP_AFFINITY_WEIGHT if kind == "decap" else LOCAL_BLOCK_WEIGHT))
+                if kind == "decap":
+                    aff_w = DECAP_AFFINITY_WEIGHT
+                elif kind == "esd":
+                    # IEC 61000-4-2: anchor ESD protection tightly to its protected connector pin.
+                    aff_w = 4.0 * LOCAL_BLOCK_WEIGHT
+                else:
+                    aff_w = LOCAL_BLOCK_WEIGHT
+                pb.affinities.append(([source[0][1], *pins], aff_w))
                 pb.local_block_links += kind != "decap"
-                # Inline Connector -> ESD -> IC pull: gently attract ESD toward the downstream IC too.
+                # Inline Connector -> ESD -> IC pull: mild directional bias so ESD sits between connector and IC
+                # without ever being dragged far away from the connector pin.
                 if floorplan and kind == "esd":
                     ic_pins = [
                         pi for pi in pin_of.get(common_net, [])
@@ -565,7 +575,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
                         )
                     ]
                     if ic_pins:
-                        pb.affinities.append(([source[0][1], *ic_pins], 0.6 * LOCAL_BLOCK_WEIGHT))
+                        pb.affinities.append(([source[0][1], *ic_pins], 0.15 * LOCAL_BLOCK_WEIGHT))
     # First-principles galvanic isolation & HV clearance repulsions from .kicad_dru + netclasses.
     part_ncs: list[set[str]] = [
         {net_to_nc[p.net] for p in fp.pads if p.net and p.net in net_to_nc}
@@ -606,8 +616,9 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
                         (nc_clearances.get((a, a), 0.0) for a in (part_ncs[i] & part_ncs[j])),
                         default=0.0,
                     )
-                    if shared_hv >= 1.2 and board.footprints[i].nets != board.footprints[j].nets:
-                        pb.repulsions.append((i, j, shared_hv + 0.25, 10.0))
+                    hv_clr = max(iso_mm, shared_hv)
+                    if hv_clr >= 1.2 and board.footprints[i].nets != board.footprints[j].nets:
+                        pb.repulsions.append((i, j, hv_clr + 0.25, 10.0))
 
     if floorplan:
         # FB/COMP vs SW inductor repulsion (matches Hartley lint fb_near_sw / fb_under_inductor).
@@ -697,10 +708,30 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
     two_sided = "F" in sides.values() and "B" in sides.values()
     pb.holes.extend(placement_obstacle_holes(board, set(fixed), two_sided))
     pb.side_obstacles = side_obstacle_rects(board, set(fixed))
+    # Build passive regularity groups matching metrics.regularity (same lib_id & side, >= 2 members).
+    group_counts: dict[tuple[str, str], int] = {}
+    for fp in board.footprints:
+        if fp.prefix in PASSIVE_PREFIXES and len(fp.pads) <= 3:
+            key = (fp.lib_id, sides[fp.ref])
+            group_counts[key] = group_counts.get(key, 0) + 1
+    group_ids: dict[tuple[str, str], int] = {}
+    next_gid = 1
+    for key, cnt in sorted(group_counts.items()):
+        if cnt >= 2:
+            group_ids[key] = next_gid
+            next_gid += 1
+    pb.reg_groups = [
+        group_ids.get((fp.lib_id, sides[fp.ref]), 0)
+        if (fp.prefix in PASSIVE_PREFIXES and len(fp.pads) <= 3)
+        else 0
+        for fp in board.footprints
+    ]
+    pb.w_reg = 2.2 if any(pb.reg_groups) else 0.0
     return pb
 
 
-def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0, gap: float = GAP_MM):
+def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0, gap: float = GAP_MM,
+                 w_reg: float | None = None):
     try:
         from placer_core import PlacementProblem
     except ImportError as error:
@@ -710,7 +741,13 @@ def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0,
             "crates/placer-core (or `pip install ./crates/placer-core`)."
         ) from error
 
-    args = (pb.parts, pb.pins, pb.nets, pb.outers, pb.holes, gap, w_hpwl, w_cross)
+    eff_gap = gap
+    silk_clr = float(pb.board.rules.get("silk_clearance") or 0.0)
+    board_area = float(pb.board.board_area_mm2 or 0.0)
+    cy_area = sum(fp.courtyard_area for fp in pb.board.footprints)
+    if silk_clr >= 0.08 and board_area > 0.0 and cy_area < 0.50 * board_area:
+        eff_gap = max(eff_gap, min(0.08, 0.6 * silk_clr))
+    args = (pb.parts, pb.pins, pb.nets, pb.outers, pb.holes, eff_gap, w_hpwl, w_cross)
     kwargs: dict = {}
     if pb.affinities:
         kwargs["affinities"] = pb.affinities
@@ -730,6 +767,10 @@ def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0,
         kwargs["opp_locals"] = pb.opp_locals
     if pb.side_obstacles:
         kwargs["side_obstacles"] = pb.side_obstacles
+    eff_w_reg = pb.w_reg if w_reg is None else w_reg
+    if eff_w_reg > 0.0 and any(pb.reg_groups):
+        kwargs["reg_groups"] = pb.reg_groups
+        kwargs["w_reg"] = eff_w_reg
     return PlacementProblem(*args, **kwargs)
 
 

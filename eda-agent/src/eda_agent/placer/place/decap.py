@@ -663,9 +663,25 @@ def _decap_ok(board: Board, intent: dict | None, has_res: bool, has_all: bool,
     if not has_res and not has_all:
         return True, res_ref, all_ref
     t_res, t_cand, rstats, astats = _measure(board, intent or {})
-    if has_res and any(rstats.get(k, 0.0) > res_ref[k] + 1e-9 for k in ("median_mm", "p90_mm", "max_mm")):
+
+    def _within_budget(stats: dict, ref: dict) -> bool:
+        med0 = float(ref.get("median_mm", 0.0))
+        p90_0 = float(ref.get("p90_mm", 0.0))
+        max0 = float(ref.get("max_mm", 0.0))
+        # Allow small bounded alignment slack when decaps are already well inside DECAP_GOOD_MM,
+        # preventing a 1 nm freeze from blocking neat row/column passive bank alignment.
+        med_lim = max(med0 + 0.12, 2.1) if med0 <= 2.8 else med0 + 1e-9
+        p90_lim = max(p90_0 + 0.20, 2.6) if p90_0 <= 3.2 else p90_0 + 1e-9
+        max_lim = max(max0 + 0.30, 3.2) if max0 <= 3.6 else max0 + 1e-9
+        return (
+            float(stats.get("median_mm", 0.0)) <= med_lim + 1e-9
+            and float(stats.get("p90_mm", 0.0)) <= p90_lim + 1e-9
+            and float(stats.get("max_mm", 0.0)) <= max_lim + 1e-9
+        )
+
+    if has_res and not _within_budget(rstats, res_ref):
         return False, res_ref, all_ref
-    if has_all and any(astats.get(k, 0.0) > all_ref[k] + 1e-9 for k in ("median_mm", "p90_mm", "max_mm")):
+    if has_all and not _within_budget(astats, all_ref):
         return False, res_ref, all_ref
     return True, (rstats if t_res else res_ref), (astats if (t_res or t_cand) else all_ref)
 
@@ -767,6 +783,73 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                     metrics.rudy(result).get("over_capacity_fraction", 0.0) > base_rudy + 1e-6):
                 return False, cur_res, cur_all
             return True, n_res, n_all
+
+        # Pass 0: Coordinated bank axis alignment & nearest-peer row/column projection.
+        dom_axis = 0.0 if reg_tracker.axis[0] >= reg_tracker.axis[90] else 90.0
+        for _, grp in sorted(groups.items()):
+            if len(grp) < 2 or trials >= max_trials or time.monotonic() >= deadline:
+                continue
+            ordered0 = sorted(grp, key=lambda f: f.ref)
+            for a in ordered0:
+                if a.ref in fixed or a.locked or trials >= max_trials or time.monotonic() >= deadline:
+                    continue
+                ox, oy, orot = a.x, a.y, a.rotation
+                orig_boxes = [(*box(a), a.side)]
+                peers0 = sorted(
+                    ((math.hypot(a.x - t.x, a.y - t.y), t) for t in ordered0 if t is not a),
+                    key=lambda item: (item[0], item[1].ref),
+                )
+                cands0: list[tuple[float, float, float]] = []
+                for d_ab, target in peers0[:6]:
+                    if d_ab > metrics.ALIGN_RADIUS_MM:
+                        break
+                    dx_t, dy_t = abs(a.x - target.x), abs(a.y - target.y)
+                    for rot in (dom_axis, (dom_axis + 180.0) % 360.0, target.rotation):
+                        if dx_t <= 2.5 and abs(target.y - oy) <= metrics.ALIGN_RADIUS_MM:
+                            cands0.append((round(target.x, 4), oy, rot))
+                        if dy_t <= 2.5 and abs(target.x - ox) <= metrics.ALIGN_RADIUS_MM:
+                            cands0.append((ox, round(target.y, 4), rot))
+                if not cands0:
+                    continue
+                query0, commit0 = tracker.prepare((a,))
+                best_k0 = (
+                    round(0.5 * best_reg["aligned_fraction"] + 0.2 * best_reg["dominant_axis_fraction"], 5),
+                    -tracker.total,
+                )
+                best_s0 = (ox, oy, orot)
+                best_m0: tuple[int, dict, dict, dict, dict] | None = None
+                seen0: set[tuple[float, float, float]] = set()
+                for tx, ty, trot in cands0:
+                    if (tx, ty, trot) in seen0 or trials >= max_trials or time.monotonic() >= deadline:
+                        continue
+                    seen0.add((tx, ty, trot))
+                    a.x, a.y, a.rotation = tx, ty, trot
+                    if blockers(a) != []:
+                        continue
+                    nr = reg_tracker.evaluate((a,))
+                    k0_reg = round(0.5 * nr["aligned_fraction"] + 0.2 * nr["dominant_axis_fraction"], 5)
+                    if k0_reg <= best_k0[0] + 1e-6:
+                        continue
+                    nc, nmap = query0()
+                    if nc > tracker.total:
+                        continue
+                    k0 = (k0_reg, -nc)
+                    if k0 <= best_k0:
+                        continue
+                    ok, n_res, n_all = _full_accept_ok((a,), orig_boxes)
+                    if not ok:
+                        continue
+                    best_k0 = k0
+                    best_s0 = (tx, ty, trot)
+                    best_m0 = (nc, nmap, nr, n_res, n_all)
+                    break
+                a.x, a.y, a.rotation = best_s0
+                if best_m0 is not None:
+                    commit0(best_m0[0], best_m0[1])
+                    reg_tracker.commit((a,))
+                    spatial_grid.update(a)
+                    best_reg, cur_res, cur_all = best_m0[2], best_m0[3], best_m0[4]
+                    _mark_moved(a.ref)
 
         # Multi-round refinement: rotation/swap (Pass A) + analytic stacking/co-alignment (Pass B).
         prev_round_moved: set[str] | None = set(seed_moved) if seed_moved else None
@@ -957,15 +1040,28 @@ def align_passives(board: Board, intent: dict | None, fixed: set[str], *,
                         if (nr["aligned_fraction"], nr["dominant_axis_fraction"]) <= best_key[:2]:
                             continue
                         nc, nmap = query()
-                        if nc > tracker.total:
+                        # Allow at most +1 crossing only when aligned_fraction jumps enough to improve Pro Score v1.
+                        al_gain = nr["aligned_fraction"] - best_reg["aligned_fraction"]
+                        ax_gain = nr["dominant_axis_fraction"] - best_reg["dominant_axis_fraction"]
+                        allow_xing = 1 if (al_gain >= 0.025 and (0.5 * al_gain + 0.2 * ax_gain) >= 0.015) else 0
+                        if nc > tracker.total + allow_xing:
                             continue
-                        key = (nr["aligned_fraction"], nr["dominant_axis_fraction"], -nc)
-                        if key <= best_key:
+                        key = (
+                            round(0.5 * nr["aligned_fraction"] + 0.2 * nr["dominant_axis_fraction"], 5),
+                            -nc,
+                            nr["aligned_fraction"],
+                        )
+                        cur_key = (
+                            round(0.5 * best_key[0] + 0.2 * best_key[1], 5),
+                            best_key[2],
+                            best_key[0],
+                        )
+                        if key <= cur_key:
                             continue
                         ok, n_res, n_all = _full_accept_ok((a,), orig_boxes)
                         if not ok:
                             continue
-                        best_key = key
+                        best_key = (nr["aligned_fraction"], nr["dominant_axis_fraction"], -nc)
                         best_state = (tx, ty, trot)
                         best_meta3 = (nc, nmap, nr, n_res, n_all)
                         if nr["aligned_fraction"] > best_reg["aligned_fraction"] + 1e-9:

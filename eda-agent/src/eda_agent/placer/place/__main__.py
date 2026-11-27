@@ -29,11 +29,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fab-profile", default="ipc_standard",
                     choices=["ipc_standard", "jlcpcb", "pcbway", "high_precision_lpi"],
                     help="target PCB fab silkscreen capability profile (default: ipc_standard)")
+    ap.add_argument("--restarts", type=int, help="number of deterministic parallel SA seed restarts (default: 2 for <175 parts)")
+    ap.add_argument("--monotonic", action="store_true",
+                    help="guarantee non-regression vs an already-legal input placement on Placement Pro Score v1")
     args = ap.parse_args(argv)
     rep = place_board(args.board, out_dir=args.out, side_policy=args.side_policy, mode=args.mode, seed=args.seed,
                       route=not args.no_route, router_timeout_s=args.route_timeout, intent_path=args.intent,
                       floorplan=args.floorplan, schematic_path=args.schematic, s6a=not args.no_s6a,
-                      silkscreen_policy=args.silkscreen_policy, fab_profile=args.fab_profile)
+                      silkscreen_policy=args.silkscreen_policy, fab_profile=args.fab_profile,
+                      restarts=args.restarts, monotonic=args.monotonic)
     info = rep["stages"]["place"]
     route = rep["metrics"]["route"]
     print(json.dumps({"passed": rep["passed"], "gates": {g["name"]: [g["value"], g["passed"]] for g in rep["gates"]},

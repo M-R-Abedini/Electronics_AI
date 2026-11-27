@@ -247,7 +247,7 @@ def make_clearance_guard(board: Board) -> Callable[[Board, Iterable[Footprint]],
                         if req <= 0.0:
                             continue
                         rb = _pad_radius(pad_b)
-                        if math.hypot(ax - bx, ay - by) - (ra + rb) < req - 1e-4:
+                        if math.hypot(ax - bx, ay - by) - (ra + rb) < req + 0.02:
                             return False
         return True
 

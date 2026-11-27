@@ -334,6 +334,11 @@ pub struct Problem {
     pub repulsions: Vec<(usize, usize, f64, f64)>, // (part_a, part_b, min_dist_mm, weight)
     part_repulsions: Vec<Vec<usize>>,
     repulsion_cost: f64,
+    pub reg_groups: Vec<u16>,
+    pub reg_members: Vec<Vec<usize>>,
+    pub w_reg: f64,
+    reg_axis_counts: [usize; 2],
+    reg_cost: f64,
     pub side_obstacles: [Vec<Rect>; 2],
     pub opp_side_obstacles: [Vec<Rect>; 2],
     pub placed: Vec<bool>, // parts present in the overlap index (all, except during legalization)
@@ -435,6 +440,11 @@ impl Problem {
             repulsions: Vec::new(),
             part_repulsions: vec![Vec::new(); n_parts],
             repulsion_cost: 0.0,
+            reg_groups: vec![0; n_parts],
+            reg_members: Vec::new(),
+            w_reg: 0.0,
+            reg_axis_counts: [0, 0],
+            reg_cost: 0.0,
             side_obstacles: [Vec::new(), Vec::new()],
             opp_side_obstacles: [Vec::new(), Vec::new()],
             placed: vec![true; n_parts],
@@ -534,10 +544,96 @@ impl Problem {
         let skip: Vec<usize> = Vec::new();
         self.crossings = self.edges.crossings_against(&all, &skip) / 2;
         self.repulsion_cost = self.recompute_repulsion();
+        self.recompute_regularity();
     }
 
     pub fn set_clusters(&mut self, clusters: Vec<Vec<usize>>) {
         self.clusters = clusters;
+    }
+
+    pub fn set_regularity(&mut self, groups: Vec<u16>, w_reg: f64) {
+        let n = self.parts.len();
+        self.reg_groups = vec![0; n];
+        let mut max_g = 0usize;
+        for (i, &g) in groups.iter().take(n).enumerate() {
+            self.reg_groups[i] = g;
+            max_g = max_g.max(g as usize);
+        }
+        self.reg_members = vec![Vec::new(); max_g + 1];
+        for (i, &g) in self.reg_groups.iter().enumerate() {
+            if g > 0 {
+                self.reg_members[g as usize].push(i);
+            }
+        }
+        self.w_reg = if w_reg.is_finite() && w_reg > 0.0 { w_reg } else { 0.0 };
+        self.recompute_regularity();
+    }
+
+    #[inline]
+    fn group_align_penalty(&self, g: usize) -> f64 {
+        let members = match self.reg_members.get(g) {
+            Some(m) if m.len() >= 2 => m,
+            _ => return 0.0,
+        };
+        const ALIGN_TOL: f64 = 0.15;
+        const FUNNEL_MAX: f64 = 1.25;
+        const INV_SPAN: f64 = 1.0 / (FUNNEL_MAX - ALIGN_TOL);
+        const RAD2: f64 = 64.0; // ALIGN_RADIUS_MM = 8.0
+        let mut pen = 0.0;
+        for &a in members {
+            let ax = self.parts[a].x;
+            let ay = self.parts[a].y;
+            let mut best = 1.0_f64;
+            for &b in members {
+                if a == b {
+                    continue;
+                }
+                let dx = (self.parts[b].x - ax).abs();
+                let dy = (self.parts[b].y - ay).abs();
+                if dx * dx + dy * dy <= RAD2 {
+                    let da = dx.min(dy);
+                    if da <= ALIGN_TOL {
+                        best = 0.0;
+                        break;
+                    }
+                    if da < FUNNEL_MAX {
+                        let s = (da - ALIGN_TOL) * INV_SPAN;
+                        if s < best {
+                            best = s;
+                        }
+                    }
+                }
+            }
+            pen += best;
+        }
+        pen
+    }
+
+    #[inline]
+    fn axis_penalty(&self) -> f64 {
+        0.45 * self.reg_axis_counts[0].min(self.reg_axis_counts[1]) as f64
+    }
+
+    fn recompute_regularity(&mut self) {
+        self.reg_axis_counts = [0, 0];
+        if self.w_reg <= 0.0 {
+            self.reg_cost = 0.0;
+            return;
+        }
+        for (i, &g) in self.reg_groups.iter().enumerate() {
+            if g > 0 {
+                self.reg_axis_counts[(self.parts[i].r & 1) as usize] += 1;
+            }
+        }
+        let mut total_align = 0.0;
+        for g in 1..self.reg_members.len() {
+            total_align += self.group_align_penalty(g);
+        }
+        self.reg_cost = self.w_reg * (total_align + self.axis_penalty());
+    }
+
+    pub fn regularity_cost(&self) -> f64 {
+        self.reg_cost
     }
 
     pub fn set_repulsions(&mut self, repulsions: Vec<(usize, usize, f64, f64)>) {
@@ -731,7 +827,10 @@ impl Problem {
     }
 
     pub fn cost(&self) -> f64 {
-        self.w_hpwl * self.hpwl_total + self.w_cross * self.crossings as f64 + self.repulsion_cost
+        self.w_hpwl * self.hpwl_total
+            + self.w_cross * self.crossings as f64
+            + self.repulsion_cost
+            + self.reg_cost
     }
 
     // ------------------------------------------------------------- legality
@@ -953,6 +1052,12 @@ impl Problem {
         } else {
             self.part_repulsions[i].iter().map(|&ri| self.repulsion_term(ri)).sum()
         };
+        let reg_g = if self.w_reg > 0.0 { self.reg_groups[i] as usize } else { 0 };
+        let reg_before = if reg_g > 0 {
+            self.group_align_penalty(reg_g) + self.axis_penalty()
+        } else {
+            0.0
+        };
         let old_rect = self.rect(i);
         if self.placed[i] {
             self.index_remove_part(i, &old_rect);
@@ -964,6 +1069,20 @@ impl Problem {
             let new_rect = self.rect(i);
             self.index_insert_part(i, &new_rect);
         }
+        let reg_delta = if reg_g > 0 {
+            let old_ax = (old.2 & 1) as usize;
+            let new_ax = (r & 1) as usize;
+            if old_ax != new_ax {
+                self.reg_axis_counts[old_ax] = self.reg_axis_counts[old_ax].saturating_sub(1);
+                self.reg_axis_counts[new_ax] += 1;
+            }
+            let reg_after = self.group_align_penalty(reg_g) + self.axis_penalty();
+            let d = self.w_reg * (reg_after - reg_before);
+            self.reg_cost += d;
+            d
+        } else {
+            0.0
+        };
         let rep_delta = if self.part_repulsions[i].is_empty() {
             0.0
         } else {
@@ -1017,11 +1136,13 @@ impl Problem {
             old_edges,
             cross_delta,
             rep_delta,
+            reg_delta,
         }
     }
 
     pub fn undo(&mut self, u: Undo) {
         let i = u.part;
+        let cur_r = self.parts[i].r;
         let cur_rect = self.rect(i);
         if self.placed[i] {
             self.index_remove_part(i, &cur_rect);
@@ -1034,6 +1155,15 @@ impl Problem {
             self.index_insert_part(i, &r);
         }
         self.repulsion_cost -= u.rep_delta;
+        if self.w_reg > 0.0 && self.reg_groups[i] > 0 {
+            let cur_ax = (cur_r & 1) as usize;
+            let old_ax = (u.old.2 & 1) as usize;
+            if cur_ax != old_ax {
+                self.reg_axis_counts[cur_ax] = self.reg_axis_counts[cur_ax].saturating_sub(1);
+                self.reg_axis_counts[old_ax] += 1;
+            }
+            self.reg_cost -= u.reg_delta;
+        }
         for (n, h) in u.net_old {
             self.hpwl_total += self.nets[n].weight * (h - self.net_hpwl[n]);
             self.net_hpwl[n] = h;
@@ -1076,6 +1206,7 @@ pub struct Undo {
     old_edges: Vec<(Seg, u32)>,
     cross_delta: isize,
     rep_delta: f64,
+    reg_delta: f64,
 }
 
 #[inline]

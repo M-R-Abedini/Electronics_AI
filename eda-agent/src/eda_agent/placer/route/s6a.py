@@ -33,7 +33,7 @@ from .. import report as run_report
 from ..intent import model
 from ..intent.resolve import resolve
 from ..io.kicad import read_board, run_helper
-from ..ir import Board, plane_zone_layers
+from ..ir import Board, is_ground_net, plane_zone_layers
 from ..macro import Instance, MTrack, MVia
 from ..macro_proof import apply_instance
 from ..toolchain import RUNTIME_DIR, sha256_file
@@ -376,6 +376,30 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                                    via_type=target_via.get("via_type", "through"),
                                    length_mm=round(sum(math.dist(p, q) for p, q in
                                                        itertools.pairwise(track["points"])), 3) if track is not None else 0.0)
+                        # IEC 61000-4-2/4-5: surge TVS ground pads (>= 2.0 mm^2) get a second parallel ground via.
+                        is_surge_tvs = (
+                            is_ground_net(pad.net)
+                            and (pad.size[0] * pad.size[1]) >= 2.0
+                            and (
+                                ((intent.get("parts", {}).get(ref, {}).get("role") or {}).get("value")) == "esd"
+                                or any(tok in f"{fp.value} {fp.lib_id}".upper() for tok in ("SMBJ", "SMAJ", "SMCJ", "TVS"))
+                            )
+                        )
+                        if is_surge_tvs:
+                            got2 = plan_power_tap(
+                                board, fp, pad, layer, fixed=fixed, max_length_mm=max(TAP_MAX_MM, 2.5),
+                                share=[], share_max_mm=0.0, site_cache=tap_site_cache,
+                                allow_microvia=(microvia != "off"), dru_eff=dru_eff,
+                            )
+                            if got2:
+                                t2, v2_obj = got2
+                                v2_list = v2_obj if isinstance(v2_obj, list) else [v2_obj]
+                                new_t2 = [t2] if t2 is not None else []
+                                if not traps_pads(board, fixed, new_t2, v2_list, {pad.net}):
+                                    fixed += new_t2 + v2_list
+                                    tap_vias.append(v2_list[0])
+                                    users[id(v2_list[0])] = 1
+                                    row["parallel_surge_vias"] = 2
                         break
                 if not row["routed"]:
                     row["failed"] = trapped_reason or (
