@@ -31,7 +31,17 @@ from ..io.kicad import read_board, write_board
 from ..render import Panel, gallery
 from ..route.check import RouteCheckError, route_check
 from ..toolchain import RUNTIME_DIR
-from . import analytical, blocks, decap, escape, mechanical, problem, review, rigid
+from . import (
+    analytical,
+    blocks,
+    decap,
+    domains,
+    escape,
+    mechanical,
+    problem,
+    review,
+    rigid,
+)
 
 SA_MOVES_PER_PART = 4000  # declared: annealing budget scales with movable parts ...
 SA_MIN_MOVES = 200_000
@@ -52,11 +62,63 @@ PARALLEL_MAX_WORKERS = 5  # run up to 5 floorplan variants in 1 parallel wave on
 
 def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | None = None,
                floorplan: bool = False, reserve: bool = False, rigid_blocks: bool = False,
-               budget_divisor: int = 1) -> tuple:
+               budget_divisor: int = 1, _allow_domain_split: bool = True) -> tuple:
     """S1 to S5 on the IR with one global stage; returns (placed board, stage report)."""
     t0 = time.monotonic()
     timings: dict[str, float] = {}
     pb = problem.build(board, side_policy=side_policy, intent=intent, floorplan=floorplan, reserve=reserve)
+    if _allow_domain_split:
+        doms = domains.decompose_isolated_domains(board, set(pb.fixed))
+        if doms:
+            merged = board.copy()
+            dom_reports = []
+            sum_total = 0.0
+            sum_hpwl = 0.0
+            sum_cross = 0.0
+            for dom_idx, (reg_poly, dom_movable) in enumerate(doms):
+                sub_board, sub_intent = domains.make_domain_subboard(
+                    board, reg_poly, set(pb.fixed), dom_movable, intent=intent,
+                )
+                sub_placed, sub_info = _solve_one(
+                    sub_board, side_policy=side_policy, mode=mode, seed=seed + dom_idx,
+                    intent=sub_intent, floorplan=floorplan, reserve=reserve,
+                    rigid_blocks=rigid_blocks, budget_divisor=max(1, budget_divisor),
+                    _allow_domain_split=False,
+                )
+                for ref in dom_movable:
+                    sp = sub_placed.fp(ref)
+                    mp = merged.fp(ref)
+                    mp.x, mp.y, mp.rotation, mp.side = sp.x, sp.y, sp.rotation, sp.side
+                cf = sub_info.get("cost_final") or {}
+                sum_total += float(cf.get("total", 0.0))
+                sum_hpwl += float(cf.get("hpwl", 0.0))
+                sum_cross += float(cf.get("crossings", 0.0))
+                dom_reports.append({
+                    "domain": dom_idx,
+                    "area_mm2": round(float(reg_poly.area), 1),
+                    "movable": len(dom_movable),
+                    "s4_failed": sub_info.get("s4_failed", []),
+                    "illegal_after_s5": sub_info.get("illegal_after_s5", []),
+                    "strict_violations": sub_info.get("strict_violations", 0),
+                    "cost_total": round(float(cf.get("total", 0.0)), 2),
+                })
+            findings = legality.check(merged, fixed=set(pb.fixed))
+            violations = sum(not f.fixed for f in findings)
+            cost_summary = {"total": round(sum_total, 4), "hpwl": round(sum_hpwl, 4), "crossings": round(sum_cross, 4)}
+            info = {
+                "mode": mode, "side_policy": side_policy, "seed": seed,
+                "movable": sum(1 for p in pb.parts if not p[5]),
+                "fixed": pb.fixed,
+                "isolated_domains": dom_reports,
+                "s4_failed": [r for dr in dom_reports for r in dr["s4_failed"]],
+                "illegal_after_s5": [r for dr in dom_reports for r in dr["illegal_after_s5"]],
+                "strict_violations": violations,
+                "cost_after_s4": cost_summary,
+                "cost_final": cost_summary,
+                "timings": {"total_domains": round(time.monotonic() - t0, 2)},
+                "seconds_s0_s5": round(time.monotonic() - t0, 2),
+            }
+            return merged, info
     timings["s0_s2b"] = round(time.monotonic() - t0, 2)
     movable = sum(1 for p in pb.parts if not p[5])
     t = time.monotonic()
@@ -658,6 +720,7 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
     rigid_members = {r for group in (info.get("rigid_macros") or {}).get("members", []) for r in group}
     fixed_map = {**info["fixed"], **{r: "rigid macro member" for r in rigid_members}}
     fixed_set = set(fixed_map)
+    dom_regions = domains.ref_regions(placed, set(info["fixed"]))
     cur_placed, cur_audit = placed, audit
     cur_metrics = _floorplan_metrics(cur_placed, intent) if intent else {"crossings": crossings(cur_placed)["count"]}
 
@@ -715,7 +778,7 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
         cand, inf_core, findings = _resolve_mask_aperture_collisions(
             cand, inf_pb, inf_pb, inf_core, list(range(len(inf_pb.parts))), {}, diag, findings
         )
-        if any(not f.fixed for f in findings):
+        if any(not f.fixed for f in findings) or not domains.footprints_in_domains(cand.footprints, dom_regions):
             report["rounds"].append({"round": round_idx + 1, "inflated_parts": len(infl),
                                      "accepted": False, "reason": "legality"})
             continue

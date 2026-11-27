@@ -323,6 +323,34 @@ def side_obstacle_rects(board: Board, fixed: set[str]) -> list[tuple[float, floa
     # Fixed fiducials require a >= 1.016 mm copper/mask optical keepout on their own side only
     # (blocks same-side parts and opposite-side TH pads without blocking opposite-side SMD parts).
     existing = {fp.ref for fp in board.footprints}
+    lmap = copper_layer_map(board)
+    for ra in board.rule_areas:
+        ko = ra.get("keepout") or {}
+        blocks_parts = bool(
+            ko.get("footprints")
+            or ko.get("pads")
+            or (ko.get("tracks") and ko.get("vias") and ko.get("zones"))
+        )
+        if not blocks_parts:
+            continue
+        ra_layers = {lmap.get(lname, lname) for lname in (ra.get("layers") or ())}
+        side_codes = []
+        if "F.Cu" in ra_layers:
+            side_codes.append(2)
+        if "B.Cu" in ra_layers:
+            side_codes.append(3)
+        if not side_codes:
+            continue
+        for ring in ra.get("polygons") or ():
+            if len(ring) < 3:
+                continue
+            xs = [float(p[0]) for p in ring]
+            ys = [float(p[1]) for p in ring]
+            bx0, by0, bx1, by1 = min(xs), min(ys), max(xs), max(ys)
+            if bx1 <= bx0 or by1 <= by0:
+                continue
+            for sc in side_codes:
+                out.append((bx0 - 0.05, by0 - 0.05, bx1 + 0.05, by1 + 0.05, sc))
     for ref in sorted(fixed):
         if ref not in existing:
             continue
@@ -374,6 +402,30 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
     pb = PlaceProblem(board=board, refs=[fp.ref for fp in board.footprints], fixed=fixed, sides=sides)
     pin_of: dict[str, list[int]] = {}
     part_pins: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    # Compute per-part HV courtyard inflation so movable HV components maintain >= netclass/DRU pad clearance.
+    from pathlib import Path
+
+    from ..route import dru as dru_mod
+
+    src_path = (board.source or {}).get("path")
+    dru_path = Path(src_path).with_suffix(".kicad_dru") if src_path else None
+    nc_clearances = dru_mod.extract_netclass_clearances(dru_path, board)
+    net_to_nc = {n.name: n.netclass for n in board.nets}
+    hv_inflations: dict[str, float] = {}
+    if nc_clearances:
+        for fp in board.footprints:
+            if fp.ref in fixed:
+                continue
+            fp_ncs = {net_to_nc[p.net] for p in fp.pads if p.net and p.net in net_to_nc}
+            hv_clr = max((nc_clearances.get((nc, nc), 0.0) for nc in fp_ncs), default=0.0)
+            if hv_clr >= 1.2:
+                hv_inflations[fp.ref] = min(0.85, 0.5 * max(0.0, hv_clr - 0.15))
+    if hv_inflations:
+        merged_inf = dict(inflations or {})
+        for r, v in hv_inflations.items():
+            merged_inf[r] = max(merged_inf.get(r, 0.0), v)
+        inflations = merged_inf
+
     boxes = {fp.ref: local_box(fp) for fp in board.footprints}
     mechanics = (intent or {}).get("mechanical", {})
     edge_clear = float(board.rules.get("copper_edge_clearance") or 0.0)
@@ -514,6 +566,49 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
                     ]
                     if ic_pins:
                         pb.affinities.append(([source[0][1], *ic_pins], 0.6 * LOCAL_BLOCK_WEIGHT))
+    # First-principles galvanic isolation & HV clearance repulsions from .kicad_dru + netclasses.
+    part_ncs: list[set[str]] = [
+        {net_to_nc[p.net] for p in fp.pads if p.net and p.net in net_to_nc}
+        for fp in board.footprints
+    ]
+
+    def _pair_iso_mm(ncs_a: set[str], ncs_b: set[str]) -> float:
+        best = 0.0
+        for a in ncs_a:
+            for b in ncs_b:
+                if a == b:
+                    continue
+                k = (a, b) if a <= b else (b, a)
+                v = nc_clearances.get(k, 0.0)
+                best = max(best, v)
+        return best
+
+    # Parts spanning mutually isolated netclasses (e.g. flyback transformer, optocoupler, digital isolator)
+    # are galvanic bridges and must not act as single-domain sheet anchors or self-repel.
+    bridge_idxs: set[int] = {
+        idx for idx, ncs in enumerate(part_ncs) if _pair_iso_mm(ncs, ncs) >= 2.0
+    }
+    if nc_clearances:
+        n_fp = len(board.footprints)
+        for i in range(n_fp):
+            if i in bridge_idxs or not part_ncs[i]:
+                continue
+            for j in range(i + 1, n_fp):
+                if j in bridge_idxs or not part_ncs[j]:
+                    continue
+                if pb.parts[i][5] and pb.parts[j][5]:
+                    continue
+                iso_mm = _pair_iso_mm(part_ncs[i], part_ncs[j])
+                if iso_mm >= 2.0:
+                    pb.repulsions.append((i, j, iso_mm + 0.4, 35.0))
+                else:
+                    shared_hv = max(
+                        (nc_clearances.get((a, a), 0.0) for a in (part_ncs[i] & part_ncs[j])),
+                        default=0.0,
+                    )
+                    if shared_hv >= 1.2 and board.footprints[i].nets != board.footprints[j].nets:
+                        pb.repulsions.append((i, j, shared_hv + 0.25, 10.0))
+
     if floorplan:
         # FB/COMP vs SW inductor repulsion (matches Hartley lint fb_near_sw / fb_under_inductor).
         conv_inductors: dict[str, list[int]] = {}
@@ -572,15 +667,24 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
                     center_pin[ref_i] = pin_idx
             for _sheet_name, members in sorted(sheets_map.items()):
                 anchors = sorted(
-                    (fp for fp in members if fp.ref in center_pin and len(fp.pads) >= 4),
+                    (
+                        fp for fp in members
+                        if fp.ref in center_pin
+                        and len(fp.pads) >= 4
+                        and ref_to_idx[fp.ref] not in bridge_idxs
+                    ),
                     key=lambda f: (-len(f.pads), f.ref),
                 )
                 if not anchors:
                     continue
                 anchor = anchors[0]
+                anchor_idx = ref_to_idx[anchor.ref]
                 anchor_pin = center_pin[anchor.ref]
                 for fp in members:
                     if fp.ref == anchor.ref or fp.ref in fixed or fp.ref not in center_pin:
+                        continue
+                    fp_idx = ref_to_idx[fp.ref]
+                    if fp_idx in bridge_idxs or _pair_iso_mm(part_ncs[fp_idx], part_ncs[anchor_idx]) >= 2.0:
                         continue
                     role_v = ((parts.get(fp.ref, {}).get("role") or {}).get("value")) or ""
                     if role_v in ("decap", "test_point", "mechanical"):
