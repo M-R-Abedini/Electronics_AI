@@ -229,7 +229,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                     f"{ref} ({part.value or part.lib_ref}) ties EN pin {en_p.pin} directly to "
                     f"VIN pin {vin_p.pin} on net '{vin_p.net}'"
                     f"{f' (~{volts:g} V)' if volts else ''}; this regulator family has a low-voltage "
-                    f"clamped EN pin (Abs Max ~7 V / internal Zener) and will fail on power-up — "
+                    f"clamped EN pin (Abs Max ~7 V / internal Zener) and will fail on power-up ; "
                     f"leave EN floating if internally pulled up or add a clamped divider",
                     refs=[ref],
                     net=vin_p.net,
@@ -267,7 +267,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                 "error",
                 f"{ref} ({part.value or part.kind}, footprint '{fp}') touches high-voltage/mains "
                 f"net '{hv_net}'; 0201/0402/0603 packages are rated <=50-75 V with <0.8 mm pad "
-                f"creepage — use series >=1206 HV-rated parts or HV axial/disc THT packages",
+                f"creepage ; use series >=1206 HV-rated parts or HV axial/disc THT packages",
                 refs=[ref],
                 net=hv_net,
             ))
@@ -279,7 +279,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                 "warning",
                 f"{ref} ({part.value or 'R'}, footprint '{fp}') sits on high-voltage surge/snubber "
                 f"net '{min(snub_nets)}'; <=1206 SMD resistors have limited pulse power and "
-                f"creepage — verify steady/overload wattage and consider >=2010 surge-rated SMD "
+                f"creepage ; verify steady/overload wattage and consider >=2010 surge-rated SMD "
                 f"or 1W-2W flameproof axial THT",
                 refs=[ref],
                 net=min(snub_nets),
@@ -289,7 +289,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                 "hv_undersized_passive",
                 "warning",
                 f"{ref} ({part.value or part.kind}, footprint '{fp}') touches mains/HV net "
-                f"'{hv_net}'; standard 0805 parts are rated <=150 V working voltage — verify "
+                f"'{hv_net}'; standard 0805 parts are rated <=150 V working voltage ; verify "
                 f"voltage/creepage derating or upgrade to >=1206 HV / THT",
                 refs=[ref],
                 net=hv_net,
@@ -312,7 +312,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                 "warning",
                 f"Mains fuse {ref} ({part.value or part.lib_ref}) on '{min(mains_nets)}' "
                 f"appears rated <=250 VAC; industrial 230 VAC (+15-20%) or 277 VAC lines reach "
-                f"265-277 VAC continuous — upgrade to a >=300 VAC HBC time-lag fuse",
+                f"265-277 VAC continuous ; upgrade to a >=300 VAC HBC time-lag fuse",
                 refs=[ref],
                 net=min(mains_nets),
             ))
@@ -366,7 +366,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                 "warning",
                 f"Bidirectional TVS {ref} ({part.value}) on net '{net_ref}' protects unipolar "
                 f"IC(s) {', '.join(ic_refs)} (no negative supply rail); negative surges will "
-                f"clamp below 0 V (-V_C) and exceed IC negative Abs Max — use a unidirectional "
+                f"clamp below 0 V (-V_C) and exceed IC negative Abs Max ; use a unidirectional "
                 f"TVS ('...A' suffix) or rail-steering clamp diodes",
                 refs=[ref, *ic_refs],
                 net=net_ref,
@@ -388,7 +388,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                 "hv_rectifier_bridge_voltage_margin",
                 "warning",
                 f"Bridge rectifier {ref} ({part.value or part.lib_ref}) on '{min(mains_nets)}' "
-                f"is rated <=600 V V_RRM; a 275-300 VAC mains MOV clamps surges at 710-840 Vpk — "
+                f"is rated <=600 V V_RRM; a 275-300 VAC mains MOV clamps surges at 710-840 Vpk ; "
                 f"upgrade to a >=1000 V bridge (e.g. MB10S / DF10S / DB107)",
                 refs=[ref],
                 net=min(mains_nets),
@@ -442,7 +442,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                                 f"{ref} ({part.value or part.lib_ref}) FWD pin {fp.pin} senses "
                                 f"secondary winding net '{wnet}' on the Anode of high-side rectifier "
                                 f"{p.refdes}; during primary ON-time this node swings deeply negative "
-                                f"(-V_IN/N), violating FWD negative Abs Max — rewire secondary to "
+                                f"(-V_IN/N), violating FWD negative Abs Max ; rewire secondary to "
                                 f"low-side rectification (diode Anode on GND, Cathode on winding/FWD)",
                                 refs=[ref, p.refdes],
                                 net=wnet,
@@ -485,7 +485,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                             f"{ref} ({part.value}) ties +VSENSE directly to VOUT on '{vp.net}' "
                             f"BEFORE series resistor {rp.refdes} ({rp.value}) feeding connector "
                             f"{', '.join(sorted(set(conns)))}; {rp.refdes} sits outside the Kelvin "
-                            f"sense loop and adds R_series/R_load output error — tap +VSENSE after "
+                            f"sense loop and adds R_series/R_load output error ; tap +VSENSE after "
                             f"{rp.refdes} (with a small stability cap/resistor per datasheet)",
                             refs=[ref, rp.refdes, *sorted(set(conns))],
                             net=vp.net,
@@ -513,7 +513,7 @@ def electrical_safety_findings(snap: DesignSnapshot) -> list[dict[str, Any]]:
                         "warning",
                         f"Switcher controller {ref} ({part.value or part.lib_ref}) connects VOUT "
                         f"pin {vp.pin} directly to '{vp.net}' (~{volts:g} V); verify VOUT Abs Max "
-                        f"(typically 27 V, below +20% OVP at {volts * 1.2:.1f} V) — add an external "
+                        f"(typically 27 V, below +20% OVP at {volts * 1.2:.1f} V) ; add an external "
                         f"Zener OVP clamp or lower the regulated rail for headroom",
                         refs=[ref],
                         net=vp.net,
