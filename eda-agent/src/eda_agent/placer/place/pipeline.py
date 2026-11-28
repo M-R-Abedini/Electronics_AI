@@ -481,24 +481,25 @@ def _resolve_hv_clearances(placed, pb, solver_pb, core, retained, macros, findin
 
 
 def _resolve_silk_graphic_overlaps(placed, pb, solver_pb, core, retained, macros, findings):
-    """Nudge any movable part whose own-side F.SilkS/B.SilkS graphics violate board silk_clearance."""
+    """Nudge any movable part whose own-side F.SilkS/B.SilkS graphics or pads clip neighbor silk outlines."""
     silk_clr = float(placed.rules.get("silk_clearance") or 0.0)
-    if silk_clr <= 0.0 or macros:
+    if macros:
         return placed, core, findings
     idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
     dom_regions = domains.ref_regions(placed, set(pb.fixed))
     clr_guard = domains.make_clearance_guard(placed)
+    fixed_set = set(pb.fixed)
     offenders = [
         fp for fp in placed.footprints
         if fp.ref not in pb.fixed and not fp.locked and fp.ref in idx_by_ref
-        and decap.silk_graphic_overlap(placed, fp, silk_clr)
+        and decap.silk_graphic_overlap(placed, fp, silk_clr, fixed=fixed_set)
     ]
     if not offenders:
         return placed, core, findings
     poses_now = list(core.positions())
     moved_any = False
     for fp in offenders:
-        if not decap.silk_graphic_overlap(placed, fp, silk_clr):
+        if not decap.silk_graphic_overlap(placed, fp, silk_clr, fixed=fixed_set):
             continue
         ox, oy, orot = fp.x, fp.y, fp.rotation
         idx = idx_by_ref[fp.ref]
@@ -510,7 +511,7 @@ def _resolve_silk_graphic_overlaps(placed, pb, solver_pb, core, retained, macros
                 ny = round(oy + radius * math.sin(ang), 4)
                 fp.x, fp.y = nx, ny
                 if (
-                    not decap.silk_graphic_overlap(placed, fp, silk_clr)
+                    not decap.silk_graphic_overlap(placed, fp, silk_clr, fixed=fixed_set)
                     and domains.footprints_in_domains((fp,), dom_regions)
                     and (clr_guard is None or clr_guard(placed, (fp,)))
                     and not any(not f.fixed for f in legality.check(placed, fixed=set(pb.fixed)))
@@ -636,7 +637,10 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
             return blocked_exits(measure(board_state)) <= blocked
 
         cand, ref_report = decap.refine(cand, intent, refine_fixed, max_trials=480, preserve_escapes=preserve)
-        if ref_report["moved"]:
+        cand, esd_report = decap.refine_esd(cand, intent, refine_fixed, max_trials=160, preserve_escapes=preserve)
+        if esd_report["moved"]:
+            ref_report = {**ref_report, "esd_refinement": esd_report}
+        if ref_report["moved"] or esd_report["moved"]:
             cand_audit = measure(cand)
             cand_info["cost_final_stage"] = "before_decap_refinement"
             ref_report["output_metrics"] = _floorplan_metrics(cand, intent)
@@ -772,7 +776,7 @@ def solve(board, *, side_policy: str = "expert", mode: str = "best", seed: int =
 
         placed, passive_alignment = decap.align_passives(
             placed, intent, refine_fixed, preserve_escapes=preserve_align,
-            max_trials=max(400, 3 * movable_est), extend=True,
+            max_trials=max(700, 5 * movable_est), extend=True,
         )
         if passive_alignment["moved"]:
             audit = measure(placed)
@@ -971,6 +975,8 @@ def _refine_congestion(placed, info: dict, audit: dict, *, intent: dict | None, 
 
 
 def _esd_max_connector_mm(board, intent: dict | None) -> float | None:
+    from ..ir import is_ground_net, is_power_net
+
     parts = (intent or {}).get("parts") or {}
     by_ref = {fp.ref: fp for fp in board.footprints}
     worst: float | None = None
@@ -983,8 +989,10 @@ def _esd_max_connector_mm(board, intent: dict | None) -> float | None:
         if ref not in by_ref or not conn_ref or conn_ref not in by_ref:
             continue
         esd_fp, conn_fp = by_ref[ref], by_ref[conn_ref]
-        shared = (esd_fp.nets & conn_fp.nets)
-        for net in shared:
+        shared = sorted(esd_fp.nets & conn_fp.nets)
+        sig_nets = [n for n in shared if not is_ground_net(n) and not is_power_net(n)]
+        check_nets = sig_nets or [n for n in shared if not is_ground_net(n)] or shared
+        for net in check_nets:
             sp = [pt for p, pt in esd_fp.pads_world() if p.net == net]
             cp = [pt for p, pt in conn_fp.pads_world() if p.net == net]
             if sp and cp:
@@ -1107,7 +1115,7 @@ def place_board(board_path: str | Path, *, out_dir: str | Path | None = None, si
                 router_timeout_s: int | None = None, intent_path: str | Path | None = None,
                 floorplan: bool = False, schematic_path: str | Path | None = None,
                 cluster_refs: list[str] | None = None, s6a: bool = True,
-                preserve_routing: str = "none", silkscreen_policy: str = "auto",
+                preserve_routing: str = "none", silkscreen_policy: str = "assembly_only",
                 fab_profile: str = "ipc_standard", keep_placement: bool = False,
                 restarts: int | None = None, monotonic: bool = False) -> dict:
     """Inputs that decide the output (P7): the board, the intent (file or netlist draft), the seed, the config."""

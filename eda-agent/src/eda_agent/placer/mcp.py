@@ -292,7 +292,7 @@ class PlacerService:
               "s6a": {"type": "boolean", "default": True},
               "silkscreen_policy": {"type": "string",
                                     "enum": ["auto", "ipc_standard", "dense", "assembly_only", "off"],
-                                    "default": "auto"},
+                                    "default": "assembly_only"},
               "fab_profile": {"type": "string",
                               "enum": ["ipc_standard", "jlcpcb", "pcbway", "high_precision_lpi"],
                               "default": "ipc_standard"},
@@ -311,7 +311,7 @@ class PlacerService:
               "preserve_routing": {"type": "string", "enum": ["none", "outside_cluster"], "default": "none"},
               "silkscreen_policy": {"type": "string",
                                     "enum": ["auto", "ipc_standard", "dense", "assembly_only", "off"],
-                                    "default": "auto"},
+                                    "default": "assembly_only"},
               "fab_profile": {"type": "string",
                               "enum": ["ipc_standard", "jlcpcb", "pcbway", "high_precision_lpi"],
                               "default": "ipc_standard"}},
@@ -462,7 +462,7 @@ class PlacerService:
 
     def place_board(self, board_path: str, side_policy: str | None = None, seed: int = 0, route: bool = True,
                     intent_path: str | None = None, floorplan: bool = False, schematic_path: str | None = None,
-                    s6a: bool = True, silkscreen_policy: str = "auto",
+                    s6a: bool = True, silkscreen_policy: str = "assembly_only",
                     fab_profile: str = "ipc_standard", keep_placement: bool = False,
                     router_timeout_s: int | None = None) -> dict:
         from .place.pipeline import place_board
@@ -514,7 +514,7 @@ class PlacerService:
         }
 
     def place_cluster(self, board_path: str, refs: list[str], intent_path: str | None = None, seed: int = 0,
-                      preserve_routing: str = "none", silkscreen_policy: str = "auto",
+                      preserve_routing: str = "none", silkscreen_policy: str = "assembly_only",
                       fab_profile: str = "ipc_standard") -> dict:
         from .place.pipeline import place_board
 

@@ -25,13 +25,27 @@ _PHYSICAL_DRC = {
 }
 
 
+_SILK_TEXT_TOKENS = ("reference", "value", "field", "text", "pcb_text")
+
+
+def _is_silkscreen_text_drc(row: dict) -> bool:
+    """Assembly-guide silkscreen texts must never block placement or trigger component moves."""
+    if row.get("type") not in ("silk_over_copper", "silk_overlap"):
+        return False
+    for item in row.get("items", ()):
+        desc = str(item.get("description") or "").lower()
+        if any(tok in desc for tok in _SILK_TEXT_TOKENS):
+            return True
+    return False
+
+
 def _drc_findings(candidate, reference, *, exclusions=None):
     from ..diagnose import _points
 
     attribution = drc.attribute(candidate, reference, exclusions=exclusions)
     findings = []
     for row in attribution.router + attribution.new_other:
-        if row["type"] not in _PHYSICAL_DRC:
+        if row["type"] not in _PHYSICAL_DRC or _is_silkscreen_text_drc(row):
             continue
         points = _points(row.get("items", []))
         refs = sorted({p["ref"] or match[1] for p in points

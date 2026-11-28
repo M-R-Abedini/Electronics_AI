@@ -23,9 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-s6a", action="store_true", help="skip deterministic S6a critical copper before Freerouting")
     ap.add_argument("--floorplan", action="store_true", help="compare baseline, local blocks, and applicable fanout reservations")
     ap.add_argument("--route-timeout", type=int)
-    ap.add_argument("--silkscreen-policy", default="auto",
+    ap.add_argument("--silkscreen-policy", default="assembly_only",
                     choices=["auto", "ipc_standard", "dense", "assembly_only", "off"],
-                    help="IPC-7351 silkscreen legend sizing/placement policy (default: auto)")
+                    help="silkscreen/assembly legend policy (default: assembly_only - offload component refs to F.Fab/B.Fab)")
     ap.add_argument("--fab-profile", default="ipc_standard",
                     choices=["ipc_standard", "jlcpcb", "pcbway", "high_precision_lpi"],
                     help="target PCB fab silkscreen capability profile (default: ipc_standard)")
