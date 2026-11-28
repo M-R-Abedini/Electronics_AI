@@ -493,7 +493,33 @@ def _poses_for_targets(result: Board, fp, target_refs: list[str], req_net: str |
     return poses[:24] if len(target_refs) > 1 else poses[:20]
 
 
+def silk_graphic_overlap(board: Board, fp: Footprint, silk_clr: float | None = None) -> bool:
+    """Return True if ``fp``'s own-side silkscreen graphics violate ``silk_clr`` against any same-side neighbor."""
+    sbox = fp.silk_box()
+    if sbox is None:
+        return False
+    clr = float(board.rules.get("silk_clearance") or 0.0) if silk_clr is None else float(silk_clr)
+    if clr <= 0.0:
+        return False
+    req = clr + 0.02
+    ax0, ay0, ax1, ay1 = sbox
+    for other in board.footprints:
+        if other is fp or other.side != fp.side:
+            continue
+        obox = other.silk_box()
+        if obox is None:
+            continue
+        ox0, oy0, ox1, oy1 = obox
+        dx = max(0.0, max(ax0 - ox1, ox0 - ax1))
+        dy = max(0.0, max(ay0 - oy1, oy0 - ay1))
+        if math.hypot(dx, dy) < req - 1e-9:
+            return True
+    return False
+
+
 def _touches_same_side_neighbor(board: Board, fp) -> bool:
+    if silk_graphic_overlap(board, fp):
+        return True
     shape = legality.courtyard_polygon(fp)
     if shape is None:
         return False

@@ -17,7 +17,7 @@ import copy
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 
-from .geometry import Box, Point, box_of, polygon_area, transform
+from .geometry import Box, Point, box_of, polygon_area, rotated_box, transform
 
 _BOX_CACHE: dict[tuple, Box] = {}
 _CY_WORLD_CACHE: dict[tuple, list[list[Point]]] = {}
@@ -80,6 +80,7 @@ class Footprint:
     sheet_path: str | None = None  # Full hierarchical sheet path (e.g. /TARGET Port/TARGET PHY/).
     unit_sheets: dict[str, Point] = field(default_factory=dict)  # Multi-unit IC sheets -> average position.
     body_bounds_mm: Box | None = None  # Native world-space Fab bounds, valid on file readback.
+    silk_local_mm: Box | None = None  # Footprint-local own-side silkscreen graphic bounds (incl. stroke width).
 
     @property
     def position(self) -> Point:
@@ -121,6 +122,16 @@ class Footprint:
             _BOX_CACHE.clear()
         _BOX_CACHE[key] = res
         return res
+
+    def silk_box(self, x: float | None = None, y: float | None = None,
+                 rotation: float | None = None) -> Box | None:
+        """World-space bounding box of this footprint's own-side silkscreen graphics."""
+        if self.silk_local_mm is None:
+            return None
+        ox = self.x if x is None else x
+        oy = self.y if y is None else y
+        rot = self.rotation if rotation is None else rotation
+        return rotated_box(self.silk_local_mm, (ox, oy), rot)
 
     @property
     def courtyard_area(self) -> float:

@@ -1327,6 +1327,38 @@ def _courtyard(fp, ox, oy, rot, max_error):
     return {"source": "derived", "margin_mm": m, "polygons": [rect]}
 
 
+def _footprint_silk_local_box(fp, ox, oy, rot, max_error):
+    """Exact footprint-local bounding box of own-side F.SilkS/B.SilkS graphics (including stroke width)."""
+    silk_layer = pcbnew.B_SilkS if fp.IsFlipped() else pcbnew.F_SilkS
+    pts = []
+    for gi in fp.GraphicalItems():
+        if gi.GetLayer() != silk_layer:
+            continue
+        cls = gi.GetClass() if hasattr(gi, "GetClass") else ""
+        if "TEXT" in cls.upper():
+            continue
+        poly = _item_poly(gi, silk_layer, max_error)
+        outlines = _world_outlines(poly) if poly is not None and poly.OutlineCount() > 0 else []
+        if outlines:
+            for ring in outlines:
+                for wx, wy in ring:
+                    pts.append(_to_local(wx, wy, ox, oy, rot))
+        else:
+            bb = gi.GetBoundingBox()
+            for wx, wy in (
+                (pcbnew.ToMM(bb.GetLeft()), pcbnew.ToMM(bb.GetTop())),
+                (pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetTop())),
+                (pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom())),
+                (pcbnew.ToMM(bb.GetLeft()), pcbnew.ToMM(bb.GetBottom())),
+            ):
+                pts.append(_to_local(wx, wy, ox, oy, rot))
+    if not pts:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return [round(min(xs), 4), round(min(ys), 4), round(max(xs), 4), round(max(ys), 4)]
+
+
 def _footprint_dict(board, fp, max_error):
     pos = fp.GetPosition()
     ox, oy, rot = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y), _norm(fp.GetOrientationDegrees())
@@ -1345,6 +1377,7 @@ def _footprint_dict(board, fp, max_error):
         "sheet_path": fp.GetPath().AsString() if hasattr(fp, "GetPath") else None,
         "description": fp.GetLibDescription() if hasattr(fp, "GetLibDescription") else "",
         "body_bounds_mm": [_mm(coordinate) for coordinate in _footprint_body_box(fp)],
+        "silk_local_mm": _footprint_silk_local_box(fp, ox, oy, rot, max_error),
         "courtyard": _courtyard(fp, ox, oy, rot, max_error),
         "pads": [_pad_dict(board, pad, ox, oy, rot) for pad in fp.Pads()],
     }

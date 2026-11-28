@@ -30,7 +30,7 @@ from ..eval.legality import (
 from ..eval.metrics import PASSIVE_PREFIXES, zone_nets
 from ..geometry import box_union, rotated_box
 from ..intent import model
-from ..ir import Board, Footprint, is_ground_net
+from ..ir import Board, Footprint, is_ground_net, is_power_net
 from . import escape
 
 WEIGHT_SIGNAL = 1.0
@@ -431,6 +431,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
     boxes = {fp.ref: local_box(fp) for fp in board.footprints}
     mechanics = (intent or {}).get("mechanical", {})
     edge_clear = float(board.rules.get("copper_edge_clearance") or 0.0)
+    silk_clear = float(board.rules.get("silk_clearance") or 0.0)
     two_sided = "F" in sides.values() and "B" in sides.values()
     lmap = copper_layer_map(board)
     if (floorplan if reserve is None else reserve) and intent:
@@ -448,6 +449,18 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
             access_box = access_geometry(replace(fp, x=0.0, y=0.0, rotation=0.0), access).bounds
             subs = (subs or [(x0, y0, x1, y1)]) + [access_box]
             x0, y0, x1, y1 = box_union((x0, y0, x1, y1), access_box)
+        if not is_fixed and fp.silk_local_mm is not None and silk_clear > 0.0 and not fp.courtyard.holes:
+            # Protect footprint-owned F.SilkS/B.SilkS graphic strokes (e.g. SOD-882, TSSOP, HTSSOP
+            # outlines that overhang F.CrtYd) so SA enforces board silk_clearance natively.
+            sp = 0.5 * silk_clear + 0.03
+            sx0, sy0, sx1, sy1 = fp.silk_local_mm
+            nx0 = min(x0, max(x0 - 0.45, sx0 - sp))
+            ny0 = min(y0, max(y0 - 0.45, sy0 - sp))
+            nx1 = max(x1, min(x1 + 0.45, sx1 + sp))
+            ny1 = max(y1, min(y1 + 0.45, sy1 + sp))
+            if (nx0, ny0, nx1, ny1) != (x0, y0, x1, y1):
+                x0, y0, x1, y1 = nx0, ny0, nx1, ny1
+                subs = []
         if not is_fixed and inflations:
             pad_inf = float(inflations.get(fp.ref, 0.0))
             if pad_inf > 0.0:
@@ -559,7 +572,7 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
                     aff_w = DECAP_AFFINITY_WEIGHT
                 elif kind == "esd":
                     # IEC 61000-4-2: anchor ESD protection tightly to its protected connector pin.
-                    aff_w = 4.0 * LOCAL_BLOCK_WEIGHT
+                    aff_w = 5.0 * LOCAL_BLOCK_WEIGHT
                 else:
                     aff_w = LOCAL_BLOCK_WEIGHT
                 pb.affinities.append(([source[0][1], *pins], aff_w))
@@ -576,6 +589,69 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
                     ]
                     if ic_pins:
                         pb.affinities.append(([source[0][1], *ic_pins], 0.15 * LOCAL_BLOCK_WEIGHT))
+    # Feranec connector-entry linear signal-flow gradient:
+    # Connector -> Direct Protection/ESD -> Series Input Filter R/L -> 1-hop Clamp Diode -> IC.
+    # Keeps edge protection and input filters in an orderly entry corridor instead of piling onto IC bodies.
+    fixed_connectors = [
+        fp for fp in board.footprints
+        if fp.ref in fixed and (
+            ((parts.get(fp.ref, {}).get("role") or {}).get("value")) == "connector"
+            or fp.prefix in ("J", "P", "CN", "CON", "X")
+        )
+    ]
+    if floorplan and fixed_connectors:
+        conn_net_pins: dict[str, list[int]] = {}
+        for cfp in fixed_connectors:
+            for pad in cfp.pads:
+                if pad.net and not is_power_net(pad.net) and pad.net not in planes:
+                    c_pins = [idx for _, idx in part_pins.get((cfp.ref, pad.net), [])]
+                    if c_pins:
+                        conn_net_pins.setdefault(pad.net, []).extend(c_pins)
+        if conn_net_pins:
+            series_filtered_nets: dict[str, tuple[list[int], list[int]]] = {}
+            for fp in board.footprints:
+                if fp.ref in fixed or len(fp.pads) != 2:
+                    continue
+                fp_role = ((parts.get(fp.ref, {}).get("role") or {}).get("value")) or ""
+                if fp_role == "decap":
+                    continue
+                sig_pads = [p for p in fp.pads if p.net and not is_power_net(p.net) and p.net not in planes]
+                if len(sig_pads) == 2 and fp.prefix in ("R", "FB", "L"):
+                    n0, n1 = sig_pads[0].net, sig_pads[1].net
+                    if n0 in conn_net_pins and n1 not in conn_net_pins:
+                        src_p = [idx for _, idx in part_pins.get((fp.ref, n0), [])]
+                        dst_p = [idx for _, idx in part_pins.get((fp.ref, n1), [])]
+                        if src_p:
+                            pb.affinities.append(([src_p[0], *conn_net_pins[n0]], 0.8 * LOCAL_BLOCK_WEIGHT))
+                        if dst_p:
+                            series_filtered_nets[n1] = (dst_p, conn_net_pins[n0])
+                    elif n1 in conn_net_pins and n0 not in conn_net_pins:
+                        src_p = [idx for _, idx in part_pins.get((fp.ref, n1), [])]
+                        dst_p = [idx for _, idx in part_pins.get((fp.ref, n0), [])]
+                        if src_p:
+                            pb.affinities.append(([src_p[0], *conn_net_pins[n1]], 0.8 * LOCAL_BLOCK_WEIGHT))
+                        if dst_p:
+                            series_filtered_nets[n0] = (dst_p, conn_net_pins[n1])
+                elif fp_role != "esd" and fp.prefix in ("D", "TVS", "ESD", "DZ") and len(sig_pads) == 1:
+                    snet = sig_pads[0].net
+                    if snet in conn_net_pins:
+                        src_p = [idx for _, idx in part_pins.get((fp.ref, snet), [])]
+                        if src_p:
+                            pb.affinities.append(([src_p[0], *conn_net_pins[snet]], 4.0 * LOCAL_BLOCK_WEIGHT))
+            # 1-hop clamp diodes downstream of series input filter resistors: pull into the entry filter band.
+            if series_filtered_nets:
+                for fp in board.footprints:
+                    if fp.ref in fixed or len(fp.pads) != 2 or fp.prefix not in ("D", "TVS", "ESD", "DZ"):
+                        continue
+                    sig_pads = [p for p in fp.pads if p.net and not is_power_net(p.net) and p.net not in planes]
+                    rail_pads = [p for p in fp.pads if p.net and (is_power_net(p.net) or p.net in planes)]
+                    if len(sig_pads) == 1 and len(rail_pads) == 1 and sig_pads[0].net in series_filtered_nets:
+                        snet = sig_pads[0].net
+                        src_p = [idx for _, idx in part_pins.get((fp.ref, snet), [])]
+                        res_pins, c_pins = series_filtered_nets[snet]
+                        if src_p:
+                            pb.affinities.append(([src_p[0], *res_pins], 1.1 * LOCAL_BLOCK_WEIGHT))
+                            pb.affinities.append(([src_p[0], *c_pins], 0.45 * LOCAL_BLOCK_WEIGHT))
     # First-principles galvanic isolation & HV clearance repulsions from .kicad_dru + netclasses.
     part_ncs: list[set[str]] = [
         {net_to_nc[p.net] for p in fp.pads if p.net and p.net in net_to_nc}
@@ -745,8 +821,14 @@ def rust_problem(pb: PlaceProblem, *, w_hpwl: float = 1.0, w_cross: float = 2.0,
     silk_clr = float(pb.board.rules.get("silk_clearance") or 0.0)
     board_area = float(pb.board.board_area_mm2 or 0.0)
     cy_area = sum(fp.courtyard_area for fp in pb.board.footprints)
-    if silk_clr >= 0.08 and board_area > 0.0 and cy_area < 0.50 * board_area:
-        eff_gap = max(eff_gap, min(0.08, 0.6 * silk_clr))
+    if silk_clr >= 0.08 and board_area > 0.0:
+        util = cy_area / board_area
+        if util < 0.35:
+            eff_gap = max(eff_gap, silk_clr + 0.12, 0.20)
+        elif util < 0.50:
+            eff_gap = max(eff_gap, silk_clr + 0.06, 0.14)
+        elif util < 0.65:
+            eff_gap = max(eff_gap, min(0.10, silk_clr))
     args = (pb.parts, pb.pins, pb.nets, pb.outers, pb.holes, eff_gap, w_hpwl, w_cross)
     kwargs: dict = {}
     if pb.affinities:
@@ -791,6 +873,9 @@ def apply(pb: PlaceProblem, poses: list[tuple[float, float, int]]) -> Board:
                 pad.layers = tuple(layer_flip.get(layer, layer) for layer in pad.layers)
             fp.courtyard.polygons = [[(x, -y) for x, y in ring] for ring in fp.courtyard.polygons]
             fp.courtyard.holes = [[[(x, -y) for x, y in hole] for hole in poly_holes] for poly_holes in fp.courtyard.holes]
+            if fp.silk_local_mm is not None:
+                sx0, sy0, sx1, sy1 = fp.silk_local_mm
+                fp.silk_local_mm = (sx0, -sy1, sx1, -sy0)
         fp.side = pb.sides[fp.ref]
     return out
 

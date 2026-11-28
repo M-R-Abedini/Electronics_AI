@@ -107,6 +107,7 @@ def _footprint(row: dict, name_to_canon: dict[str, str] | None = None) -> Footpr
         uuid=row["uuid"], sheet=row["sheet"], description=row["description"], attributes=tuple(row["attributes"]),
         sheet_path=row.get("sheet_path") or None,
         body_bounds_mm=tuple(row["body_bounds_mm"]) if row.get("body_bounds_mm") else None,
+        silk_local_mm=tuple(row["silk_local_mm"]) if row.get("silk_local_mm") else None,
     )
 
 
