@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""First-principles PCB EMI/EMC, HV safety & thermal DFM checks (Rules 10-14).
+"""First-principles PCB EMI/EMC, HV safety & thermal DFM checks (Rules 10-18).
 
 Purely geometric and board-agnostic checks operating on the generic Board IR
 plus filled copper geometry, designed to complement ``placer/eval/lint.py``:
@@ -9,6 +9,10 @@ plus filled copper geometry, designed to complement ``placer/eval/lint.py``:
 12. ``hv_pad_creepage_undersized``      -- Geometric pad-to-pad gap <1.2 mm on 2-pin HV passives
 13. ``tvs_ground_return_inductance``    -- High-energy SMD TVS (<2 parallel GND return vias)
 14. ``thermal_pad_via_paste_wicking``   -- Large open thermal vias (>=0.35 mm drill) inside SMD EP
+15. ``hv_power_on_inner_layer``         -- Mains/HV power nets buried on thin inner copper (IPC-2152 / IEC 61010-1)
+16. ``switch_node_inner_or_oversized``  -- High-dV/dt switch node on inner layers or oversized antenna (AN-70 / TIDA)
+17. ``prefuse_mains_trace_undersized``  -- Mains AC / pre-fuse trace narrower than fusing margin (<0.80 mm)
+18. ``hv_vertical_prepreg_overlap``     -- HV-to-LV or switch-to-feedback vertical overlap across thin (<0.40 mm) prepreg
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ import math
 import re
 from typing import Any
 
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
 from ..ir import Board, Footprint, Pad, is_ground_net, is_power_net
@@ -41,6 +45,40 @@ _MAINS_AC_RE = re.compile(
     re.IGNORECASE,
 )
 
+_HV_POWER_LOOP_RE = re.compile(
+    r"(?:^|[/_-])("
+    r"HV_?BUS|HV_?RECT|HV_?DC|HV_?IN|HV_?RAIL|BULK_?HV|DC_?BUS|BUS_?HV|"
+    r"PRI_?RET|PRI_?GND|HV_?RET|PGND_?HV"
+    r")(?:$|[/_-])",
+    re.IGNORECASE,
+)
+
+_SWITCH_NODE_RE = re.compile(
+    r"(?:^|[/_-])("
+    r"FLY_?DRAIN|PRI_?DRAIN|RCD_?CLAMP|SNUB(?:BER)?|SW_?NODE|"
+    r"(?:BUCK|BOOST|FLY|SEC_IN|SEC_OUT)_?SW\d*|SW\d*|LX\d*|PHASE\d*"
+    r")(?:$|[/_-])",
+    re.IGNORECASE,
+)
+
+_SWITCH_FALSE_POS_RE = re.compile(
+    r"(SWDIO|SWCLK|SWO|SW_?BTN|BTN|BUTTON|KEY|DIP_?SW|TACT)",
+    re.IGNORECASE,
+)
+
+_HV_LOW_CURRENT_SENSE_RE = re.compile(
+    r"(?:^|[/_-])("
+    r"V_?SENSE(?:_?MID)?|FLY_?V|FLY_?FB|FLY_?BPP|FLY_?BPS|FLY_?FWD|FLY_?SR|"
+    r"FB|VFB|COMP|ISET|SS|EN|UVLO|OVP"
+    r")(?:$|[/_-])",
+    re.IGNORECASE,
+)
+
+_SENSITIVE_FEEDBACK_RE = re.compile(
+    r"(?:^|[/_-])(FLY_?FB|FB|VFB|VSENSE|V_?SENSE|COMP|ADC_?.*|RTD_?.*|PT100_?.*)(?:$|[/_-])",
+    re.IGNORECASE,
+)
+
 _SURGE_TVS_RE = re.compile(
     r"(SM[ABC]J|P[46]KE|1\.5KE|D_SM[ABC]|DO-214|TVS)",
     re.IGNORECASE,
@@ -60,6 +98,61 @@ EMI_POUR_OVERLAP_MM2 = 2.0
 TVS_VIA_RADIUS_MM = 3.5
 THERMAL_PAD_MIN_AREA_MM2 = 6.0
 OPEN_THERMAL_VIA_DRILL_MM = 0.35
+# Rules 15-18 physical thresholds (IEC 61010-1 / IEC 62368-1 / IPC-2152 / AN-70)
+HV_INNER_LEN_MIN_MM = 5.0
+HV_INNER_FRAC_WARN = 0.25
+MAINS_INNER_FRAC_CRIT = 0.35
+SW_INNER_LEN_WARN_MM = 2.0
+HV_SW_LEN_WARN_MM = 55.0
+HV_SW_LEN_CRIT_MM = 85.0
+LV_SW_LEN_WARN_MM = 22.0
+LV_SW_LEN_CRIT_MM = 40.0
+SW_DETOUR_WARN_RATIO = 1.65
+SW_DETOUR_MIN_LEN_MM = 22.0
+MAINS_WIDTH_CRIT_MM = 0.45
+MAINS_WIDTH_WARN_MM = 0.80
+SOLID_INSULATION_MIN_MM = 0.40
+SW_FB_DIELECTRIC_MIN_MM = 0.30
+
+
+def hv_power_and_switch_nets(board: Board, intent: dict | None = None) -> dict[str, set[str]]:
+    """Classify mains AC, HV power-loop, and high-dV/dt switching-node nets generically."""
+    all_nets: set[str] = {n.name for n in board.nets if n.name}
+    for fp in board.footprints:
+        for pad in fp.pads:
+            if pad.net:
+                all_nets.add(pad.net)
+
+    hv_nets = _hv_net_set(board)
+    mains_ac: set[str] = {n for n in all_nets if _MAINS_AC_RE.search(n)}
+    switch_nodes: set[str] = {
+        n for n in all_nets
+        if _SWITCH_NODE_RE.search(n) and not _SWITCH_FALSE_POS_RE.search(n)
+    }
+    if intent:
+        for nname, meta in (intent.get("nets") or {}).items():
+            cls_val = str(((meta.get("class") or {}).get("value")) or "").lower()
+            role_val = str(((meta.get("role") or {}).get("value")) or "").lower()
+            if cls_val in ("sw_node", "switch_node") or role_val in ("sw_node", "switch_node"):
+                switch_nodes.add(nname)
+            if cls_val in ("mains", "ac_mains"):
+                mains_ac.add(nname)
+
+    hv_power: set[str] = set(mains_ac)
+    for n in all_nets:
+        if _HV_LOW_CURRENT_SENSE_RE.search(n):
+            continue
+        if _HV_POWER_LOOP_RE.search(n) or (n in hv_nets and n not in switch_nodes):
+            hv_power.add(n)
+
+    hv_switch_nodes = switch_nodes & (hv_nets | {n for n in switch_nodes if re.search(r"(FLY_?DRAIN|PRI_?DRAIN|RCD_?CLAMP|SNUB)", n, re.IGNORECASE)})
+    return {
+        "hv_all": hv_nets | hv_power | hv_switch_nodes,
+        "mains_ac": mains_ac,
+        "hv_power": hv_power,
+        "switch_nodes": switch_nodes,
+        "hv_switch_nodes": hv_switch_nodes,
+    }
 
 
 def _hv_net_set(board: Board) -> set[str]:
@@ -105,9 +198,11 @@ def run_emc_safety_checks(
     vias: list[dict[str, Any]],
     ref_planes: dict[str, dict[str, Any]],
     add_finding: Any,
+    intent: dict | None = None,
 ) -> dict[str, Any]:
-    """Run Rules 10-14 and return structured metrics dict for ``lint_board()``."""
+    """Run Rules 10-18 and return structured metrics dict for ``lint_board()``."""
     hv_nets = _hv_net_set(board)
+    net_groups = hv_power_and_switch_nets(board, intent)
 
     # ------------------------------------------------------------------
     # Rule 10: mounting_hole_copper_clearance (NPTH hole wall to any copper)
@@ -464,10 +559,351 @@ def run_emc_safety_checks(
                         limit=OPEN_THERMAL_VIA_DRILL_MM,
                     )
 
+    # ------------------------------------------------------------------
+    # Rules 15-18: Offline HV Power, Switch-Node EMI, Pre-Fuse Sizing & Solid Insulation
+    # (IEC 61010-1 Clause 6.7 / IEC 62368-1 / IPC-2152 / Power Integrations AN-70 & TI TIDA)
+    # ------------------------------------------------------------------
+    ordered_layers = [cl.canonical for cl in sorted(board.copper_layers, key=lambda c: c.index)]
+    n_layers = len(ordered_layers)
+    inner_layers = set(ordered_layers[1:-1]) if n_layers >= 3 else set()
+
+    def _seg_len(t: dict[str, Any]) -> float:
+        pts = t.get("points") or []
+        if len(pts) < 2:
+            return 0.0
+        return sum(
+            math.hypot(float(pts[i + 1][0]) - float(pts[i][0]), float(pts[i + 1][1]) - float(pts[i][1]))
+            for i in range(len(pts) - 1)
+        )
+
+    def _seg_line(t: dict[str, Any]) -> LineString | None:
+        pts = [(float(p[0]), float(p[1])) for p in (t.get("points") or ())]
+        if len(pts) < 2:
+            return None
+        if len(pts) == 2 and math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) < 1e-9:
+            return None
+        return LineString(pts)
+
+    by_net_tracks: dict[str, list[dict[str, Any]]] = {}
+    for t in tracks:
+        tn = t.get("net") or ""
+        if tn:
+            by_net_tracks.setdefault(tn, []).append(t)
+
+    # Rule 15: hv_power_on_inner_layer (mains & primary HV power prefer outer 1oz/2oz copper)
+    hv_inner_rows: list[dict[str, Any]] = []
+    if has_copper and n_layers >= 4 and inner_layers:
+        for net in sorted(net_groups["hv_power"] - net_groups["switch_nodes"]):
+            tlist = by_net_tracks.get(net) or []
+            if not tlist:
+                continue
+            outer_mm = 0.0
+            inner_mm = 0.0
+            sample_pt: tuple[float, float] | None = None
+            for t in tlist:
+                sl = _seg_len(t)
+                canon = name_to_canon.get(t.get("layer", ""), t.get("layer", ""))
+                if canon in inner_layers:
+                    inner_mm += sl
+                    if sample_pt is None and t.get("points"):
+                        sample_pt = (float(t["points"][0][0]), float(t["points"][0][1]))
+                else:
+                    outer_mm += sl
+            tot_mm = outer_mm + inner_mm
+            if tot_mm <= 0.0:
+                continue
+            frac = inner_mm / tot_mm
+            is_mains = net in net_groups["mains_ac"]
+            hv_inner_rows.append({
+                "net": net,
+                "mains_ac": is_mains,
+                "outer_mm": round(outer_mm, 2),
+                "inner_mm": round(inner_mm, 2),
+                "inner_fraction": round(frac, 3),
+            })
+            if inner_mm > HV_INNER_LEN_MIN_MM and frac > HV_INNER_FRAC_WARN:
+                sev = "critical" if (is_mains and frac > MAINS_INNER_FRAC_CRIT) else "warning"
+                add_finding(
+                    "hv_power_on_inner_layer",
+                    sev,
+                    f"{'Mains AC' if is_mains else 'HV power'} net '{net}' routes {inner_mm:.1f} mm "
+                    f"({frac:.0%}) on inner copper layer(s); prefer outer 1oz/2oz F.Cu/B.Cu per "
+                    f"IPC-2152 (2x thermal/fusing capacity) & IEC 61010-1 inspectability",
+                    net=net,
+                    location_mm=sample_pt,
+                    value=round(frac, 3),
+                    limit=MAINS_INNER_FRAC_CRIT if sev == "critical" else HV_INNER_FRAC_WARN,
+                )
+
+    # Rule 16: switch_node_inner_or_oversized (high-dV/dt switch node EMI & loop area)
+    def _net_pad_mst_mm(net_name: str) -> float:
+        pts: list[tuple[float, float]] = []
+        for fp in board.footprints:
+            for pad, pt in fp.pads_world():
+                if pad.net == net_name:
+                    pts.append(pt)
+        if len(pts) < 2:
+            return 0.0
+        used = [False] * len(pts)
+        used[0] = True
+        total = 0.0
+        for _ in range(len(pts) - 1):
+            best = math.inf
+            best_j = -1
+            for i, pi in enumerate(pts):
+                if not used[i]:
+                    continue
+                for j, pj in enumerate(pts):
+                    if used[j]:
+                        continue
+                    d = math.hypot(pi[0] - pj[0], pi[1] - pj[1])
+                    if d < best:
+                        best = d
+                        best_j = j
+            if best_j < 0:
+                break
+            used[best_j] = True
+            total += best
+        return total
+
+    sw_rows: list[dict[str, Any]] = []
+    if has_copper:
+        for net in sorted(net_groups["switch_nodes"]):
+            tlist = by_net_tracks.get(net) or []
+            if not tlist:
+                continue
+            outer_mm = 0.0
+            inner_mm = 0.0
+            sample_pt = None
+            for t in tlist:
+                sl = _seg_len(t)
+                canon = name_to_canon.get(t.get("layer", ""), t.get("layer", ""))
+                if canon in inner_layers:
+                    inner_mm += sl
+                    if sample_pt is None and t.get("points"):
+                        sample_pt = (float(t["points"][0][0]), float(t["points"][0][1]))
+                else:
+                    outer_mm += sl
+                    if sample_pt is None and t.get("points"):
+                        sample_pt = (float(t["points"][0][0]), float(t["points"][0][1]))
+            tot_mm = outer_mm + inner_mm
+            pad_mst_mm = _net_pad_mst_mm(net)
+            detour_ratio = (tot_mm / pad_mst_mm) if pad_mst_mm > 1.0 else None
+            is_hv_sw = net in net_groups["hv_switch_nodes"]
+            sw_rows.append({
+                "net": net,
+                "hv": is_hv_sw,
+                "total_mm": round(tot_mm, 2),
+                "inner_mm": round(inner_mm, 2),
+                "pad_mst_mm": round(pad_mst_mm, 2),
+                "detour_ratio": round(detour_ratio, 2) if detour_ratio is not None else None,
+            })
+            if n_layers >= 4 and inner_mm > SW_INNER_LEN_WARN_MM:
+                add_finding(
+                    "switch_node_inner_or_oversized",
+                    "warning",
+                    f"High-dV/dt switch node '{net}' routes {inner_mm:.1f} mm on inner layer(s); "
+                    f"keep switch nodes strictly on outer F.Cu/B.Cu to avoid via inductance and "
+                    f"inner-layer capacitive EMI coupling (Power Integrations AN-70 / TI TIDA)",
+                    net=net,
+                    location_mm=sample_pt,
+                    value=round(inner_mm, 2),
+                    limit=SW_INNER_LEN_WARN_MM,
+                )
+            warn_lim = HV_SW_LEN_WARN_MM if is_hv_sw else LV_SW_LEN_WARN_MM
+            crit_lim = HV_SW_LEN_CRIT_MM if is_hv_sw else LV_SW_LEN_CRIT_MM
+            if tot_mm > crit_lim:
+                add_finding(
+                    "switch_node_inner_or_oversized",
+                    "critical",
+                    f"High-dV/dt switch node '{net}' total copper length is {tot_mm:.1f} mm "
+                    f"(> {crit_lim:.0f} mm); compact switch/transformer/clamp placement to "
+                    f"minimize monopole EMI radiation and primary hot-loop inductance",
+                    net=net,
+                    location_mm=sample_pt,
+                    value=round(tot_mm, 2),
+                    limit=crit_lim,
+                )
+            elif tot_mm > warn_lim or (
+                detour_ratio is not None
+                and tot_mm > SW_DETOUR_MIN_LEN_MM
+                and detour_ratio > SW_DETOUR_WARN_RATIO
+            ):
+                add_finding(
+                    "switch_node_inner_or_oversized",
+                    "warning",
+                    f"High-dV/dt switch node '{net}' total copper length is {tot_mm:.1f} mm "
+                    f"(pad MST {pad_mst_mm:.1f} mm, ratio {detour_ratio or 1.0:.2f}x); "
+                    f"tighten switch-node copper area to reduce radiated EMI",
+                    net=net,
+                    location_mm=sample_pt,
+                    value=round(tot_mm, 2),
+                    limit=warn_lim,
+                )
+
+    # Rule 17: prefuse_mains_trace_undersized (IEC 61010-1 / UL 61010-1 / IPC-2152 fusing margin)
+    mains_width_rows: list[dict[str, Any]] = []
+    if has_copper:
+        for net in sorted(net_groups["mains_ac"]):
+            tlist = [t for t in (by_net_tracks.get(net) or ()) if _seg_len(t) >= 0.5]
+            if not tlist:
+                tlist = by_net_tracks.get(net) or []
+            if not tlist:
+                continue
+            min_w = min(float(t.get("width") or 0.0) for t in tlist)
+            sample_t = min(tlist, key=lambda t: float(t.get("width") or 0.0))
+            sp = (float(sample_t["points"][0][0]), float(sample_t["points"][0][1])) if sample_t.get("points") else None
+            mains_width_rows.append({"net": net, "min_width_mm": round(min_w, 3)})
+            if min_w < MAINS_WIDTH_CRIT_MM:
+                add_finding(
+                    "prefuse_mains_trace_undersized",
+                    "critical",
+                    f"Mains AC net '{net}' has trace width {min_w:.2f} mm (< {MAINS_WIDTH_CRIT_MM:.2f} mm); "
+                    f"use >=1.0 mm outer copper so the physical fuse opens before PCB copper vaporizes",
+                    net=net,
+                    location_mm=sp,
+                    value=round(min_w, 3),
+                    limit=MAINS_WIDTH_CRIT_MM,
+                )
+            elif min_w < MAINS_WIDTH_WARN_MM:
+                add_finding(
+                    "prefuse_mains_trace_undersized",
+                    "warning",
+                    f"Mains AC net '{net}' has minimum trace width {min_w:.2f} mm (< {MAINS_WIDTH_WARN_MM:.2f} mm); "
+                    f"increase mains netclass width to >=1.0 mm on outer copper for IEC 61010-1/61000-4-5 surge margin",
+                    net=net,
+                    location_mm=sp,
+                    value=round(min_w, 3),
+                    limit=MAINS_WIDTH_WARN_MM,
+                )
+
+    # Rule 18: hv_vertical_prepreg_overlap (IEC 61010-1 Clause 6.7 >=0.40 mm solid insulation)
+    vertical_overlaps: list[dict[str, Any]] = []
+    if has_copper and n_layers >= 4:
+        # Build adjacent-layer dielectric thickness lookup from stackup (fallback: standard 4L 0.21 mm prepreg)
+        diel_mm: dict[tuple[str, str], float] = {}
+        diels = list(getattr(board.stackup, "dielectrics", None) or ())
+        if len(diels) >= n_layers - 1:
+            for idx in range(n_layers - 1):
+                th = float(getattr(diels[idx], "thickness_mm", 0.0) or 0.0)
+                if th > 0.0:
+                    a, b = ordered_layers[idx], ordered_layers[idx + 1]
+                    diel_mm[(a, b)] = th
+                    diel_mm[(b, a)] = th
+        else:
+            # Standard 4-layer 1.6 mm fab stackup: 0.21 mm outer prepregs, ~1.06 mm core
+            diel_mm[(ordered_layers[0], ordered_layers[1])] = 0.21
+            diel_mm[(ordered_layers[1], ordered_layers[0])] = 0.21
+            diel_mm[(ordered_layers[-2], ordered_layers[-1])] = 0.21
+            diel_mm[(ordered_layers[-1], ordered_layers[-2])] = 0.21
+
+        # Partition tracks into HV-domain vs non-HV-domain (excluding primary low-voltage AUX_PRIMARY nets)
+        hv_all_set = net_groups["hv_all"]
+        primary_aux_classes = {
+            nc.name for nc in board.netclasses
+            if re.search(r"(HV|MAINS|PRIMARY)", nc.name, re.IGNORECASE)
+        }
+        primary_domain_nets = set(hv_all_set) | {
+            n.name for n in board.nets
+            if n.netclass in primary_aux_classes or re.search(r"(PRI_|FLY_V|FLY_BPP|V_SENSE_MID)", n.name, re.IGNORECASE)
+        }
+        # Group buffered lines by layer for adjacent thin-dielectric pairs
+        hv_geoms_by_lyr: dict[str, list[tuple[str, Any]]] = {}
+        lv_geoms_by_lyr: dict[str, list[tuple[str, Any]]] = {}
+        sw_geoms_by_lyr: dict[str, list[tuple[str, Any]]] = {}
+        fb_geoms_by_lyr: dict[str, list[tuple[str, Any]]] = {}
+        for t in tracks:
+            tn = t.get("net") or ""
+            if not tn:
+                continue
+            line = _seg_line(t)
+            if line is None:
+                continue
+            canon = name_to_canon.get(t.get("layer", ""), t.get("layer", ""))
+            hw = max(0.08, 0.5 * float(t.get("width") or 0.2))
+            buf = line.buffer(hw, cap_style=2, quad_segs=2)
+            if tn in hv_all_set:
+                hv_geoms_by_lyr.setdefault(canon, []).append((tn, buf))
+            elif tn not in primary_domain_nets:
+                lv_geoms_by_lyr.setdefault(canon, []).append((tn, buf))
+            if tn in net_groups["hv_switch_nodes"]:
+                sw_geoms_by_lyr.setdefault(canon, []).append((tn, buf))
+            elif _SENSITIVE_FEEDBACK_RE.search(tn):
+                fb_geoms_by_lyr.setdefault(canon, []).append((tn, buf))
+
+        reported_pairs: set[tuple[str, str, str, str]] = set()
+        for idx in range(n_layers - 1):
+            la, lb = ordered_layers[idx], ordered_layers[idx + 1]
+            th = diel_mm.get((la, lb))
+            if th is None:
+                continue
+            if th < SOLID_INSULATION_MIN_MM:
+                for l_hv, l_lv in ((la, lb), (lb, la)):
+                    for hv_n, hv_g in hv_geoms_by_lyr.get(l_hv, ()):
+                        for lv_n, lv_g in lv_geoms_by_lyr.get(l_lv, ()):
+                            key = ("hv_lv", hv_n, lv_n, f"{l_hv}/{l_lv}")
+                            if key in reported_pairs:
+                                continue
+                            if hv_g.intersects(lv_g) and hv_g.intersection(lv_g).area > 0.05:
+                                reported_pairs.add(key)
+                                c = hv_g.intersection(lv_g).centroid
+                                vertical_overlaps.append({
+                                    "kind": "hv_to_lv",
+                                    "net_a": hv_n,
+                                    "layer_a": l_hv,
+                                    "net_b": lv_n,
+                                    "layer_b": l_lv,
+                                    "dielectric_mm": round(th, 3),
+                                })
+                                add_finding(
+                                    "hv_vertical_prepreg_overlap",
+                                    "critical",
+                                    f"HV net '{hv_n}' on {l_hv} vertically overlaps secondary/LV net '{lv_n}' "
+                                    f"on {l_lv} across {th:.2f} mm prepreg (< {SOLID_INSULATION_MIN_MM:.2f} mm "
+                                    f"IEC 61010-1 Clause 6.7 reinforced solid insulation)",
+                                    net=hv_n,
+                                    location_mm=(c.x, c.y),
+                                    value=round(th, 3),
+                                    limit=SOLID_INSULATION_MIN_MM,
+                                )
+            if th < SW_FB_DIELECTRIC_MIN_MM:
+                for l_sw, l_fb in ((la, lb), (lb, la)):
+                    for sw_n, sw_g in sw_geoms_by_lyr.get(l_sw, ()):
+                        for fb_n, fb_g in fb_geoms_by_lyr.get(l_fb, ()):
+                            key = ("sw_fb", sw_n, fb_n, f"{l_sw}/{l_fb}")
+                            if key in reported_pairs:
+                                continue
+                            if sw_g.intersects(fb_g) and sw_g.intersection(fb_g).area > 0.05:
+                                reported_pairs.add(key)
+                                c = sw_g.intersection(fb_g).centroid
+                                vertical_overlaps.append({
+                                    "kind": "sw_to_fb",
+                                    "net_a": sw_n,
+                                    "layer_a": l_sw,
+                                    "net_b": fb_n,
+                                    "layer_b": l_fb,
+                                    "dielectric_mm": round(th, 3),
+                                })
+                                add_finding(
+                                    "hv_vertical_prepreg_overlap",
+                                    "warning",
+                                    f"HV switch node '{sw_n}' on {l_sw} crosses vertically over sensitive "
+                                    f"feedback/sense net '{fb_n}' on {l_fb} across {th:.2f} mm dielectric "
+                                    f"(high C*dV/dt capacitive coupling)",
+                                    net=sw_n,
+                                    location_mm=(c.x, c.y),
+                                    value=round(th, 3),
+                                    limit=SW_FB_DIELECTRIC_MIN_MM,
+                                )
+
     return {
         "mounting_hole_clearance": mh_rows,
         "copper_pour_under_unfused_mains": emi_pour_hits,
         "hv_pad_creepage": hv_passive_rows,
         "tvs_ground_return": tvs_rows,
         "thermal_pad_vias": thermal_rows,
+        "hv_power_inner_layer": hv_inner_rows,
+        "switch_node_emi": sw_rows,
+        "prefuse_mains_width": mains_width_rows,
+        "hv_vertical_prepreg_overlap": vertical_overlaps,
     }

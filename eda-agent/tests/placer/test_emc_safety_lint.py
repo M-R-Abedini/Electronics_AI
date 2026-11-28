@@ -188,3 +188,258 @@ def test_tvs_ground_return_inductance_and_thermal_pad_via_wicking():
     r_good = _rules(rep_good)
     assert not r_good.get("tvs_ground_return_inductance")
     assert not r_good.get("thermal_pad_via_paste_wicking")
+
+
+def test_hv_power_inner_layer_and_prefuse_width_rules():
+    j1 = Footprint(
+        ref="J1", value="AC_IN", lib_id="TerminalBlock:TB2",
+        x=10.0, y=40.0, rotation=0.0,
+        pads=[
+            Pad("1", "/AUX/AC_L_FUSED", (0.0, -2.5), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("2", "/AUX/AC_N", (0.0, 2.5), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("3", "/AUX/HV_BUS", (10.0, 0.0), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+        ],
+    )
+    nets = [
+        Net("/AUX/AC_L_FUSED", "AUX_PRIMARY_HV", 1),
+        Net("/AUX/AC_N", "AUX_PRIMARY_HV", 2),
+        Net("/AUX/HV_BUS", "AUX_PRIMARY_HV", 3),
+    ]
+    ncs = [NetClass("Default", 0.15, 0.2, 0.5, 0.25), NetClass("AUX_PRIMARY_HV", 1.54, 0.5, 0.75, 0.35)]
+    bad_tracks = [
+        {"net": "/AUX/AC_L_FUSED", "layer": "In2.Cu", "width": 0.50, "points": [(10.0, 37.5), (40.0, 37.5)]},
+        {"net": "/AUX/AC_N", "layer": "F.Cu", "width": 0.40, "points": [(10.0, 42.5), (30.0, 42.5)]},
+        {"net": "/AUX/HV_BUS", "layer": "In2.Cu", "width": 0.50, "points": [(20.0, 40.0), (40.0, 40.0)]},
+    ]
+    rep_bad = lint.audit(_make_board(footprints=[j1], nets=nets, netclasses=ncs, tracks=bad_tracks))
+    rb = _rules(rep_bad)
+    inner_hits = {h["net"]: h["severity"] for h in rb.get("hv_power_on_inner_layer", [])}
+    assert inner_hits["/AUX/AC_L_FUSED"] == "critical"
+    assert inner_hits["/AUX/HV_BUS"] == "warning"
+    width_hits = {h["net"]: h["severity"] for h in rb.get("prefuse_mains_trace_undersized", [])}
+    assert width_hits["/AUX/AC_L_FUSED"] == "warning"
+    assert width_hits["/AUX/AC_N"] == "critical"
+
+    good_tracks = [
+        {"net": "/AUX/AC_L_FUSED", "layer": "F.Cu", "width": 1.0, "points": [(10.0, 37.5), (40.0, 37.5)]},
+        {"net": "/AUX/AC_N", "layer": "B.Cu", "width": 1.0, "points": [(10.0, 42.5), (30.0, 42.5)]},
+        {"net": "/AUX/HV_BUS", "layer": "B.Cu", "width": 0.6, "points": [(20.0, 40.0), (40.0, 40.0)]},
+    ]
+    rep_good = lint.audit(_make_board(footprints=[j1], nets=nets, netclasses=ncs, tracks=good_tracks))
+    rg = _rules(rep_good)
+    assert not rg.get("hv_power_on_inner_layer")
+    assert not rg.get("prefuse_mains_trace_undersized")
+
+
+def test_switch_node_emi_and_vertical_prepreg_overlap_rules():
+    u1 = Footprint(
+        ref="U1", value="INN3162C", lib_id="Power:InSOP-24D",
+        x=30.0, y=40.0, rotation=0.0,
+        pads=[
+            Pad("1", "/AUX/FLY_DRAIN", (0.0, 0.0), (1.0, 1.0), kind="smd", layers=["F.Cu"]),
+            Pad("2", "SWDIO", (5.0, 0.0), (0.5, 0.5), kind="smd", layers=["F.Cu"]),
+        ],
+    )
+    nets = [
+        Net("/AUX/FLY_DRAIN", "AUX_PRIMARY_HV", 1),
+        Net("SWDIO", "Default", 2),
+        Net("V3V3_IN", "Default", 3),
+        Net("/AUX/FLY_FB", "Default", 4),
+    ]
+    ncs = [NetClass("Default", 0.15, 0.2, 0.5, 0.25), NetClass("AUX_PRIMARY_HV", 1.54, 0.5, 0.75, 0.35)]
+    # FLY_DRAIN on In2.Cu (40 mm) + vertically overlapping V3V3_IN on B.Cu across 0.21 mm prepreg
+    # SWDIO must NOT be misclassified as a switching node!
+    bad_tracks = [
+        {"net": "/AUX/FLY_DRAIN", "layer": "In2.Cu", "width": 0.5, "points": [(10.0, 40.0), (70.0, 40.0)]},
+        {"net": "V3V3_IN", "layer": "B.Cu", "width": 0.3, "points": [(20.0, 35.0), (20.0, 45.0)]},
+        {"net": "/AUX/FLY_FB", "layer": "B.Cu", "width": 0.2, "points": [(35.0, 35.0), (35.0, 45.0)]},
+        {"net": "SWDIO", "layer": "In2.Cu", "width": 0.2, "points": [(60.0, 10.0), (95.0, 10.0)]},
+    ]
+    rep_bad = lint.audit(_make_board(footprints=[u1], nets=nets, netclasses=ncs, tracks=bad_tracks))
+    rb = _rules(rep_bad)
+    sw_hits = rb.get("switch_node_inner_or_oversized", [])
+    assert len(sw_hits) == 2  # both inner-layer and >55mm length warnings
+    assert all(h["net"] == "/AUX/FLY_DRAIN" for h in sw_hits)  # SWDIO ignored!
+    ov_hits = rb.get("hv_vertical_prepreg_overlap", [])
+    assert any(h["severity"] == "critical" and "V3V3_IN" in h["detail"] for h in ov_hits)
+    assert any(h["severity"] == "warning" and "FLY_FB" in h["detail"] for h in ov_hits)
+
+    # Clean: FLY_DRAIN short (12 mm) on F.Cu, no vertical overlap with secondary/FB
+    good_tracks = [
+        {"net": "/AUX/FLY_DRAIN", "layer": "F.Cu", "width": 0.5, "points": [(30.0, 40.0), (42.0, 40.0)]},
+        {"net": "V3V3_IN", "layer": "B.Cu", "width": 0.3, "points": [(75.0, 35.0), (75.0, 45.0)]},
+        {"net": "/AUX/FLY_FB", "layer": "F.Cu", "width": 0.2, "points": [(60.0, 35.0), (60.0, 45.0)]},
+    ]
+    rep_good = lint.audit(_make_board(footprints=[u1], nets=nets, netclasses=ncs, tracks=good_tracks))
+    rg = _rules(rep_good)
+    assert not rg.get("switch_node_inner_or_oversized")
+    assert not rg.get("hv_vertical_prepreg_overlap")
+
+
+def test_dsn_restrict_power_hv_outer_layers():
+    from eda_agent.placer.route import dsn
+
+    fp = Footprint(
+        ref="J1", value="AC", lib_id="TerminalBlock:TB2",
+        x=10.0, y=10.0, rotation=0.0,
+        pads=[
+            Pad("1", "/AUX/AC_L", (0.0, 0.0), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("2", "/AUX/HV_BUS", (5.0, 0.0), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("3", "/AUX/FLY_DRAIN", (10.0, 0.0), (1.0, 1.0), kind="smd", layers=["F.Cu"]),
+            Pad("4", "/AUX/V_SENSE_MID", (15.0, 0.0), (1.0, 1.0), kind="smd", layers=["F.Cu"]),
+            Pad("5", "GND", (20.0, 0.0), (1.0, 1.0), kind="smd", layers=["F.Cu"]),
+        ],
+    )
+    board = _make_board(
+        footprints=[fp],
+        nets=[
+            Net("/AUX/AC_L", "AUX_PRIMARY_HV", 1),
+            Net("/AUX/HV_BUS", "AUX_PRIMARY_HV", 2),
+            Net("/AUX/FLY_DRAIN", "AUX_PRIMARY_HV", 3),
+            Net("/AUX/V_SENSE_MID", "AUX_PRIMARY", 4),
+            Net("GND", "Default", 5),
+        ],
+        netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.25), NetClass("AUX_PRIMARY_HV", 1.54, 0.5, 0.75, 0.35)],
+        zones=[{"uuid": "z1", "net": "GND", "layers": ["In1.Cu"], "filled": True, "fill_fraction": 0.8}],
+    )
+    sample_dsn = """(pcb test
+  (network
+    (net "/AUX/AC_L" (pins J1-1))
+    (net "/AUX/HV_BUS" (pins J1-2))
+    (net "/AUX/FLY_DRAIN" (pins J1-3))
+    (net "/AUX/V_SENSE_MID" (pins J1-4))
+    (net GND (pins J1-5))
+    (class AUX_PRIMARY_HV "/AUX/AC_L" "/AUX/HV_BUS" "/AUX/FLY_DRAIN"
+      (circuit (use_via "Via[0-3]_750:350_um"))
+      (rule (width 500) (clearance 1540))
+    )
+    (class AUX_PRIMARY "/AUX/V_SENSE_MID"
+      (circuit (use_via "Via[0-3]_650:300_um"))
+      (rule (width 400) (clearance 270))
+    )
+    (class Default GND
+      (rule (width 200) (clearance 150))
+    )
+  )
+  (wiring)
+)
+"""
+    updated, restricted = dsn.restrict_power_hv_outer_layers(sample_dsn, board)
+    assert set(restricted) == {"/AUX/AC_L", "/AUX/HV_BUS", "/AUX/FLY_DRAIN"}
+    # Specctra DSN / Freerouting v2.5 requires (use_layer ...) inside (class ... (circuit ...))!
+    assert "(use_layer F.Cu B.Cu)" in updated
+    # Low-current sense & inner-plane GND must NOT be restricted
+    assert "/AUX/V_SENSE_MID" not in restricted
+    assert "GND" not in restricted
+
+
+def test_dsn_enforce_mains_trace_width_floor_preserves_dru_class_class():
+    from eda_agent.placer.route import dsn
+
+    fp = Footprint(
+        ref="J1", value="AC", lib_id="TerminalBlock:TB2",
+        x=10.0, y=10.0, rotation=0.0,
+        pads=[
+            Pad("1", "/AUX/AC_L_FUSED", (0.0, 0.0), (1.8, 1.8), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("2", "/AUX/AC_N", (5.0, 0.0), (1.8, 1.8), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("3", "/AUX/HV_BUS", (10.0, 0.0), (1.8, 1.8), kind="thru_hole", drill=(1.0, 1.0)),
+        ],
+    )
+    board = _make_board(
+        footprints=[fp],
+        nets=[
+            Net("/AUX/AC_L_FUSED", "AUX_PRIMARY_HV", 1),
+            Net("/AUX/AC_N", "AUX_PRIMARY_HV", 2),
+            Net("/AUX/HV_BUS", "AUX_PRIMARY_HV", 3),
+        ],
+        netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.25), NetClass("AUX_PRIMARY_HV", 1.54, 0.5, 0.75, 0.35)],
+    )
+    sample_dsn = """(pcb test
+  (resolution um 10)
+  (unit um)
+  (network
+    (net "/AUX/AC_L_FUSED" (pins J1-1))
+    (net "/AUX/AC_N" (pins J1-2))
+    (net "/AUX/HV_BUS" (pins J1-3))
+    (class AUX_PRIMARY_HV "/AUX/AC_L_FUSED" "/AUX/AC_N" "/AUX/HV_BUS"
+      (circuit (use_via "Via[0-3]_750:350_um"))
+      (rule (width 500) (clearance 1540))
+    )
+    (class_class kicad_dru_AUX_PRIMARY_HV_DOMAIN_IN AUX_PRIMARY_HV DOMAIN_IN
+      (rule (clearance 8000))
+    )
+  )
+  (wiring)
+)
+"""
+    updated, bumped = dsn.enforce_mains_trace_width_floor(sample_dsn, board, min_width_mm=1.0)
+    assert set(bumped) == {"/AUX/AC_L_FUSED", "/AUX/AC_N"}
+    assert "AUX_PRIMARY_HV__mains_1000" in updated
+    assert "(width 1000)" in updated
+    # Must preserve 8.0 mm Pri-Sec clearance AND 1.54 mm intra-HV clearance, and NEVER self-pair at 8.0 mm!
+    assert "(clearance 8000)" in updated and "AUX_PRIMARY_HV__mains_1000 DOMAIN_IN" in updated
+    assert "AUX_PRIMARY_HV__mains_1000 AUX_PRIMARY_HV__mains_1000" not in updated
+    assert "AUX_PRIMARY_HV AUX_PRIMARY_HV__mains_1000" in updated and "(clearance 1540)" in updated
+
+
+def test_dru_compound_netname_clearance_compilation(tmp_path):
+    from eda_agent.placer.route import dru
+
+    fp = Footprint(
+        ref="J1", value="AC", lib_id="TerminalBlock:TB2",
+        x=10.0, y=10.0, rotation=0.0,
+        pads=[
+            Pad("1", "/AUX/AC_L", (0.0, 0.0), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("2", "/AUX/AC_L_FUSED", (5.0, 0.0), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("3", "/AUX/AC_N", (10.0, 0.0), (1.0, 0.8), kind="smd", layers=["F.Cu"]),
+            Pad("4", "/AUX/HV_BUS", (15.0, 0.0), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+        ],
+    )
+    board = _make_board(
+        footprints=[fp],
+        nets=[
+            Net("/AUX/AC_L", "AUX_PRIMARY_HV", 1),
+            Net("/AUX/AC_L_FUSED", "AUX_PRIMARY_HV", 2),
+            Net("/AUX/AC_N", "AUX_PRIMARY_HV", 3),
+            Net("/AUX/HV_BUS", "AUX_PRIMARY_HV", 4),
+        ],
+        netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.25), NetClass("AUX_PRIMARY_HV", 1.54, 0.5, 0.75, 0.35)],
+    )
+    dru_file = tmp_path / "mains.kicad_dru"
+    dru_file.write_text(
+        '(version 1)\n'
+        '(rule "Mains_AC_L_N_2_5mm"\n'
+        '  (condition "(A.NetName == \'/AUX/AC_L\' || A.NetName == \'/AUX/AC_L_FUSED\') '
+        '&& (B.NetName == \'/AUX/AC_N\' || B.NetName == \'/AUX/AC_L_FUSED\')")\n'
+        '  (constraint clearance (min 2.5mm))\n'
+        ')\n'
+        '(rule "Mains_AC_L_N_Pad_2_45mm"\n'
+        '  (condition "(A.NetName == \'/AUX/AC_L\' || A.NetName == \'/AUX/AC_L_FUSED\') '
+        '&& (B.NetName == \'/AUX/AC_N\' || B.NetName == \'/AUX/AC_L_FUSED\')")\n'
+        '  (constraint clearance (min 2.45mm))\n'
+        ')\n',
+        encoding="utf-8",
+    )
+    sample_dsn = """(pcb test
+  (resolution um 10)
+  (unit um)
+  (network
+    (net "/AUX/AC_L" (pins J1-1))
+    (net "/AUX/AC_L_FUSED" (pins J1-2))
+    (net "/AUX/AC_N" (pins J1-3))
+    (net "/AUX/HV_BUS" (pins J1-4))
+    (class AUX_PRIMARY_HV "/AUX/AC_L" "/AUX/AC_L_FUSED" "/AUX/AC_N" "/AUX/HV_BUS"
+      (circuit (use_via "Via[0-3]_750:350_um"))
+      (rule (width 500) (clearance 1540))
+    )
+  )
+  (wiring)
+)
+"""
+    updated, meta = dru.compile_dru_to_dsn(sample_dsn, dru_file, board)
+    assert "Mains_AC_L_N_2_5mm" in meta["translated"]
+    assert "Mains_AC_L_N_Pad_2_45mm" in meta["translated"]
+    assert not meta["untranslated"]
+    # Must tighten existing intra_drunet 1540 -> 2500 in place, never emit shadowed 2450/1540 duplicates!
+    assert "(clearance 2500)" in updated
+    assert "(clearance 2450)" not in updated
