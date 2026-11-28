@@ -13,6 +13,8 @@ plus filled copper geometry, designed to complement ``placer/eval/lint.py``:
 16. ``switch_node_inner_or_oversized``  -- High-dV/dt switch node on inner layers or oversized antenna (AN-70 / TIDA)
 17. ``prefuse_mains_trace_undersized``  -- Mains AC / pre-fuse trace narrower than fusing margin (<0.80 mm)
 18. ``hv_vertical_prepreg_overlap``     -- HV-to-LV or switch-to-feedback vertical overlap across thin (<0.40 mm) prepreg
+19. ``analog_thermal_proximity``        -- Precision analog IC (ADC/DAC/VREF/INA) near hot power part (Seebeck drift)
+20. ``afe_digital_crosstalk``           -- High-Z precision sensor/analog net running parallel to noisy digital clock/bus
 """
 
 from __future__ import annotations
@@ -78,6 +80,76 @@ _SENSITIVE_FEEDBACK_RE = re.compile(
     r"(?:^|[/_-])(FLY_?FB|FB|VFB|VSENSE|V_?SENSE|COMP|ADC_?.*|RTD_?.*|PT100_?.*)(?:$|[/_-])",
     re.IGNORECASE,
 )
+
+_PRECISION_ANALOG_PART_RE = re.compile(
+    r"(ADS1\d|AD7\d|LTC24|MAX11|DAC8\d|DAC7\d|REF5\d|REF3\d|LM4040|ADR4\d|INA\d|OPA\d|AD84\d|MAX31865|ADC|VREF)",
+    re.IGNORECASE,
+)
+
+_HOT_POWER_PART_RE = re.compile(
+    r"(INN3\d|LNK\d|TNY\d|TOP\d|UC38\d|UCC28\d|LM25\d|LM78\d|MB6S|MB10S|DF06|GBU|KBP|Bridge|Transformer|Flyback|EE16|EF20)",
+    re.IGNORECASE,
+)
+
+_PRECISION_AFE_NET_RE = re.compile(
+    r"(?:^|[/_-])(AIN_?[PN\d]*|RTD_?.*|PT100_?.*|REF_?[PN]|VREF\w*|LOADCELL\w*|BRIDGE_?[PN]|THERM\w*|SHUNT_?[PN]|KELVIN\w*)(?:$|[/_-])",
+    re.IGNORECASE,
+)
+
+_NOISY_DIGITAL_NET_RE = re.compile(
+    r"(?:^|[/_-])([A-Z0-9]*_?(?:SCK|SCLK|CLK|MOSI|MISO|PWM|SWCLK|SWDIO|TX|RX|UART\w*|SPI\w*|SCL|SDA|DOUT_?\w*))(?:$|[/_-])",
+    re.IGNORECASE,
+)
+
+# Rules 19-20 thresholds (Precision Instrumentation Metrology: AD MT-031 / Henry Ott / TI SLYT512)
+ANALOG_THERMAL_CRIT_MM = 4.0
+ANALOG_THERMAL_WARN_MM = 8.0
+AFE_CROSSTALK_GAP_MM = 0.50
+AFE_CROSSTALK_RUN_MM = 3.0
+
+
+def classify_instrumentation_thermal_parts(
+    board: Board,
+    intent: dict | None = None,
+) -> tuple[set[str], set[str]]:
+    """Identify precision analog/metrology ICs and hot high-dissipation power components."""
+    analog_refs: set[str] = set()
+    hot_refs: set[str] = set()
+    parts_intent = (intent or {}).get("parts") or {}
+    hv_nets = _hv_net_set(board)
+
+    for fp in board.footprints:
+        desc = f"{fp.value} {fp.lib_id}"
+        meta = parts_intent.get(fp.ref) or {}
+        role_val = str(((meta.get("role") or {}).get("value")) or "").lower()
+
+        is_analog_ic = (
+            fp.prefix in ("U", "IC")
+            and (
+                role_val in ("adc", "dac", "vref", "opamp", "analog_fe", "instrumentation_amp")
+                or bool(_PRECISION_ANALOG_PART_RE.search(desc))
+                or any(p.net and _PRECISION_AFE_NET_RE.search(p.net) for p in fp.pads)
+            )
+            and not bool(fp.nets & hv_nets)
+        )
+        if is_analog_ic:
+            analog_refs.add(fp.ref)
+            continue
+
+        is_hot_power = (
+            fp.prefix in ("T", "TR", "BR")
+            or role_val in ("converter_ic", "power_switch", "transformer", "bridge_rectifier")
+            or bool(_HOT_POWER_PART_RE.search(desc))
+            or (
+                fp.prefix == "R"
+                and any(p.kind == "thru_hole" for p in fp.pads)
+                and bool(fp.nets & hv_nets)
+                and (fp.courtyard_area or 0.0) >= 25.0
+            )
+        )
+        if is_hot_power:
+            hot_refs.add(fp.ref)
+    return analog_refs, hot_refs
 
 _SURGE_TVS_RE = re.compile(
     r"(SM[ABC]J|P[46]KE|1\.5KE|D_SM[ABC]|DO-214|TVS)",
@@ -896,6 +968,131 @@ def run_emc_safety_checks(
                                     limit=SW_FB_DIELECTRIC_MIN_MM,
                                 )
 
+    # ------------------------------------------------------------------
+    # Rules 19-20: Precision Instrumentation Metrology (Thermal-EMF & AFE Crosstalk)
+    # ------------------------------------------------------------------
+    analog_thermal_rows: list[dict[str, Any]] = []
+    analog_refs, hot_refs = classify_instrumentation_thermal_parts(board, intent)
+    if analog_refs and hot_refs:
+        by_ref_fp = {fp.ref: fp for fp in board.footprints}
+        for aref in sorted(analog_refs):
+            afp = by_ref_fp.get(aref)
+            acy = legality.courtyard_polygon(afp) if afp is not None else None
+            if afp is None or acy is None or acy.is_empty:
+                continue
+            nearest_d = math.inf
+            nearest_hot = ""
+            for href in sorted(hot_refs):
+                if href == aref:
+                    continue
+                hfp = by_ref_fp.get(href)
+                hcy = legality.courtyard_polygon(hfp) if hfp is not None else None
+                if hfp is None or hcy is None or hcy.is_empty:
+                    continue
+                d = float(acy.distance(hcy))
+                if d < nearest_d:
+                    nearest_d = d
+                    nearest_hot = href
+            if not math.isfinite(nearest_d):
+                continue
+            analog_thermal_rows.append({
+                "analog_ref": aref,
+                "nearest_hot_ref": nearest_hot,
+                "edge_distance_mm": round(nearest_d, 2),
+            })
+            if nearest_d < ANALOG_THERMAL_CRIT_MM:
+                add_finding(
+                    "analog_thermal_proximity",
+                    "critical",
+                    f"Precision analog IC {aref} ({afp.value}) is only {nearest_d:.2f} mm from "
+                    f"heat-dissipating power part {nearest_hot} (< {ANALOG_THERMAL_CRIT_MM:.1f} mm); "
+                    f"thermal gradients induce Seebeck thermal-EMF drift (3-40 uV/C) in instrumentation",
+                    refs=[aref, nearest_hot],
+                    location_mm=afp.position,
+                    value=round(nearest_d, 2),
+                    limit=ANALOG_THERMAL_CRIT_MM,
+                )
+            elif nearest_d < ANALOG_THERMAL_WARN_MM:
+                add_finding(
+                    "analog_thermal_proximity",
+                    "warning",
+                    f"Precision analog IC {aref} ({afp.value}) is {nearest_d:.2f} mm from "
+                    f"heat-dissipating power part {nearest_hot} (< {ANALOG_THERMAL_WARN_MM:.1f} mm); "
+                    f"increase thermal separation to protect low-uV metrology accuracy",
+                    refs=[aref, nearest_hot],
+                    location_mm=afp.position,
+                    value=round(nearest_d, 2),
+                    limit=ANALOG_THERMAL_WARN_MM,
+                )
+
+    afe_crosstalk_rows: list[dict[str, Any]] = []
+    if has_copper:
+        afe_segs_by_lyr: dict[str, list[tuple[str, Any, float]]] = {}
+        dig_segs_by_lyr: dict[str, list[tuple[str, Any, float]]] = {}
+        for t in tracks:
+            tn = t.get("net") or ""
+            if not tn or is_ground_net(tn) or is_power_net(tn):
+                continue
+            line = _seg_line(t)
+            if line is None or line.length < 0.5:
+                continue
+            canon = name_to_canon.get(t.get("layer", ""), t.get("layer", ""))
+            hw = max(0.06, 0.5 * float(t.get("width") or 0.18))
+            if _PRECISION_AFE_NET_RE.search(tn) and not _NOISY_DIGITAL_NET_RE.search(tn):
+                afe_segs_by_lyr.setdefault(canon, []).append((tn, line, hw))
+            elif _NOISY_DIGITAL_NET_RE.search(tn):
+                dig_segs_by_lyr.setdefault(canon, []).append((tn, line, hw))
+
+        reported_xt: set[tuple[str, str, str]] = set()
+        for canon, afe_list in afe_segs_by_lyr.items():
+            dig_list = dig_segs_by_lyr.get(canon) or []
+            if not dig_list:
+                continue
+            # Accumulate parallel-coupling length per (afe_net, dig_net) on the same copper layer
+            pair_run: dict[tuple[str, str], tuple[float, float, Any]] = {}
+            for anet, aline, ahw in afe_list:
+                abuf = aline.buffer(ahw + AFE_CROSSTALK_GAP_MM, cap_style=2, quad_segs=2)
+                for dnet, dline, dhw in dig_list:
+                    if anet == dnet:
+                        continue
+                    gap = float(aline.distance(dline)) - ahw - dhw
+                    if gap >= AFE_CROSSTALK_GAP_MM:
+                        continue
+                    ov = dline.intersection(abuf)
+                    ov_len = float(getattr(ov, "length", 0.0) or 0.0)
+                    if ov_len <= 0.1:
+                        continue
+                    key = (anet, dnet)
+                    prev_len, prev_gap, prev_pt = pair_run.get(key, (0.0, math.inf, None))
+                    pt = ov.centroid if hasattr(ov, "centroid") else prev_pt
+                    pair_run[key] = (prev_len + ov_len, min(prev_gap, max(0.0, gap)), pt)
+            for (anet, dnet), (run_mm, min_gap, pt) in sorted(pair_run.items()):
+                if run_mm < AFE_CROSSTALK_RUN_MM:
+                    continue
+                rkey = (anet, dnet, canon)
+                if rkey in reported_xt:
+                    continue
+                reported_xt.add(rkey)
+                afe_crosstalk_rows.append({
+                    "analog_net": anet,
+                    "digital_net": dnet,
+                    "layer": canon,
+                    "parallel_mm": round(run_mm, 2),
+                    "min_gap_mm": round(min_gap, 3),
+                })
+                loc = (pt.x, pt.y) if pt is not None else None
+                add_finding(
+                    "afe_digital_crosstalk",
+                    "warning",
+                    f"Precision analog net '{anet}' runs {run_mm:.1f} mm within {min_gap:.2f} mm of "
+                    f"noisy digital net '{dnet}' on {canon} (< {AFE_CROSSTALK_GAP_MM:.2f} mm); "
+                    f"increase spacing (>= 3W) or insert a grounded guard trace (Henry Ott / TI SLYT512)",
+                    net=anet,
+                    location_mm=loc,
+                    value=round(min_gap, 3),
+                    limit=AFE_CROSSTALK_GAP_MM,
+                )
+
     return {
         "mounting_hole_clearance": mh_rows,
         "copper_pour_under_unfused_mains": emi_pour_hits,
@@ -906,4 +1103,6 @@ def run_emc_safety_checks(
         "switch_node_emi": sw_rows,
         "prefuse_mains_width": mains_width_rows,
         "hv_vertical_prepreg_overlap": vertical_overlaps,
+        "analog_thermal_proximity": analog_thermal_rows,
+        "afe_digital_crosstalk": afe_crosstalk_rows,
     }

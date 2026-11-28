@@ -295,3 +295,36 @@ def lock_routing_copy(src: Path, dst: Path) -> Path:
         if sidecar.is_file():
             shutil.copyfile(sidecar, dst.with_suffix(suffix))
     return dst
+
+
+def center_board_on_sheet(
+    src: Path,
+    dst: Path,
+    *,
+    page_width_mm: float = 0.0,
+    page_height_mm: float = 0.0,
+) -> dict:
+    """Translate the entire board cleanly to the center of its KiCad drawing sheet.
+
+    Updates GridOrigin (top-left of board) and AuxOrigin (bottom-left of board),
+    refills copper zones after translation, copies KiCad sidecars when ``src != dst``,
+    and returns the centering metadata (sheet size, shift vector, before/after centers).
+    """
+    src, dst = Path(src).resolve(), Path(dst).resolve()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src != dst:
+        for suffix in SIDECARS:
+            sidecar = src.with_suffix(suffix)
+            if sidecar.is_file():
+                shutil.copyfile(sidecar, dst.with_suffix(suffix))
+    with tempfile.TemporaryDirectory(prefix="eai_center_") as tmp:
+        result_path = Path(tmp) / "center.json"
+        run_helper(
+            "center_on_sheet",
+            src,
+            dst,
+            result_path,
+            f"{float(page_width_mm):.3f}",
+            f"{float(page_height_mm):.3f}",
+        )
+        return json.loads(result_path.read_text(encoding="utf-8"))

@@ -713,6 +713,32 @@ def build(board: Board, *, side_policy: str = "expert", intent: dict | None = No
                 for li in conv_inductors.get(conv_ref, ()):
                     if ci != li:
                         pb.repulsions.append((ci, li, 3.0, 4.0))
+        # Precision instrumentation thermal & switching-noise repulsion:
+        # keep precision analog/metrology ICs (ADC, DAC, VREF, INA, OPAMP) away from hot/noisy
+        # power components (transformers, offline switchers, bridge rectifiers, >=1W power resistors)
+        # to minimize Seebeck thermal-EMF drift (3-40 uV/C) across solder joints.
+        from ..eval.emc_safety import classify_instrumentation_thermal_parts
+
+        analog_refs, hot_power_refs = classify_instrumentation_thermal_parts(board, intent)
+        if analog_refs and hot_power_refs and board.board_area_mm2 and board.board_area_mm2 >= 2500.0:
+            existing_max_mm: dict[tuple[int, int], float] = {}
+            for a, b, d_mm, _w in pb.repulsions:
+                pk = (min(a, b), max(a, b))
+                existing_max_mm[pk] = max(existing_max_mm.get(pk, 0.0), float(d_mm))
+            for aref in sorted(analog_refs):
+                ai = ref_to_idx.get(aref)
+                if ai is None:
+                    continue
+                for href in sorted(hot_power_refs):
+                    hi = ref_to_idx.get(href)
+                    if hi is None or hi == ai:
+                        continue
+                    if pb.parts[ai][5] and pb.parts[hi][5]:
+                        continue
+                    pair_key = (min(ai, hi), max(ai, hi))
+                    if existing_max_mm.get(pair_key, 0.0) < 10.0:
+                        pb.repulsions.append((ai, hi, 10.0, 3.0))
+                        existing_max_mm[pair_key] = 10.0
         # Build disjoint movable same-side clusters for atomic Rust SA translate/rotate moves.
         used_in_cluster: set[int] = set()
         for bclaim in (intent or {}).get("blocks", []):
