@@ -51,6 +51,7 @@ from .fanout import (
     traps_pads,
 )
 from .freerouting import RouterConfig
+from .hv_mains import plan_mains_highways
 from .pairs import route_pair, rule_for
 
 LINK_MAX_MM = 5.0  # declared: straight-line decap-to-pin eligibility; farther is a placement problem
@@ -190,9 +191,10 @@ def _route_pairs(board: Board, pairs: list[tuple[str, str]], *, fixed: list[dict
 def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, taps: bool = True,
          escapes: bool = True, escape_signals: bool = False, microvia: str = "auto",
          power_first: bool = False, retry_coarse: bool = False,
+         mains_highways: bool = True,
          dru_eff: dict[str, float] | None = None) -> dict:
     fixed: list[dict] = []
-    report: dict = {"pairs": [], "links": [], "taps": [], "escapes": []}
+    report: dict = {"pairs": [], "links": [], "taps": [], "escapes": [], "mains_highways": []}
     layers = [cl.canonical for cl in board.copper_layers]
     board_refs = {fp.ref for fp in board.footprints}
     # A tap is locked copper with a through via. It is made only for a net that owns an inner plane,
@@ -203,6 +205,12 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
     for zone in board.zones:
         if zone.get("net") and zone.get("outline") and zone.get("uuid") in planes:
             pours.setdefault(zone["net"], set()).update(planes[zone["uuid"]])
+
+    if mains_highways:
+        mh = plan_mains_highways(board, intent, fixed=fixed)
+        if mh["copper"]:
+            fixed.extend(mh["copper"])
+        report["mains_highways"] = mh["rows"]
 
     reservations: list[dict] = []
     if pairs and not power_first:
@@ -607,6 +615,9 @@ def _drop_nets_from_s6a(copper: list[dict], report: dict, live_taps: list, bad_n
         if row.get("routed") and row.get("net") in bad_nets:
             row.update(routed=False, failed="pruned: s6a DRC violation")
     for row in report.get("escapes", []):
+        if row.get("routed") and row.get("net") in bad_nets:
+            row.update(routed=False, failed="pruned: s6a DRC violation")
+    for row in report.get("mains_highways", []):
         if row.get("routed") and row.get("net") in bad_nets:
             row.update(routed=False, failed="pruned: s6a DRC violation")
     return kept_copper, kept_taps

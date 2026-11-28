@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from eda_agent.placer.eval import lint
 from eda_agent.placer.ir import (
     Board,
@@ -443,3 +445,181 @@ def test_dru_compound_netname_clearance_compilation(tmp_path):
     # Must tighten existing intra_drunet 1540 -> 2500 in place, never emit shadowed 2450/1540 duplicates!
     assert "(clearance 2500)" in updated
     assert "(clearance 2450)" not in updated
+
+
+def test_instrumentation_thermal_proximity_rule_19():
+    hot_xfmr = Footprint(
+        ref="T1", value="EE13_Flyback", lib_id="Transformer:EE13",
+        x=20.0, y=30.0, rotation=0.0,
+        pads=[Pad("1", "/AUX/HV_BUS", (0.0, 0.0), (1.8, 1.8), kind="thru_hole", drill=(1.0, 1.0))],
+        courtyard=Courtyard("drawn", [_rect_poly(-6.0, -6.0, 6.0, 6.0)]),
+    )
+    hot_sw = Footprint(
+        ref="U1", value="INN3162C", lib_id="Power:InSOP-24D",
+        x=40.0, y=30.0, rotation=0.0,
+        pads=[Pad("1", "/AUX/FLY_DRAIN", (0.0, 0.0), (1.0, 1.0), kind="smd", layers=["F.Cu"])],
+        courtyard=Courtyard("drawn", [_rect_poly(-5.0, -4.0, 5.0, 4.0)]),
+    )
+    adc_close = Footprint(
+        ref="U2", value="ADS1220IPWR", lib_id="Analog_ADC:TSSOP-16",
+        x=29.0, y=30.0, rotation=0.0,
+        pads=[Pad("1", "AIN0_P", (0.0, 0.0), (0.5, 0.5), kind="smd", layers=["F.Cu"])],
+        courtyard=Courtyard("drawn", [_rect_poly(-2.0, -3.0, 2.0, 3.0)]),
+    )
+    vref_warn = Footprint(
+        ref="U3", value="REF5025ID", lib_id="Reference_Voltage:SOIC-8",
+        x=52.0, y=30.0, rotation=0.0,
+        pads=[Pad("1", "VREF_2V5", (0.0, 0.0), (0.6, 0.6), kind="smd", layers=["F.Cu"])],
+        courtyard=Courtyard("drawn", [_rect_poly(-2.0, -2.0, 2.0, 2.0)]),
+    )
+    ina_far = Footprint(
+        ref="U4", value="INA333AIDGK", lib_id="Amplifier_Instrumentation:MSOP-8",
+        x=85.0, y=30.0, rotation=0.0,
+        pads=[Pad("1", "AIN1_P", (0.0, 0.0), (0.5, 0.5), kind="smd", layers=["F.Cu"])],
+        courtyard=Courtyard("drawn", [_rect_poly(-2.0, -2.0, 2.0, 2.0)]),
+    )
+    board = _make_board(
+        footprints=[hot_xfmr, hot_sw, adc_close, vref_warn, ina_far],
+        nets=[
+            Net("/AUX/HV_BUS", "AUX_PRIMARY_HV", 1),
+            Net("/AUX/FLY_DRAIN", "AUX_PRIMARY_HV", 2),
+            Net("AIN0_P", "Default", 3),
+            Net("VREF_2V5", "Default", 4),
+            Net("AIN1_P", "Default", 5),
+        ],
+        netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.25), NetClass("AUX_PRIMARY_HV", 1.54, 0.5, 0.75, 0.35)],
+    )
+    rep = lint.audit(board)
+    hits = _rules(rep).get("analog_thermal_proximity", [])
+    assert any("U2" in h["refs"] and h["severity"] == "critical" for h in hits)
+    assert any("U3" in h["refs"] and h["severity"] == "warning" for h in hits)
+    assert not any("U4" in h["refs"] for h in hits)
+
+
+def test_instrumentation_afe_digital_crosstalk_rule_20():
+    tracks_bad = [
+        {"net": "AIN0_RTD_P", "layer": "F.Cu", "width": 0.2, "points": [(10.0, 20.0), (25.0, 20.0)]},
+        {"net": "SPI1_SCK", "layer": "F.Cu", "width": 0.2, "points": [(10.0, 20.35), (25.0, 20.35)]},
+    ]
+    board_bad = _make_board(
+        footprints=[],
+        nets=[Net("AIN0_RTD_P", "Default", 1), Net("SPI1_SCK", "Default", 2)],
+        tracks=tracks_bad,
+    )
+    hits_bad = _rules(lint.audit(board_bad)).get("afe_digital_crosstalk", [])
+    assert len(hits_bad) == 1
+    assert hits_bad[0]["net"] == "AIN0_RTD_P"
+    assert "SPI1_SCK" in hits_bad[0]["detail"]
+
+    tracks_good = [
+        {"net": "AIN0_RTD_P", "layer": "F.Cu", "width": 0.2, "points": [(10.0, 20.0), (25.0, 20.0)]},
+        {"net": "SPI1_SCK", "layer": "F.Cu", "width": 0.2, "points": [(10.0, 22.0), (25.0, 22.0)]},
+    ]
+    board_good = _make_board(
+        footprints=[],
+        nets=[Net("AIN0_RTD_P", "Default", 1), Net("SPI1_SCK", "Default", 2)],
+        tracks=tracks_good,
+    )
+    assert not _rules(lint.audit(board_good)).get("afe_digital_crosstalk")
+
+
+def test_problem_build_adds_instrumentation_thermal_repulsions():
+    from eda_agent.placer.place import problem as place_problem
+
+    hot_xfmr = Footprint(
+        ref="T1", value="EE13_Flyback", lib_id="Transformer:EE13",
+        x=20.0, y=30.0, rotation=0.0,
+        pads=[Pad("1", "/AUX/HV_BUS", (0.0, 0.0), (1.8, 1.8), kind="thru_hole", drill=(1.0, 1.0))],
+        courtyard=Courtyard("drawn", [_rect_poly(-6.0, -6.0, 6.0, 6.0)]),
+    )
+    adc = Footprint(
+        ref="U2", value="ADS1256", lib_id="Analog_ADC:SSOP-28",
+        x=70.0, y=30.0, rotation=0.0,
+        pads=[Pad("1", "AIN0", (0.0, 0.0), (0.5, 0.5), kind="smd", layers=["F.Cu"])],
+        courtyard=Courtyard("drawn", [_rect_poly(-4.0, -5.0, 4.0, 5.0)]),
+    )
+    board = _make_board(
+        footprints=[hot_xfmr, adc],
+        nets=[Net("/AUX/HV_BUS", "AUX_PRIMARY_HV", 1), Net("AIN0", "Default", 2)],
+        netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.25), NetClass("AUX_PRIMARY_HV", 1.54, 0.5, 0.75, 0.35)],
+    )
+    prob = place_problem.build(board, intent={"parts": {}, "groups": [], "isolation": []}, floorplan=True)
+    # T1 (idx 0) and U2 (idx 1) must have a >= 10 mm thermal repulsion in prob.repulsions!
+    assert any(
+        {a, b} == {0, 1} and min_mm >= 10.0
+        for a, b, min_mm, _w in prob.repulsions
+    )
+
+
+def test_s6a_hv_mains_pre_router_alternating_outer_layers():
+    from eda_agent.placer.route.hv_mains import plan_mains_highways
+
+    j1 = Footprint(
+        ref="J1", value="AC_IN", lib_id="TerminalBlock:TB2",
+        x=12.0, y=35.0, rotation=0.0,
+        pads=[
+            Pad("1", "/AUX/AC_L", (0.0, -2.5), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+            Pad("2", "/AUX/AC_N", (0.0, 2.5), (2.0, 2.0), kind="thru_hole", drill=(1.0, 1.0)),
+        ],
+    )
+    f1 = Footprint(
+        ref="F1", value="Fuse_1A", lib_id="Fuse:Fuse_THT",
+        x=26.0, y=28.0, rotation=0.0,
+        pads=[
+            Pad("1", "/AUX/AC_L", (-3.0, 0.0), (1.8, 1.8), kind="thru_hole", drill=(0.9, 0.9)),
+            Pad("2", "/AUX/AC_L_FUSED", (3.0, 0.0), (1.8, 1.8), kind="thru_hole", drill=(0.9, 0.9)),
+        ],
+    )
+    br1 = Footprint(
+        ref="BR1", value="MB10S", lib_id="Diode_Bridge:MB10S",
+        x=45.0, y=35.0, rotation=0.0,
+        pads=[
+            Pad("1", "/AUX/AC_L_FUSED", (-2.0, -2.5), (1.0, 0.8), kind="smd", layers=["F.Cu"]),
+            Pad("2", "/AUX/AC_N", (2.0, -2.5), (1.0, 0.8), kind="smd", layers=["F.Cu"]),
+        ],
+    )
+    board = _make_board(
+        footprints=[j1, f1, br1],
+        nets=[
+            Net("/AUX/AC_L", "AUX_PRIMARY_HV", 1),
+            Net("/AUX/AC_L_FUSED", "AUX_PRIMARY_HV", 2),
+            Net("/AUX/AC_N", "AUX_PRIMARY_HV", 3),
+        ],
+        netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.25), NetClass("AUX_PRIMARY_HV", 1.54, 0.5, 0.75, 0.35)],
+    )
+    res = plan_mains_highways(board, {"parts": {}})
+    assert res["copper"]
+    by_net = {r["net"]: r for r in res["rows"]}
+    assert by_net["/AUX/AC_L"]["routed"] is True
+    assert by_net["/AUX/AC_L_FUSED"]["routed"] is True
+    # All pre-routed copper must stay strictly on outer layers (F.Cu / B.Cu), never In1/In2!
+    assert all(c["layer"] in ("F.Cu", "B.Cu") for c in res["copper"])
+    # /AUX/AC_L is THT-only -> 1.0 mm; /AUX/AC_L_FUSED touches SMD 1.0x0.8 pad -> capped at 0.8 mm!
+    assert by_net["/AUX/AC_L"]["width_mm"] == 1.0
+    assert by_net["/AUX/AC_L_FUSED"]["width_mm"] == 0.8
+
+
+def test_center_board_on_sheet_wrapper_delegates_cleanly(tmp_path, monkeypatch):
+    from eda_agent.placer.io import kicad as kicad_io
+
+    src = tmp_path / "demo.kicad_pcb"
+    dst = tmp_path / "centered.kicad_pcb"
+    src.write_text('(kicad_pcb (paper "A4"))\n', encoding="utf-8")
+    (tmp_path / "demo.kicad_pro").write_text("{}", encoding="utf-8")
+
+    captured: list[tuple] = []
+
+    def _fake_helper(cmd, *args):
+        captured.append((cmd, args))
+        Path(args[2]).write_text(
+            '{"page_mm": [297.0, 210.0], "shift_mm": [94.5, 68.0], '
+            '"before_center_mm": [54.0, 37.0], "after_center_mm": [148.5, 105.0], '
+            '"moved": {"footprints": 10, "tracks": 20, "zones": 2, "drawings": 4}}',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(kicad_io, "run_helper", _fake_helper)
+    meta = kicad_io.center_board_on_sheet(src, dst)
+    assert meta["after_center_mm"] == [148.5, 105.0]
+    assert (tmp_path / "centered.kicad_pro").is_file()
+    assert captured[0][0] == "center_on_sheet"

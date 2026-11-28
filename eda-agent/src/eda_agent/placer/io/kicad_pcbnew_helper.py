@@ -3123,10 +3123,87 @@ def clean_silkscreen_cmd(board_path, cfg_json, out_board, out_json):
         json.dump(report, fh)
 
 
+def center_on_sheet(board_path, out_board, out_json, page_w_mm="0", page_h_mm="0"):
+    """Translate the entire board symmetrically onto the center of its KiCad drawing sheet.
+
+    Moves footprints, tracks/arcs/vias, zones/rule-areas, and drawings by the exact same
+    0.5 mm-snapped vector, sets GridOrigin (top-left) & AuxOrigin (bottom-left), refills
+    copper zones, and reports before/after bounding boxes.
+    """
+    paper_sizes = {
+        "A4": (297.0, 210.0),
+        "A3": (420.0, 297.0),
+        "A2": (594.0, 420.0),
+        "A1": (841.0, 594.0),
+        "A5": (210.0, 148.0),
+        "A": (279.4, 215.9),
+        "USLetter": (279.4, 215.9),
+        "B": (431.8, 279.4),
+        "USLedger": (431.8, 279.4),
+    }
+    pw, ph = float(page_w_mm), float(page_h_mm)
+    if pw <= 0.0 or ph <= 0.0:
+        with open(board_path, encoding="utf-8", errors="ignore") as fh:
+            head = fh.read(4096)
+        m = re.search(r'\(paper\s+"([^"]+)"(?:\s+([0-9.]+)\s+([0-9.]+))?(\s+portrait)?\)', head)
+        if m:
+            ptype = m.group(1)
+            if ptype == "User" and m.group(2) and m.group(3):
+                pw, ph = float(m.group(2)), float(m.group(3))
+            else:
+                pw, ph = paper_sizes.get(ptype, (297.0, 210.0))
+            if m.group(4):
+                pw, ph = ph, pw
+        else:
+            pw, ph = (297.0, 210.0)
+
+    board = pcbnew.LoadBoard(board_path)
+    bb = board.GetBoardEdgesBoundingBox()
+    x0_b, y0_b = pcbnew.ToMM(bb.GetLeft()), pcbnew.ToMM(bb.GetTop())
+    x1_b, y1_b = pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom())
+    cx_b, cy_b = 0.5 * (x0_b + x1_b), 0.5 * (y0_b + y1_b)
+    dx_mm = round((0.5 * pw - cx_b) * 2.0) / 2.0
+    dy_mm = round((0.5 * ph - cy_b) * 2.0) / 2.0
+    delta = pcbnew.VECTOR2I(pcbnew.FromMM(dx_mm), pcbnew.FromMM(dy_mm))
+
+    moved = {"footprints": 0, "tracks": 0, "zones": 0, "drawings": 0}
+    if abs(dx_mm) > 1e-6 or abs(dy_mm) > 1e-6:
+        for fp in board.GetFootprints():
+            fp.Move(delta)
+            moved["footprints"] += 1
+        for trk in board.GetTracks():
+            trk.Move(delta)
+            moved["tracks"] += 1
+        for zone in board.Zones():
+            zone.Move(delta)
+            moved["zones"] += 1
+        for drw in board.GetDrawings():
+            drw.Move(delta)
+            moved["drawings"] += 1
+
+    bb_a = board.GetBoardEdgesBoundingBox()
+    x0_a, y0_a = pcbnew.ToMM(bb_a.GetLeft()), pcbnew.ToMM(bb_a.GetTop())
+    x1_a, y1_a = pcbnew.ToMM(bb_a.GetRight()), pcbnew.ToMM(bb_a.GetBottom())
+    ds = board.GetDesignSettings()
+    ds.SetGridOrigin(pcbnew.VECTOR2I(pcbnew.FromMM(round(x0_a, 1)), pcbnew.FromMM(round(y0_a, 1))))
+    ds.SetAuxOrigin(pcbnew.VECTOR2I(pcbnew.FromMM(round(x0_a, 1)), pcbnew.FromMM(round(y1_a, 1))))
+    if abs(dx_mm) > 1e-6 or abs(dy_mm) > 1e-6:
+        _refill_modified_zones(board)
+    pcbnew.SaveBoard(out_board, board)
+    with open(out_json, "w", encoding="utf-8") as fh:
+        json.dump({
+            "page_mm": [pw, ph],
+            "shift_mm": [dx_mm, dy_mm],
+            "before_center_mm": [round(cx_b, 3), round(cy_b, 3)],
+            "after_center_mm": [round(0.5 * (x0_a + x1_a), 3), round(0.5 * (y0_a + y1_a), 3)],
+            "moved": moved,
+        }, fh)
+
+
 if __name__ == "__main__":
     _cmd, _args = sys.argv[1], sys.argv[2:]
     {"prepare": prepare, "finish": finish, "sanitize": sanitize, "lock_routing": lock_routing,
      "prune_dangling_by_drc": prune_dangling_by_drc, "inject_return_vias": inject_return_vias,
      "heal_thermals": heal_thermals, "heal_mask_bridges": heal_mask_bridges, "dump": dump,
      "place": place, "macro_apply": macro_apply, "filled_hits": filled_hits, "refill": refill,
-     "clean_silkscreen": clean_silkscreen_cmd}[_cmd](*_args)
+     "clean_silkscreen": clean_silkscreen_cmd, "center_on_sheet": center_on_sheet}[_cmd](*_args)
