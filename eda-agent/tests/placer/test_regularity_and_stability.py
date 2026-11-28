@@ -72,7 +72,7 @@ def test_rust_sa_regularity_improves_alignment_and_axis() -> None:
         rules={"min_clearance": 0.15},
     )
     board.reindex()
-    pb = problem.build(board, side_policy="top_only")
+    pb = problem.build(board, side_policy="top_only", floorplan=True)
     assert pb.w_reg > 0.0
     assert sum(1 for g in pb.reg_groups if g > 0) == 8
 
@@ -235,3 +235,90 @@ def test_pro_score_selector_prefers_higher_pro_score_candidate() -> None:
     assert pipeline._floorplan_rank(info_ok, m_better, {"clear": 55}) < pipeline._floorplan_rank(
         info_ok, m_base, {"clear": 29}
     )
+
+
+def test_silk_graphic_overhang_protection_and_overlap_guard() -> None:
+    """Footprints whose F.SilkS graphics overhang F.CrtYd are protected in SA and decap alignment."""
+    d4 = Footprint(
+        ref="D4", value="BAT54", lib_id="Diode_SMD:D_SOD-882", x=10.0, y=10.0, rotation=0.0, side="F",
+        pads=[Pad("1", "N1", (-0.4, 0.0), (0.4, 0.5), layers=("F.Cu",)),
+              Pad("2", "GND", (0.4, 0.0), (0.4, 0.5), layers=("F.Cu",))],
+        courtyard=Courtyard("file", [_rect(-0.85, -0.65, 0.85, 0.65)]),
+        silk_local_mm=(-0.88, -0.68, 0.88, 0.68),
+    )
+    d6 = Footprint(
+        ref="D6", value="BAT54", lib_id="Diode_SMD:D_SOD-882", x=11.72, y=10.0, rotation=0.0, side="F",
+        pads=[Pad("1", "N2", (-0.4, 0.0), (0.4, 0.5), layers=("F.Cu",)),
+              Pad("2", "GND", (0.4, 0.0), (0.4, 0.5), layers=("F.Cu",))],
+        courtyard=Courtyard("file", [_rect(-0.85, -0.65, 0.85, 0.65)]),
+        silk_local_mm=(-0.88, -0.68, 0.88, 0.68),
+    )
+    board = Board(
+        name="silk_overhang_test",
+        footprints=[d4, d6],
+        outline=[Outline(_rect(0.0, 0.0, 40.0, 40.0))],
+        board_area_mm2=1600.0,
+        copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.25)],
+        nets=[Net("GND", "Default", 2), Net("N1", "Default", 1), Net("N2", "Default", 1)],
+        rules={"silk_clearance": 0.10},
+    )
+    board.reindex()
+    derive(board)
+    # At x=10.0 and x=11.72, courtyards have 0.02 mm gap (no courtyard overlap),
+    # yet their silkscreen graphics overlap by 0.04 mm -> must be caught!
+    assert decap.silk_graphic_overlap(board, d4) is True
+    pb = problem.build(board, side_policy="top_only", floorplan=True)
+    # Solver box must expand beyond raw courtyard (-0.85..0.85) to cover silk + half silk_clearance.
+    assert pb.parts[0][0] <= -0.95
+    assert pb.parts[0][2] >= 0.95
+    # Moving d6 to x=12.0 leaves 0.24 mm silk-to-silk clearance -> clean!
+    d6.x = 12.0
+    assert decap.silk_graphic_overlap(board, d4) is False
+
+
+def test_feranec_connector_entry_signal_flow_and_utilization() -> None:
+    """Connector -> Series R -> Clamp Diode generates entry-corridor affinities and utilization metrics."""
+    j2 = Footprint(
+        ref="J2", value="Conn", lib_id="Conn:1x02", x=55.0, y=25.0, rotation=0.0, side="F", locked=True,
+        pads=[Pad("1", "IN_RAW", (0.0, -2.5), (1.8, 1.8), kind="thru_hole", layers=("F.Cu", "B.Cu")),
+              Pad("2", "GND", (0.0, 2.5), (1.8, 1.8), kind="thru_hole", layers=("F.Cu", "B.Cu"))],
+        courtyard=Courtyard("file", [_rect(-2.5, -5.0, 2.5, 5.0)]),
+    )
+    r8 = Footprint(
+        ref="R8", value="1k", lib_id="R:0603", x=30.0, y=25.0, rotation=0.0, side="F",
+        pads=[Pad("1", "IN_RAW", (-0.8, 0.0), (0.8, 0.9), layers=("F.Cu",)),
+              Pad("2", "IN_FILT", (0.8, 0.0), (0.8, 0.9), layers=("F.Cu",))],
+        courtyard=Courtyard("file", [_rect(-1.5, -0.8, 1.5, 0.8)]),
+    )
+    d8 = Footprint(
+        ref="D8", value="BAT54", lib_id="D:SOD-882", x=20.0, y=25.0, rotation=0.0, side="F",
+        pads=[Pad("1", "IN_FILT", (-0.4, 0.0), (0.4, 0.5), layers=("F.Cu",)),
+              Pad("2", "GND", (0.4, 0.0), (0.4, 0.5), layers=("F.Cu",))],
+        courtyard=Courtyard("file", [_rect(-0.85, -0.65, 0.85, 0.65)]),
+    )
+    u4 = Footprint(
+        ref="U4", value="ADC", lib_id="TSSOP:16", x=15.0, y=25.0, rotation=0.0, side="F",
+        pads=[Pad("1", "IN_FILT", (2.0, 0.0), (0.6, 1.2), layers=("F.Cu",)),
+              Pad("2", "GND", (-2.0, 0.0), (0.6, 1.2), layers=("F.Cu",))],
+        courtyard=Courtyard("file", [_rect(-3.0, -4.0, 3.0, 4.0)]),
+    )
+    board = Board(
+        name="feranec_flow_test",
+        footprints=[j2, r8, d8, u4],
+        outline=[Outline(_rect(0.0, 0.0, 60.0, 50.0))],
+        board_area_mm2=3000.0,
+        copper_layers=[CopperLayer("F.Cu", "F.Cu", 0), CopperLayer("B.Cu", "B.Cu", 1)],
+        netclasses=[NetClass("Default", 0.15, 0.2, 0.5, 0.25)],
+        nets=[Net("GND", "Default", 3), Net("IN_RAW", "Default", 2), Net("IN_FILT", "Default", 3)],
+        rules={"silk_clearance": 0.10},
+    )
+    board.reindex()
+    derive(board)
+    pb = problem.build(board, side_policy="top_only", floorplan=True)
+    # Expect affinities pulling R8 toward J2 and D8 toward R8 + J2.
+    assert len(pb.affinities) >= 3
+    util = metrics.board_utilization(board)
+    assert util["available"] is True
+    assert util["can_compact"] is True
+    assert util["max_side_utilization"] < 0.10

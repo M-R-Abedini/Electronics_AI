@@ -275,3 +275,36 @@ def regularity(board: Board) -> dict:
     return {"n": len(passives), "aligned_fraction": round(aligned / len(passives), 4),
             "rotation_on_90_grid": round(on_grid / len(board.footprints), 4),
             "dominant_axis_fraction": round(axis.most_common(1)[0][1] / len(passives), 4)}
+
+
+def board_utilization(board: Board) -> dict:
+    """Measure board courtyard utilization, dead-space fraction, and compaction headroom."""
+    area = float(board.board_area_mm2 or 0.0)
+    if area <= 0.0:
+        return {"available": False}
+    f_cy = sum(fp.courtyard_area for fp in board.footprints if fp.side == "F")
+    b_cy = sum(fp.courtyard_area for fp in board.footprints if fp.side == "B")
+    total_cy = f_cy + b_cy
+    f_util = f_cy / area
+    b_util = b_cy / area
+    max_util = max(f_util, b_util)
+    xs = [p[0] for o in board.outline for p in o.outer]
+    ys = [p[1] for o in board.outline for p in o.outer]
+    bw = (max(xs) - min(xs)) if xs else 0.0
+    bh = (max(ys) - min(ys)) if ys else 0.0
+    # Conservative target utilization for clean IPC-7351 assembly + routing channels is ~45%.
+    target_util = 0.45
+    scale_hint = min(1.0, math.sqrt(max_util / target_util)) if max_util > 0.0 else 1.0
+    return {
+        "available": True,
+        "board_size_mm": [round(bw, 2), round(bh, 2)],
+        "board_area_mm2": round(area, 2),
+        "front_courtyard_mm2": round(f_cy, 2),
+        "back_courtyard_mm2": round(b_cy, 2),
+        "total_courtyard_mm2": round(total_cy, 2),
+        "front_utilization": round(f_util, 4),
+        "back_utilization": round(b_util, 4),
+        "max_side_utilization": round(max_util, 4),
+        "can_compact": bool(max_util < 0.36 and bw > 50.0 and bh > 40.0),
+        "est_compact_scale": round(scale_hint, 3),
+    }

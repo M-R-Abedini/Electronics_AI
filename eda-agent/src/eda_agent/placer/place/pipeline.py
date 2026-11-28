@@ -188,6 +188,9 @@ def _solve_one(board, *, side_policy: str, mode: str, seed: int, intent: dict | 
         placed, core, findings = _resolve_hv_clearances(
             placed, pb, solver_pb, core, retained, macros, findings
         )
+        placed, core, findings = _resolve_silk_graphic_overlaps(
+            placed, pb, solver_pb, core, retained, macros, findings
+        )
     violations = sum(not finding.fixed for finding in findings)
     info = {
         "mode": mode, "side_policy": side_policy, "seed": seed, "movable": movable,
@@ -461,6 +464,55 @@ def _resolve_hv_clearances(placed, pb, solver_pb, core, retained, macros, findin
                 if (
                     domains.footprints_in_domains((fp,), dom_regions)
                     and clr_guard(placed, (fp,))
+                    and not any(not f.fixed for f in legality.check(placed, fixed=set(pb.fixed)))
+                ):
+                    poses_now[idx] = (nx, ny, poses_now[idx][2])
+                    found = True
+                    moved_any = True
+                    break
+            if found:
+                break
+        if not found:
+            fp.x, fp.y, fp.rotation = ox, oy, orot
+    if moved_any:
+        core.set_positions(poses_now)
+        findings = legality.check(placed, fixed=set(pb.fixed))
+    return placed, core, findings
+
+
+def _resolve_silk_graphic_overlaps(placed, pb, solver_pb, core, retained, macros, findings):
+    """Nudge any movable part whose own-side F.SilkS/B.SilkS graphics violate board silk_clearance."""
+    silk_clr = float(placed.rules.get("silk_clearance") or 0.0)
+    if silk_clr <= 0.0 or macros:
+        return placed, core, findings
+    idx_by_ref = {ref: idx for idx, ref in enumerate(solver_pb.refs)}
+    dom_regions = domains.ref_regions(placed, set(pb.fixed))
+    clr_guard = domains.make_clearance_guard(placed)
+    offenders = [
+        fp for fp in placed.footprints
+        if fp.ref not in pb.fixed and not fp.locked and fp.ref in idx_by_ref
+        and decap.silk_graphic_overlap(placed, fp, silk_clr)
+    ]
+    if not offenders:
+        return placed, core, findings
+    poses_now = list(core.positions())
+    moved_any = False
+    for fp in offenders:
+        if not decap.silk_graphic_overlap(placed, fp, silk_clr):
+            continue
+        ox, oy, orot = fp.x, fp.y, fp.rotation
+        idx = idx_by_ref[fp.ref]
+        found = False
+        for radius in (0.25, 0.45, 0.70, 1.0, 1.4, 2.0):
+            for k in range(16):
+                ang = (2.0 * math.pi * k) / 16.0
+                nx = round(ox + radius * math.cos(ang), 4)
+                ny = round(oy + radius * math.sin(ang), 4)
+                fp.x, fp.y = nx, ny
+                if (
+                    not decap.silk_graphic_overlap(placed, fp, silk_clr)
+                    and domains.footprints_in_domains((fp,), dom_regions)
+                    and (clr_guard is None or clr_guard(placed, (fp,)))
                     and not any(not f.fixed for f in legality.check(placed, fixed=set(pb.fixed)))
                 ):
                     poses_now[idx] = (nx, ny, poses_now[idx][2])
