@@ -62,11 +62,14 @@ polarity orientation, component spacing and obvious mechanical crowding—never
 rely on scalar placement scores alone. `eda__pcb_render_svg` currently omits
 region/pour and full component-body outline coverage. It can help inspect
 supported labels, orientation and spacing, but cannot prove absence of a plane,
-return path, short or clearance violation. Check Top/Bottom Overlay silkscreen
-dimensions against IPC-7351 guidance (`1.0–1.27 mm` recommended, `0.80 mm`
-dense floor, `0.15–0.18 mm` stroke, ratio `>= 1:10`, `>= 0.20 mm` pad
-clearance, outside bodies, user port labels preserved, and pre-fab check of
-cured ink thickness `15–25 um` / fab printable limits). A fresh native DRC
+return path, short or clearance violation. Component assembly-guide reference designators MUST NOT act as placement or
+routing constraints and should be offloaded to the Assembly layer (`F.Fab`/`B.Fab`,
+Ref-only, standardized body-contained sizes `0.16-1.00 mm`, `1:7` stroke) by
+default. Check any remaining Top/Bottom Overlay silkscreen labels against IPC-7351
+guidance (`1.0-1.27 mm` recommended, `0.80 mm` dense floor, `0.15-0.18 mm` stroke,
+`0.12-0.15 mm` dense/LPI, ratio `>= 1:10`, condensed width before shrinking height,
+`>= 0.20 mm` pad clearance, outside bodies, polarity/user port labels preserved,
+and pre-fab check of cured ink thickness `15-25 um` / fab printable limits). A fresh native DRC
 additionally needs its actual report scope and exceptions; cached violations
 are a separate result.
 

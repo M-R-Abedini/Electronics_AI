@@ -1848,6 +1848,14 @@ def _extract_silkscreen_texts(board):
     return out
 
 
+_FAB_HEIGHT_TIERS_MM = (1.00, 0.80, 0.60, 0.50, 0.40, 0.30, 0.25, 0.20, 0.16)
+
+
+def _fab_stroke_mm(h_mm):
+    """IPC-A-610 / IPC-7351 1:7 stroke ratio for Assembly Drawing vector text (always >= 1:10)."""
+    return max(0.03, min(0.15, round(h_mm / 7.0, 2)))
+
+
 def _ensure_fab_reference(board, fp):
     """Ensure a visible assembly-drawing reference exists on F.Fab / B.Fab when hidden from Silkscreen."""
     fab_lyr = pcbnew.B_Fab if fp.IsFlipped() else pcbnew.F_Fab
@@ -1869,12 +1877,16 @@ def _ensure_fab_reference(board, fp):
     tall = bh > bw * 1.25
     long_side = max(bw, bh)
     short_side = min(bw, bh)
-    # Size fab text cleanly to fit inside the component body outline for Assembly Drawings.
     char_count = max(2, len(ref_str))
-    fit_h = min(pcbnew.FromMM(0.85), int(short_side * 0.65), int(long_side / (char_count * 0.88)))
-    fab_h = max(pcbnew.FromMM(0.16), fit_h)
-    fab_w = max(pcbnew.FromMM(0.14), int(fab_h * 0.82))
-    fab_s = max(pcbnew.FromMM(0.03), min(pcbnew.FromMM(0.14), int(fab_h / 7.0)))
+    fit_h_mm = min(1.00, _mm(int(short_side * 0.72)), _mm(int(long_side / (char_count * 0.82))))
+    chosen_h_mm = _FAB_HEIGHT_TIERS_MM[-1]
+    for tier in _FAB_HEIGHT_TIERS_MM:
+        if tier <= fit_h_mm + 1e-6:
+            chosen_h_mm = tier
+            break
+    fab_h = pcbnew.FromMM(chosen_h_mm)
+    fab_w = pcbnew.FromMM(round(chosen_h_mm * 0.85, 3))
+    fab_s = pcbnew.FromMM(_fab_stroke_mm(chosen_h_mm))
 
     txt = pcbnew.PCB_TEXT(fp)
     txt.SetText(ref_str)
@@ -1973,88 +1985,116 @@ def _normalize_fab_texts(board, outline_poly, has_outline, fp_body_map, is_minia
         preferred_ang = 90.0 if bh > bw * 1.25 else 0.0
 
         fab_items = []
+        ref_str = fp.GetReference()
+        val_str = fp.GetValue()
         for fld in fp.GetFields():
             if fld.GetLayer() in fab_layers and fld.IsVisible() and _item_text(fld):
                 fld_name = fld.GetName() if hasattr(fld, "GetName") else ""
-                fab_items.append((fld, fld_name != "Reference"))
+                is_val_f = fld_name != "Reference"
+                fab_items.append((fld, is_val_f, fld_name == "Reference"))
         for g in fp.GraphicalItems():
             if g.GetLayer() in fab_layers and g.GetClass() in _TEXT_CLASSES and g.IsVisible() and _item_text(g):
-                fab_items.append((g, False))
+                raw_t = g.GetText()
+                shown_t = _item_text(g)
+                is_ref_g = raw_t in ("${REFERENCE}", "%R") or shown_t == ref_str
+                is_val_g = raw_t in ("${VALUE}", "%V") or (bool(val_str) and shown_t == val_str and shown_t != ref_str)
+                fab_items.append((g, is_val_g, is_ref_g))
 
-        for item, is_value in fab_items:
+        # Preserve footprint-owned polarity/pin markers on F.Fab/B.Fab (e.g. 'K', 'A', '+', '-', '1')
+        # at their authored positions; never drag them onto the component center on top of Reference.
+        marker_boxes = []
+        for item, is_value, is_ref_txt in fab_items:
+            if not is_value and not is_ref_txt:
+                mbox = _text_box(item)
+                if not (has_outline and not _box_inside_outline(mbox, outline_poly, 0)):
+                    marker_boxes.append(mbox)
+
+        seen_ref_on_fab = False
+        for item, is_value, is_ref_txt in fab_items:
             if is_value and dense_miniature_fab:
-                # Dense miniature boards (e.g. 0201 wearables): keep F.Fab/B.Fab Ref-only per IPC-A-610.
+                # IPC-A-610 Assembly Drawing: keep F.Fab/B.Fab Ref-only (zero Value clutter).
                 item.SetVisible(False)
                 values_hidden += 1
                 continue
 
-            txt = _item_text(item)
+            if not is_value and not is_ref_txt:
+                # Keep footprint-authored Fab polarity/pin markers (K, +, -, 1) untouched unless outside board.
+                mbox = _text_box(item)
+                if not (has_outline and not _box_inside_outline(mbox, outline_poly, 0)):
+                    continue
+
+            if is_ref_txt and dense_miniature_fab:
+                if seen_ref_on_fab:
+                    item.SetVisible(False)
+                    values_hidden += 1
+                    continue
+                seen_ref_on_fab = True
+
             box = _text_box(item)
             tw = box[2] - box[0]
             th = box[3] - box[1]
             outside = bool(has_outline and not _box_inside_outline(box, outline_poly, 0))
             exceeds_own_body = (
-                max(tw, th) > int(long_side * 1.08)
-                or min(tw, th) > int(short_side * 0.92)
+                max(tw, th) > int(long_side * 1.05)
+                or min(tw, th) > int(short_side * 0.85)
             )
             oversized = bool(
-                dense_miniature_fab
+                (dense_miniature_fab and is_ref_txt)
                 or (is_miniature and exceeds_own_body)
                 or (max(tw, th) > max(int(long_side * 1.45), pcbnew.FromMM(2.5)))
             )
             if not outside and not oversized:
                 continue
 
-            chars = max(2, len(txt))
-            base_h = min(
-                pcbnew.FromMM(0.85),
-                int(short_side * 0.62),
-                int(long_side / (chars * 0.88)),
-            )
-            min_fab_h = pcbnew.FromMM(0.14 if not is_value else 0.18)
-            trial_heights = []
-            for h_cand in (
-                base_h,
-                int(base_h * 0.80),
-                pcbnew.FromMM(0.50),
-                pcbnew.FromMM(0.35),
-                pcbnew.FromMM(0.25),
-                pcbnew.FromMM(0.18),
-                min_fab_h,
-            ):
-                clamped = max(min_fab_h, min(pcbnew.FromMM(0.85), int(h_cand)))
-                if clamped not in trial_heights:
-                    trial_heights.append(clamped)
-            trial_heights.sort(reverse=True)
-
-            item.SetPosition(pcbnew.VECTOR2I(int(cx), int(cy)))
+            # Standardized discrete Assembly-Drawing height tiers with Condensed-width preference
+            # before stepping down a tier (consistent typography across identical package sizes).
+            tier_list = _FAB_HEIGHT_TIERS_MM if not is_value else (0.80, 0.60, 0.50, 0.40, 0.30, 0.25, 0.20)
             if hasattr(item, "SetMirrored"):
                 item.SetMirrored(item.GetLayer() == pcbnew.B_Fab)
 
+            # Candidate anchor offsets along the body long axis so Reference avoids any Fab polarity marker.
+            shifts = [(0, 0)]
+            if is_ref_txt and marker_boxes:
+                step = max(pcbnew.FromMM(0.25), int(long_side * 0.20))
+                for mult in (1, -1, 2, -2):
+                    if bh > bw * 1.25:
+                        shifts.append((0, mult * step))
+                    else:
+                        shifts.append((mult * step, 0))
+
             fitted = False
             angles = (preferred_ang, 90.0 - preferred_ang)
-            max_allow_long = int(long_side * 1.05)
-            max_allow_short = int(short_side * 0.95)
-            for h_nm in trial_heights:
-                s_nm = max(pcbnew.FromMM(0.03), min(pcbnew.FromMM(0.12), int(h_nm / 7.0)))
-                for w_ratio in (0.82, 0.68):
-                    w_nm = max(pcbnew.FromMM(0.11), int(h_nm * w_ratio))
-                    item.SetTextSize(pcbnew.VECTOR2I(w_nm, h_nm))
-                    item.SetTextThickness(s_nm)
-                    for ang in angles:
-                        item.SetTextAngleDegrees(ang)
-                        nbox = _text_box(item)
-                        nw = nbox[2] - nbox[0]
-                        nh = nbox[3] - nbox[1]
-                        in_outline = not has_outline or _box_inside_outline(nbox, outline_poly, 0)
-                        in_body = max(nw, nh) <= max_allow_long and min(nw, nh) <= max_allow_short
-                        if in_outline and (in_body or h_nm == trial_heights[-1]):
-                            fitted = True
+            max_allow_long = int(long_side * 0.96)
+            max_allow_short = int(short_side * 0.78)
+            for allow_marker_hit in (False, True):
+                if fitted:
+                    break
+                for h_mm in tier_list:
+                    h_nm = pcbnew.FromMM(h_mm)
+                    s_nm = pcbnew.FromMM(_fab_stroke_mm(h_mm))
+                    for w_ratio in (0.85, 0.72):
+                        w_nm = pcbnew.FromMM(round(h_mm * w_ratio, 3))
+                        item.SetTextSize(pcbnew.VECTOR2I(w_nm, h_nm))
+                        item.SetTextThickness(s_nm)
+                        for ang in angles:
+                            item.SetTextAngleDegrees(ang)
+                            for sdx, sdy in shifts:
+                                item.SetPosition(pcbnew.VECTOR2I(int(cx + sdx), int(cy + sdy)))
+                                nbox = _text_box(item)
+                                nw = nbox[2] - nbox[0]
+                                nh = nbox[3] - nbox[1]
+                                in_outline = not has_outline or _box_inside_outline(nbox, outline_poly, 0)
+                                in_body = max(nw, nh) <= max_allow_long and min(nw, nh) <= max_allow_short
+                                hits_marker = (not allow_marker_hit) and any(_fab_overlap(nbox, mb) for mb in marker_boxes)
+                                if in_outline and not hits_marker and (in_body or h_mm == tier_list[-1]):
+                                    fitted = True
+                                    break
+                            if fitted:
+                                break
+                        if fitted:
                             break
                     if fitted:
                         break
-                if fitted:
-                    break
 
             if fitted:
                 normalized += 1
@@ -2157,7 +2197,7 @@ def _clean_silkscreen(board, cfg=None):
     unplaceable or dense non-critical passive designators to F.Fab / B.Fab Assembly layers.
     """
     cfg = dict(cfg or {})
-    policy = cfg.get("policy", "auto")
+    policy = cfg.get("policy", "assembly_only")
     if policy == "off":
         return {"policy": "off", "skipped": True}
 
@@ -2291,7 +2331,16 @@ def _clean_silkscreen(board, cfg=None):
                     if fixed_art:
                         static_boxes[lyr].append(_box_from_bbox(g.GetBoundingBox(), silk_margin))
                     else:
-                        movable_texts.append((fp, g, False, False))
+                        g_raw = g.GetText()
+                        g_shown = _item_text(g)
+                        is_ref_gfx = g_raw in ("${REFERENCE}", "%R") or g_shown == ref
+                        if is_ref_gfx and (policy == "assembly_only" or (proactive_offload and ref in non_critical_refs)):
+                            g.SetVisible(False)
+                            if _ensure_fab_reference(board, fp):
+                                fab_created += 1
+                            offloaded_refs.append(ref)
+                        else:
+                            movable_texts.append((fp, g, is_ref_gfx, False))
             else:
                 add_shape_boxes(g, lyr)
         for fld in fp.GetFields():

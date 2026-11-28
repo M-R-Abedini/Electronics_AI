@@ -493,16 +493,23 @@ def _poses_for_targets(result: Board, fp, target_refs: list[str], req_net: str |
     return poses[:24] if len(target_refs) > 1 else poses[:20]
 
 
-def silk_graphic_overlap(board: Board, fp: Footprint, silk_clr: float | None = None) -> bool:
-    """Return True if ``fp``'s own-side silkscreen graphics violate ``silk_clr`` against any same-side neighbor."""
+def silk_graphic_overlap(
+    board: Board,
+    fp: Footprint,
+    silk_clr: float | None = None,
+    fixed: set[str] | None = None,
+) -> bool:
+    """Return True if ``fp``'s own-side silk graphics or pads violate clearance vs neighbor silk graphics."""
     sbox = fp.silk_box()
-    if sbox is None:
-        return False
     clr = float(board.rules.get("silk_clearance") or 0.0) if silk_clr is None else float(silk_clr)
-    if clr <= 0.0:
-        return False
-    req = clr + 0.02
-    ax0, ay0, ax1, ay1 = sbox
+    req = (clr + 0.02) if clr > 0.0 else 0.0
+    pad_req = max(0.15, clr + 0.05)
+    fp_pad_boxes: list[tuple[float, float, float, float]] = []
+    side_cu = f"{fp.side}.Cu"
+    for p, (px, py) in fp.pads_world():
+        if side_cu in p.layers or p.kind == "thru_hole":
+            hw = 0.5 * max(p.size[0], p.size[1])
+            fp_pad_boxes.append((px - hw, py - hw, px + hw, py + hw))
     for other in board.footprints:
         if other is fp or other.side != fp.side:
             continue
@@ -510,10 +517,21 @@ def silk_graphic_overlap(board: Board, fp: Footprint, silk_clr: float | None = N
         if obox is None:
             continue
         ox0, oy0, ox1, oy1 = obox
-        dx = max(0.0, max(ax0 - ox1, ox0 - ax1))
-        dy = max(0.0, max(ay0 - oy1, oy0 - ay1))
-        if math.hypot(dx, dy) < req - 1e-9:
-            return True
+        if sbox is not None and req > 0.0:
+            ax0, ay0, ax1, ay1 = sbox
+            dx = max(0.0, max(ax0 - ox1, ox0 - ax1))
+            dy = max(0.0, max(ay0 - oy1, oy0 - ay1))
+            if math.hypot(dx, dy) < req - 1e-9:
+                return True
+        # Prevent a movable pad (PTH or SMD) from clipping an overhanging silk graphic outline
+        # on fixed/locked parts (or any neighbor when board enforces silk_clearance > 0).
+        other_fixed = other.locked or (fixed is not None and other.ref in fixed)
+        if clr > 0.0 or other_fixed:
+            for px0, py0, px1, py1 in fp_pad_boxes:
+                dx = max(0.0, max(px0 - ox1, ox0 - px1))
+                dy = max(0.0, max(py0 - oy1, oy0 - py1))
+                if math.hypot(dx, dy) < pad_req - 1e-9:
+                    return True
     return False
 
 
@@ -668,6 +686,188 @@ def refine(board: Board, intent: dict, fixed: set[str], *, max_trials: int = 240
     if moved and any(not f.fixed for f in legality.check(result, fixed=fixed)):
         return board, {**report, "trials": trials, "moved": []}
     report.update(trials=trials, moved=moved)
+    return (result if moved else board), report
+
+
+def _esd_signal_dist(esd_fp: Footprint, conn_fp: Footprint) -> tuple[float | None, str | None]:
+    """Return (worst shared-net pad-to-pad distance mm, worst net) for an ESD device vs its connector."""
+    from ..ir import is_ground_net, is_power_net
+
+    shared = sorted(esd_fp.nets & conn_fp.nets)
+    if not shared:
+        return None, None
+    sig_nets = [n for n in shared if not is_ground_net(n) and not is_power_net(n)]
+    check_nets = sig_nets or [n for n in shared if not is_ground_net(n)] or shared
+    worst_d: float | None = None
+    worst_net: str | None = None
+    for net in check_nets:
+        sp = [pt for p, pt in esd_fp.pads_world() if p.net == net]
+        cp = [pt for p, pt in conn_fp.pads_world() if p.net == net]
+        if not sp or not cp:
+            continue
+        d = min(math.dist(a, b) for a in sp for b in cp)
+        if worst_d is None or d > worst_d:
+            worst_d, worst_net = d, net
+    return worst_d, worst_net
+
+
+def refine_esd(
+    board: Board,
+    intent: dict,
+    fixed: set[str],
+    *,
+    max_trials: int = 160,
+    target_mm: float = 4.5,
+    preserve_escapes: Callable[[Board], bool] | None = None,
+) -> tuple[Board, dict]:
+    """Orient and tuck ESD protection devices tightly beside their protected connector pins (IEC 61000-4-2)."""
+    parts = (intent or {}).get("parts") or {}
+    by_ref0 = {fp.ref: fp for fp in board.footprints}
+    esd_items: list[tuple[float, str, str, str]] = []
+    for ref, meta in sorted(parts.items()):
+        if ref in fixed or ref not in by_ref0 or by_ref0[ref].locked:
+            continue
+        rc, tc = meta.get("role"), meta.get("target")
+        if not rc or model.is_uncertain(rc) or rc.get("value") != "esd" or not tc or model.is_uncertain(tc):
+            continue
+        conn_ref = (tc.get("value") or {}).get("ref")
+        if not conn_ref or conn_ref not in by_ref0:
+            continue
+        dist_mm, worst_net = _esd_signal_dist(by_ref0[ref], by_ref0[conn_ref])
+        if dist_mm is not None and worst_net and dist_mm > target_mm:
+            esd_items.append((dist_mm, ref, conn_ref, worst_net))
+
+    report: dict = {"before_max_mm": round(max((x[0] for x in esd_items), default=0.0), 3) if esd_items else None,
+                    "after_max_mm": None, "trials": 0, "moved": []}
+    if not esd_items:
+        return board, report
+
+    esd_items.sort(key=lambda x: (-x[0], x[1]))
+    result = board.copy()
+    dom_regions = domains.ref_regions(result, fixed)
+    clr_guard = domains.make_clearance_guard(result)
+    side_obs = _side_obstacles_by_side(result, fixed)
+    obs_locals = _local_obs_boxes(board)
+    tracker = CrossingTracker(result)
+    outline = legality.board_polygon(result)
+    outline_bounds = outline.bounds if outline is not None else None
+    res_d0, cand_d0, before_res, before_all = _measure(result, intent)
+    has_res, has_all = bool(res_d0), bool(res_d0 or cand_d0)
+    clearance = max(board.rules.get("courtyard_clearance", 0), 0.05)
+
+    trials = 0
+    moved: list[str] = []
+    for cur_d, ref, conn_ref, req_net in esd_items:
+        if trials >= max_trials:
+            break
+        fp = result.fp(ref)
+        conn_fp = result.fp(conn_ref)
+        if legality.courtyard_polygon(fp) is None:
+            continue
+        orig = (fp.x, fp.y, fp.rotation)
+        ocx, ocy = _body_center_world(fp)
+        best_d = cur_d
+        best_pose = orig
+        best_cross = tracker.total
+        best_map: dict | None = None
+        query, commit = tracker.prepare((fp,))
+
+        # 1. Try in-place body-center rotations first (orients signal pad directly toward connector pin).
+        cands: list[tuple[float, float, int]] = []
+        for rot in (0, 90, 180, 270):
+            if rot == orig[2]:
+                continue
+            lx, ly, rx, ry = fp.box(0.0, 0.0, rot)
+            cands.append((round(ocx - 0.5 * (lx + rx), 4), round(ocy - 0.5 * (ly + ry), 4), rot))
+        # 2. Then try tight connector-adjacent poses facing the shared signal pin.
+        cands.extend(_poses_for_targets(result, fp, [conn_ref], req_net, set(), clearance, fixed, outline_bounds))
+
+        seen_poses: set[tuple[float, float, int]] = set()
+        for pose in cands:
+            if trials >= max_trials:
+                break
+            if pose in seen_poses:
+                continue
+            seen_poses.add(pose)
+            trials += 1
+            fp.x, fp.y, fp.rotation = pose
+            new_d, _ = _esd_signal_dist(fp, conn_fp)
+            if new_d is None or new_d >= best_d - 0.15:
+                continue
+            blockers = _find_blockers(result, fp, outline_bounds, side_obstacles=side_obs, obs_locals=obs_locals)
+            if blockers is None or len(blockers) > 1:
+                continue
+            if len(blockers) == 0:
+                nc, nmap = query()
+                if nc > tracker.total + 1:
+                    continue
+                ok_d, _, _ = _decap_ok(result, intent, has_res, has_all, before_res, before_all)
+                if not ok_d:
+                    continue
+                if (_touches_same_side_neighbor(result, fp)
+                        or not domains.footprints_in_domains((fp,), dom_regions)
+                        or (clr_guard is not None and not clr_guard(result, (fp,)))
+                        or not _local_legal(result, (fp,), fixed, outline_bounds)
+                        or (preserve_escapes is not None and not preserve_escapes(result))):
+                    continue
+                best_d = new_d
+                best_pose = pose
+                best_cross = nc
+                best_map = nmap
+                if best_d <= target_mm and nc <= tracker.total:
+                    break
+            elif len(blockers) == 1 and blockers[0].ref not in fixed and not blockers[0].locked:
+                other = blockers[0]
+                other_orig = (other.x, other.y, other.rotation)
+                query2, commit2 = tracker.prepare((fp, other))
+                swapped = False
+                for rot_o in (other_orig[2], (other_orig[2] + 90) % 360,
+                              (other_orig[2] + 180) % 360, (other_orig[2] + 270) % 360):
+                    _set_body_center_pose(other, ocx, ocy, rot_o)
+                    if (_find_blockers(result, fp, outline_bounds, side_obstacles=side_obs, obs_locals=obs_locals) != []
+                            or _find_blockers(result, other, outline_bounds, side_obstacles=side_obs, obs_locals=obs_locals) != []):
+                        continue
+                    nc2, nmap2 = query2()
+                    if nc2 > tracker.total + 1:
+                        continue
+                    ok_d, _, _ = _decap_ok(result, intent, has_res, has_all, before_res, before_all)
+                    if not ok_d:
+                        continue
+                    if (_touches_same_side_neighbor(result, fp) or _touches_same_side_neighbor(result, other)
+                            or not domains.footprints_in_domains((fp, other), dom_regions)
+                            or (clr_guard is not None and not clr_guard(result, (fp, other)))
+                            or not _local_legal(result, (fp, other), fixed, outline_bounds)
+                            or (preserve_escapes is not None and not preserve_escapes(result))):
+                        continue
+                    commit2(nc2, nmap2)
+                    best_d = new_d
+                    best_pose = pose
+                    best_cross = nc2
+                    best_map = None
+                    moved.extend([ref, other.ref] if other.ref not in moved else [ref])
+                    swapped = True
+                    break
+                if swapped:
+                    break
+                other.x, other.y, other.rotation = other_orig
+
+        fp.x, fp.y, fp.rotation = best_pose
+        if best_map is not None:
+            commit(best_cross, best_map)
+            if ref not in moved:
+                moved.append(ref)
+
+    if moved and any(not f.fixed for f in legality.check(result, fixed=fixed)):
+        return board, {**report, "after_max_mm": report["before_max_mm"], "trials": trials, "moved": []}
+    after_ds = [
+        d for _, r, cr, _ in esd_items
+        if (d := _esd_signal_dist(result.fp(r), result.fp(cr))[0]) is not None
+    ]
+    report.update(
+        after_max_mm=round(max(after_ds), 3) if after_ds else None,
+        trials=trials,
+        moved=moved,
+    )
     return (result if moved else board), report
 
 

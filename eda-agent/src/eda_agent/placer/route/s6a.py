@@ -53,10 +53,13 @@ from .fanout import (
 from .freerouting import RouterConfig
 from .pairs import route_pair, rule_for
 
-LINK_MAX_MM = 5.0  # declared: a decap farther than this from its pin is a placement problem, not a routing one
-TAP_MAX_MM = 2.0  # declared: dogbone length; one value for every pad (no per-pad budgets)
+LINK_MAX_MM = 5.0  # declared: straight-line decap-to-pin eligibility; farther is a placement problem
+LINK_ROUTE_MAX_MM = 7.5  # declared: octilinear surface detour budget around adjacent IC pins when pad dist <= LINK_MAX_MM
+TAP_MAX_MM = 2.0  # declared: primary low-inductance dogbone length
+TAP_FALLBACK_MAX_MM = 3.5  # declared: fallback plane-tap dogbone length when 2.0 mm is blocked by neighbor pins
 MAX_PADS_PER_VIA = 2  # declared: more pads on one plane via raise its inductance for each of them
 SHARE_MAX_MM = 1.5  # declared: a pad joins an existing plane via only this close
+SHARE_FALLBACK_MAX_MM = 2.8  # declared: fallback via-sharing reach when primary tap fails
 C3_MARGIN = 0.005  # plan 4.2 gate 2: 0.5 percentage points, until a per-board noise figure is measured
 PAIR_ROUNDS = 6  # declared: orderings tried for the pairs (failed pairs move to the front)
 ACTIVE_ROLES = ("ic", "converter_ic", "linear_regulator", "power_switch")
@@ -263,9 +266,12 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                 plane_links.append((row, (ref, str(src.number)), (target["ref"], str(cands[0].number))))
                 continue
             trapped_reason = None
-            for pin in cands[:2]:  # nearest pin first; the next one if that pin is boxed in
+            for pin in cands[:4]:  # nearest pins first; check up to 4 supply pins on multi-pin ICs
+                pin_dist = math.dist(chip.pad_world(pin), (sx, sy))
                 if same_side:
                     got = plan_power_link(board, (chip, pin), (cap, src), fixed=fixed, max_length_mm=LINK_MAX_MM)
+                    if got is None and pin_dist <= LINK_MAX_MM:
+                        got = plan_power_link(board, (chip, pin), (cap, src), fixed=fixed, max_length_mm=LINK_ROUTE_MAX_MM)
                 else:
                     got = plan_cross_link(board, (chip, pin), (cap, src), fixed=fixed, max_length_mm=LINK_MAX_MM,
                                           tap_max_mm=TAP_MAX_MM)
@@ -355,6 +361,14 @@ def plan(board: Board, intent: dict, *, pairs: bool = True, links: bool = True, 
                         share=share, share_max_mm=SHARE_MAX_MM, site_cache=tap_site_cache,
                         allow_microvia=(microvia != "off"), dru_eff=dru_eff,
                     )
+                    if got is None:
+                        # Fallback pass: allow wider via-sharing / dogbone reach on congested pads
+                        # so dedicated inner-plane SMD pads are not stranded unconnected after DSN exclusion.
+                        got = plan_power_tap(
+                            board, fp, pad, layer, fixed=fixed, max_length_mm=TAP_FALLBACK_MAX_MM,
+                            share=share, share_max_mm=SHARE_FALLBACK_MAX_MM, site_cache=tap_site_cache,
+                            allow_microvia=(microvia != "off"), dru_eff=dru_eff,
+                        )
                     if got:
                         track, via_obj = got
                         vias_list = via_obj if isinstance(via_obj, list) else [via_obj]

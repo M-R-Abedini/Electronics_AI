@@ -76,12 +76,15 @@ Use copper evidence and supported native checks for electrical conclusions;
 use rendered images for mandatory visual review before sign-off (inspect
 labels, polarity marks, orientation, spacing and mechanical crowding—never
 declare a layout visually clean from scalar metrics alone). A screenshot or a
-caller's `stage_result=ok` does not establish an electrical gate. Check
-Top/Bottom Overlay (silkscreen) legibility against IPC-7351 guidance
-(`1.0–1.27 mm` recommended height, `0.80 mm` dense floor, `0.15–0.18 mm`
-stroke, ratio `>= 1:10`, condensed width before shrinking height, `>= 0.20 mm`
-pad clearance, outside component bodies, assembly-layer offloading for crowded
-passives, and fab verification of cured ink thickness `15–25 um`). Revalidate
+caller's `stage_result=ok` does not establish an electrical gate. Check Top/Bottom Overlay (silkscreen) and Assembly (`F.Fab`/`B.Fab`) legibility:
+component assembly-guide reference designators MUST NOT constrain placement or
+routing and should be offloaded to the Assembly layer (`F.Fab`/`B.Fab`, Ref-only
+with standardized body-contained vector sizes `0.16-1.00 mm`, `1:7` stroke) by
+default; any user-facing silkscreen labels, polarity marks, or explicit overlay
+legends must follow IPC-7351 guidance (`1.0-1.27 mm` recommended height,
+`0.80 mm` dense floor, `0.15-0.18 mm` stroke, `0.12-0.15 mm` dense/LPI, ratio
+`>= 1:10`, condensed width before shrinking height, `>= 0.20 mm` pad clearance,
+outside component bodies, and fab verification of cured ink thickness `15-25 um`). Revalidate
 dependent evidence after moving parts, changing rules, stackup, intent or
 pours. Deliver the selected plan, alternatives/trade-offs, measured versus
 estimated findings, visual observations, verification performed and exact

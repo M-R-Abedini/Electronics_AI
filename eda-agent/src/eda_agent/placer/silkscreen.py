@@ -256,7 +256,7 @@ def build_config(
     board: Board,
     intent: dict | None = None,
     *,
-    policy: str = "auto",
+    policy: str = "assembly_only",
     fab_profile: str = "ipc_standard",
     dru_rules: dict[str, float] | None = None,
 ) -> dict[str, Any]:
