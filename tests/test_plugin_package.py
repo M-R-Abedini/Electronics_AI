@@ -77,7 +77,19 @@ def test_all_runtime_sources_and_license_material_are_present(source):
                  'contracts/pcblib-default-board.json',
                  'suite_json_guard.py',
                                   'LICENSE', 'THIRD_PARTY_NOTICES.md', 'eda-agent/LICENSE', 'eda-agent/NOTICE',
-                 'notices/batch-safety-MIT.txt'):
+                 'notices/batch-safety-MIT.txt',
+                 'notices/kicad-skills-MIT.txt',
+                 'notices/circuit-design-skill-MIT.txt',
+                 'skills/electronics-ai-pro-pcb-designer/SKILL.md',
+                 'skills/electronics-ai-pcb-layout/SKILL.md',
+                 'skills/kicad-core/SKILL.md',
+                 'skills/kicad-10-workflow/SKILL.md',
+                 'skills/kicad-highcurrent/SKILL.md',
+                 'skills/kicad-highspeed/SKILL.md',
+                 'skills/kicad-rf-lowpower/SKILL.md',
+                 'skills/kicad-newpart/SKILL.md',
+                 'skills/pcb-routing-best-practices/SKILL.md',
+                 'skills/circuit-design-skill/SKILL.md'):
         assert name in payload
     for root_document in ('.gitignore', 'CONTRIBUTING.md', 'CONNECTIVITY_VERIFICATION.md'):
         assert root_document in payload
@@ -156,7 +168,7 @@ def test_package_audit_rejects_incompatible_source_license(source):
 def test_current_source_and_upstream_inventory_exclude_retired_library_backend():
     assert not (ROOT / 'altium-designer-mcp').exists()
     upstream = json.loads((ROOT / 'UPSTREAM.json').read_text(encoding='utf-8'))
-    assert set(upstream) == {'eda-agent', 'native-json-validation'}
+    assert set(upstream) == {'eda-agent', 'native-json-validation', 'kicad-skills', 'circuit-design-skill'}
     assert {item['license'] for item in upstream.values()} <= {'MIT', 'Apache-2.0'}
 
 

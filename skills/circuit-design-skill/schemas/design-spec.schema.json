@@ -1,0 +1,1054 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/circuit-design-skill/design-spec.schema.json",
+  "title": "Circuit design specification",
+  "description": "Canonical input for the circuit-design skill. The component list is the electrical source of truth; topology/parameters drive calculators and scaffolding.",
+  "type": "object",
+  "required": [
+    "name",
+    "components"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "default": "1.0"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "File-safe design name, used for output filenames."
+    },
+    "description": {
+      "type": "string"
+    },
+    "topology": {
+      "type": "string",
+      "description": "Topology identifier such as rc_lowpass, divider, sallen_key_lp, bjt_ce, buck, boost, led, i2c, opamp_noninverting, zener_regulator."
+    },
+    "ground": {
+      "type": "string",
+      "default": "GND",
+      "description": "Ground net name. SPICE output maps this to node 0."
+    },
+    "supplies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "voltage"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "voltage": {
+            "type": "number"
+          },
+          "source": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "parameters": {
+      "type": "object",
+      "description": "Topology parameters used by calculators and scaffolding.",
+      "additionalProperties": {
+        "type": [
+          "number",
+          "string",
+          "boolean"
+        ]
+      }
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "net": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "ac",
+            "dc",
+            "sine",
+            "pulse",
+            "pwl",
+            "none"
+          ]
+        },
+        "amplitude": {
+          "type": "number"
+        },
+        "offset": {
+          "type": "number"
+        },
+        "frequency": {
+          "type": "number"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "net": {
+          "type": "string"
+        },
+        "load": {
+          "type": "number"
+        },
+        "expected": {
+          "type": "number"
+        },
+        "units": {
+          "type": "string"
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "ref",
+          "type",
+          "pins"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^[A-Za-z#][A-Za-z0-9_#.-]*$"
+          },
+          "type": {
+            "enum": [
+              "R",
+              "C",
+              "L",
+              "V",
+              "I",
+              "D",
+              "LED",
+              "ZENER",
+              "NPN",
+              "PNP",
+              "NMOS",
+              "PMOS",
+              "OPAMP",
+              "SW",
+              "E",
+              "G"
+            ]
+          },
+          "value": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "description": "Numeric value in SI units, or a SPICE value string such as 4k7."
+          },
+          "placement": {
+            "type": "object",
+            "description": "Optional KiCad-only symbol placement override in millimetres. Coordinates must be positive and aligned to the 1.27 mm grid.",
+            "required": [
+              "x_mm",
+              "y_mm"
+            ],
+            "properties": {
+              "x_mm": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "y_mm": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "tolerance_percent": {
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMaximum": 100,
+            "description": "Symmetric component tolerance from its datasheet; used in explicit worst-case analysis."
+          },
+          "pins": {
+            "type": "object",
+            "description": "Pin number/alias to net name. Aliases: A/B, +/-, C/B/E, D/G/S, IN+/IN-/V+/V-/OUT.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "footprint": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "dc": {
+            "type": "number"
+          },
+          "ac": {
+            "type": "number"
+          },
+          "waveform": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "enum": [
+                  "sine",
+                  "pulse",
+                  "pwl"
+                ]
+              },
+              "params": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "params": {
+            "type": "object"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "manufacturer": {
+            "type": "string",
+            "description": "Manufacturer legal/trade name for the selected physical part."
+          },
+          "mpn": {
+            "type": "string",
+            "description": "Exact manufacturer part number; required for a procurement-ready BOM."
+          },
+          "package": {
+            "type": "string",
+            "description": "Manufacturer package designation, verified against the datasheet."
+          },
+          "datasheet_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "datasheet_revision": {
+            "type": "string"
+          },
+          "sourcing_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Preferred supplier/product sourcing URL."
+          },
+          "footprint_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "provisional",
+              "unassigned"
+            ],
+            "description": "Evidence status of the KiCad footprint assignment."
+          },
+          "footprint_evidence": {
+            "type": "string",
+            "description": "Datasheet/library evidence supporting footprint and pad mapping."
+          },
+          "pad_map_verified": {
+            "type": "boolean",
+            "description": "True only when logical pins have been checked against physical package pads."
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "description": "Named SPICE model cards. A string is a full .model body; an object is either legacy parameters or a structured entry with 'card' or 'file' plus provenance: vendor, part, source, sha256, and subckt_pins (required for .subckt models). See references/models.md.",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "object"
+        ]
+      }
+    },
+    "design": {
+      "type": "object",
+      "description": "Planning and evidence record: requirements, architecture, decisions, risks and sources. verify.py --require design enforces a complete record.",
+      "properties": {
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "acceptance": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "architecture": {
+          "type": "object",
+          "properties": {
+            "summary": {
+              "type": "string"
+            },
+            "blocks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "interfaces": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "budgets": {
+              "type": "object"
+            },
+            "test_points": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "decision"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "decision": {
+                "type": "string"
+              },
+              "alternatives": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "sources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "risk"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "risk": {
+                "type": "string"
+              },
+              "severity": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              },
+              "mitigation": {
+                "type": "string"
+              },
+              "verification": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "document": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "string"
+              },
+              "accessed": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "measurements": {
+          "type": "array",
+          "description": "Bench validation plan. Each measurement must trace to a design requirement and specify setup, equipment and acceptance criteria.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "requirement",
+              "test_point",
+              "quantity",
+              "method",
+              "equipment",
+              "conditions",
+              "acceptance"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "requirement": {
+                "type": "string"
+              },
+              "test_point": {
+                "type": "string"
+              },
+              "quantity": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "equipment": {
+                "type": "string"
+              },
+              "conditions": {
+                "type": "string"
+              },
+              "acceptance": {
+                "type": "string"
+              },
+              "safety": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "operating_limits": {
+          "type": "array",
+          "description": "Calculated worst-case stresses checked against sourced component datasheet operating limits. --require limits makes this gate mandatory.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "parameter",
+              "value",
+              "unit",
+              "condition",
+              "source"
+            ],
+            "anyOf": [
+              {
+                "required": [
+                  "min"
+                ]
+              },
+              {
+                "required": [
+                  "max"
+                ]
+              }
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "parameter": {
+                "type": "string"
+              },
+              "value": {
+                "type": "number"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              },
+              "condition": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "analyses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "op",
+              "ac",
+              "tran",
+              "dc",
+              "noise",
+              "tf",
+              "fourier"
+            ]
+          },
+          "start": {
+            "type": "number"
+          },
+          "stop": {
+            "type": "number"
+          },
+          "points": {
+            "type": "integer"
+          },
+          "step": {
+            "type": "number"
+          },
+          "source": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          },
+          "fundamental": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "vstart": {
+            "type": "number"
+          },
+          "vstop": {
+            "type": "number"
+          },
+          "vstep": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "ta_c": {
+          "type": "number",
+          "default": 25
+        },
+        "tj_max_c": {
+          "type": "number",
+          "default": 125
+        },
+        "supply_tolerance_percent": {
+          "type": "number"
+        },
+        "ipc_trace_internal": {
+          "type": "boolean"
+        }
+      }
+    },
+    "deliverables": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "spice",
+          "ltspice_asc",
+          "kicad_net",
+          "kicad_sch",
+          "bom",
+          "report",
+          "pcb"
+        ]
+      },
+      "default": [
+        "spice",
+        "ltspice_asc",
+        "kicad_net",
+        "kicad_sch",
+        "bom",
+        "report",
+        "pcb"
+      ]
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "tolerance_percent": {
+          "type": "number",
+          "default": 2
+        },
+        "expected": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "analysis",
+              "node",
+              "expected"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "analysis": {
+                "enum": [
+                  "dc",
+                  "ac"
+                ]
+              },
+              "node": {
+                "type": "string"
+              },
+              "frequency": {
+                "type": "number"
+              },
+              "expected": {
+                "type": "number"
+              },
+              "tolerance_percent": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Generic gain, bandwidth, THD, noise and RMS targets. Audio-specific conditions and limits can be supplied by the sibling audio skill.",
+      "properties": {
+        "conditions": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "measure"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "measure": {
+                "enum": [
+                  "gain_db",
+                  "bandwidth_hz",
+                  "bandwidth_low_hz",
+                  "bandwidth_width_hz",
+                  "thd_percent",
+                  "ein_uv",
+                  "noise_uv",
+                  "output_vrms"
+                ]
+              },
+              "requirement": {
+                "type": "string"
+              },
+              "analysis": {
+                "enum": [
+                  "ac",
+                  "tran",
+                  "noise",
+                  "fourier"
+                ]
+              },
+              "output": {
+                "type": "string"
+              },
+              "input": {
+                "type": "string"
+              },
+              "frequency": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "fundamental": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "harmonics": {
+                "type": "integer",
+                "minimum": 2
+              },
+              "start": {
+                "type": "number",
+                "minimum": 0
+              },
+              "stop": {
+                "type": "number",
+                "minimum": 0
+              },
+              "target": {
+                "type": "number"
+              },
+              "tolerance": {
+                "type": "number",
+                "minimum": 0
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "exploratory": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "pcb": {
+      "type": "object",
+      "description": "Optional handoff metadata for the sibling pcb-design-skill.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "profile": {
+          "type": "string",
+          "default": "2layer-low-speed"
+        },
+        "title": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "board": {
+          "type": "object",
+          "description": "PCB mechanics. Required when a pcb handoff is requested.",
+          "required": [
+            "width_mm",
+            "height_mm"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "width_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "height_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "layers": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            },
+            "thickness_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "copper_oz": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "material": {
+              "type": "string"
+            },
+            "surface_finish": {
+              "type": "string"
+            },
+            "mask_color": {
+              "type": "string"
+            },
+            "silkscreen_color": {
+              "type": "string"
+            },
+            "edge_radius_mm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "stackup": {
+              "type": "object"
+            }
+          }
+        },
+        "rules": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min_track_width_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_clearance_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_via_diameter_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_via_drill_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_hole_diameter_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_annular_ring_mm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "edge_clearance_mm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "min_silk_width_mm": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "min_mask_sliver_mm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "min_hole_to_hole_mm": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "netclasses": {
+          "type": "object"
+        },
+        "nets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "class": {
+                "type": "string"
+              },
+              "voltage_v": {
+                "type": "number",
+                "minimum": 0
+              },
+              "current_a": {
+                "type": "number",
+                "minimum": 0
+              },
+              "impedance_ohm": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "diff_pair": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "footprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "pin_map": {
+          "type": "object"
+        },
+        "node_aliases": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "placement": {
+          "type": "object"
+        },
+        "routing": {
+          "type": "object"
+        },
+        "zones": {
+          "type": "array"
+        },
+        "fabrication": {
+          "type": "object"
+        },
+        "signoff": {
+          "type": "object"
+        },
+        "extra_components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "ref",
+              "footprint",
+              "pads"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "string"
+              },
+              "footprint": {
+                "type": "string",
+                "minLength": 1
+              },
+              "at": {
+                "type": "object",
+                "required": [
+                  "x_mm",
+                  "y_mm"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "x_mm": {
+                    "type": "number"
+                  },
+                  "y_mm": {
+                    "type": "number"
+                  },
+                  "rotation_deg": {
+                    "type": "number"
+                  },
+                  "side": {
+                    "enum": [
+                      "front",
+                      "back"
+                    ]
+                  }
+                }
+              },
+              "pads": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "dnp": {
+                "type": "boolean"
+              },
+              "properties": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

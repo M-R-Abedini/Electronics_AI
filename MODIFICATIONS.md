@@ -1,5 +1,11 @@
 # Local changes
 
+## Bundled companion skills & core skill synchronization — 2026-11-28
+
+- Synchronized core Electronics AI skills (`skills/electronics-ai-pcb-layout/references/profiles/` and `skills/electronics-ai-pro-pcb-designer/references/`) with engine Rules 10–20 (IEC/EN 61010-1 outer-layer HV power routing, `S6a` mains-first pre-routing, compound `.kicad_dru` compilation, precision instrumentation thermal-EMF & AFE crosstalk enforcement, `assembly_only` silkscreen offload, and `center_board_on_sheet()`).
+- Bundled MIT-licensed companion electronics skills directly under `skills/` (`kicad-core`, `kicad-10-workflow`, `kicad-highcurrent`, `kicad-highspeed`, `kicad-rf-lowpower`, `kicad-newpart`, `pcb-routing-best-practices`, and `circuit-design-skill`) with full upstream MIT notices in `notices/kicad-skills-MIT.txt` and `notices/circuit-design-skill-MIT.txt`, recorded in `UPSTREAM.json` and `THIRD_PARTY_NOTICES.md`.
+- Updated `skills/kicad-10-workflow/SKILL.md` to replace a dangling relative `../grill-me/SKILL.md` link with a valid link to `../electronics-ai-pro-pcb-designer/SKILL.md`.
+
 ## Experimental P1 input/transport follow-up — 2026-11-03
 
 - Original MIT board-contour subtraction and sourced library courtyard helpers;
