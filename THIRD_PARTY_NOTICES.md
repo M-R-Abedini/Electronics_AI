@@ -9,6 +9,8 @@ relicense bundled sources or code adapted from them.
 | `eda-agent/` | Apache-2.0 | [LICENSE](eda-agent/LICENSE), [NOTICE](eda-agent/NOTICE) |
 | Native ANSI validation (`suite_json_guard.py`) | MIT | [attribution and terms](notices/batch-safety-MIT.txt) |
 | Native library codecs and service (`suite_*lib*.py`, `suite_ole.py`, `suite_pcb_primitives.py`) | MIT | [LICENSE](LICENSE); independently written from observed interfaces and synthetic file probes |
+| Bundled KiCad 10 domain skills (`skills/kicad-*/`, `skills/pcb-routing-best-practices/`) | MIT | [IxTechCrypto/kicad-skills attribution and terms](notices/kicad-skills-MIT.txt) |
+| Bundled circuit design & SPICE skill (`skills/circuit-design-skill/`) | MIT | [davlug3/circuit-design-skill attribution and terms](notices/circuit-design-skill-MIT.txt) |
 
 The ANSI validation function in `suite_json_guard.py` is adapted from
 `coffeenmusic/altium-mcp` batch_safety.py with its MIT attribution retained.

@@ -24,7 +24,8 @@ ROOT_MODULES = ('suite_stdio.py', 'suite_cloud_libraries.py', 'configure_suite.p
                 'suite_libraries_native.py', 'suite_schlib_codec.py',
                 'suite_ole.py', 'suite_pcblib_codec.py', 'suite_pcb_primitives.py')
 NOTICE_FILES = ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'UPSTREAM.json', 'MODIFICATIONS.md',
-                 'eda-agent/LICENSE', 'eda-agent/NOTICE', 'notices/batch-safety-MIT.txt')
+                 'eda-agent/LICENSE', 'eda-agent/NOTICE', 'notices/batch-safety-MIT.txt',
+                 'notices/kicad-skills-MIT.txt', 'notices/circuit-design-skill-MIT.txt')
 
 
 def deployment_files(root=ROOT):

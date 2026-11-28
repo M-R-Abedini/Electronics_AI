@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "updated": "2026-11-08",
+  "notice": "Models are mirrored from third-party repositories. Read the file header and the source terms before redistributing anything. This catalog records where a model came from; it does not certify that the model matches your physical part.",
+  "entries": [
+    {
+      "part": "2N3904",
+      "aliases": [
+        "MMBT3904"
+      ],
+      "model": "Q2N3904",
+      "type": "NPN",
+      "vendor": "National Semiconductor (TRT Electronics mirror, KiCad Spice Library)",
+      "source": "https://raw.githubusercontent.com/kicad-spice-library/KiCad-Spice-Library/master/Models/Manufacturer/TRT-Electronics/2n3904.lib",
+      "license": "National Semiconductor model, mirrored by the KiCad Spice Library. Keep the header; check the mirror's terms before redistribution.",
+      "notes": "The SPICE model is named Q2N3904, not 2N3904. The spec key can still be 2N3904.",
+      "checked": "2026-11-08"
+    },
+    {
+      "part": "2N2222A",
+      "aliases": [
+        "2N2222",
+        "PN2222",
+        "P2N2222A"
+      ],
+      "model": "Q2N2222A",
+      "type": "NPN",
+      "vendor": "National Semiconductor (TRT Electronics mirror, KiCad Spice Library)",
+      "source": "https://raw.githubusercontent.com/kicad-spice-library/KiCad-Spice-Library/master/Models/Manufacturer/TRT-Electronics/2n2222a.lib",
+      "license": "National Semiconductor model, mirrored by the KiCad Spice Library. Keep the header; check the mirror's terms before redistribution.",
+      "notes": "The SPICE model is named Q2N2222A.",
+      "checked": "2026-11-08"
+    },
+    {
+      "part": "BC546",
+      "aliases": [
+        "BC546B"
+      ],
+      "model": "BC546B",
+      "type": "NPN",
+      "vendor": "Philips (KiCad Spice Library)",
+      "source": "https://raw.githubusercontent.com/kicad-spice-library/KiCad-Spice-Library/master/Models/Transistor/BJT/BC546.lib",
+      "license": "Header says it is derived from the Philips SC04 data book. Verify terms before redistribution.",
+      "notes": "The file models the BC546B grade.",
+      "checked": "2026-11-08"
+    },
+    {
+      "part": "1N4148",
+      "aliases": [],
+      "model": "1N4148",
+      "type": "D",
+      "vendor": "NXP Semiconductors (PySpice example library)",
+      "source": "https://raw.githubusercontent.com/PySpice-org/PySpice/master/examples/libraries/diode/switching/1N4148.lib",
+      "license": "NXP model header retained in the file. Verify terms before redistribution.",
+      "subckt_pins": [
+        "1",
+        "2"
+      ],
+      "notes": "SPICE node 1 is the anode and node 2 is the cathode. The NXP file warns that SOD-27 package pin 1 is the cathode and pin 2 the anode, so the PCB pin map must not copy the SPICE order.",
+      "checked": "2026-11-08"
+    },
+    {
+      "part": "2N7002",
+      "aliases": [
+        "2N7002K"
+      ],
+      "model": "2N7002",
+      "type": "NMOS",
+      "vendor": "Fairchild (Bordodynov library, KiCad Spice Library mirror)",
+      "source": "https://raw.githubusercontent.com/kicad-spice-library/KiCad-Spice-Library/master/Models/uncategorized/Bordodynovs%20Electronics%20Lib/sub/2N7002.mod",
+      "license": "Fairchild model, mirrored by the KiCad Spice Library. Verify terms before redistribution.",
+      "subckt_pins": [
+        "D",
+        "G",
+        "S"
+      ],
+      "notes": "Subcircuit node order 20 10 30 is drain, gate, source. Uses LEVEL=3 and TEMP expressions; ngspice accepts this.",
+      "checked": "2026-11-08"
+    },
+    {
+      "part": "BSS138",
+      "aliases": [
+        "BSS138LT1"
+      ],
+      "model": "bss138lt1",
+      "type": "NMOS",
+      "vendor": "Fairchild (Bordodynov library, KiCad Spice Library mirror)",
+      "source": "https://raw.githubusercontent.com/kicad-spice-library/KiCad-Spice-Library/master/Models/uncategorized/Bordodynovs%20Electronics%20Lib/sub/BSS138LT1.SP3",
+      "license": "Model-generated header retained in the file. Verify terms before redistribution.",
+      "subckt_pins": [
+        "D",
+        "G",
+        "S"
+      ],
+      "notes": "Subcircuit nodes 1 2 3 are drain, gate, source.",
+      "checked": "2026-11-08"
+    }
+  ]
+}

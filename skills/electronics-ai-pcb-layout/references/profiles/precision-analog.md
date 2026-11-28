@@ -28,3 +28,22 @@ Fetch the exact current part/package source for the design being worked on.
 Compose switching/digital and isolation profiles when those domains coexist.
 Classify unknown analog roles as hypotheses and retain missing return, leakage,
 thermal or model evidence rather than certifying precision from placement.
+
+## Precision Instrumentation Metrology Enforcement (Thermal-EMF & AFE Crosstalk)
+
+When precision analog/metrology ICs (`ADC`, `DAC`, `VREF`, `INA`, `OPAMP`, `AFE`)
+coexist with heat-dissipating power stages or fast digital buses:
+
+- **Thermal-EMF gradient separation (Rule 19 `analog_thermal_proximity`):**
+  Solder-joint copper-to-solder thermocouples generate `3–40 uV/°C` Seebeck
+  offset drift across temperature gradients. The placement engine automatically
+  adds soft `10.0 mm` thermal repulsion (`place/problem.py`) between precision
+  analog ICs and hot power parts (transformers, offline switchers, bridge
+  rectifiers, THT HV power resistors), and `eval/emc_safety.py` flags courtyard
+  separation `< 4.0 mm` (`critical`) or `< 8.0 mm` (`warning`).
+- **High-Z AFE vs. noisy digital crosstalk (Rule 20 `afe_digital_crosstalk`):**
+  Never run sensitive sensor/reference nets (`AIN_*`, `RTD_*`, `PT100_*`, `VREF*`,
+  `REF_P/N`, `BRIDGE_*`, `LOADCELL_*`, `SHUNT_*`, `THERM_*`) parallel within
+  `< 0.50 mm` for `> 3.0 mm` on the same copper layer next to clocks, SPI, UART,
+  PWM, or SWD buses. Separate them spatially, cross orthogonally on shielded
+  layers, or shield with unbroken ground copper.

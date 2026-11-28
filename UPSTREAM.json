@@ -12,5 +12,19 @@
     "license": "MIT",
     "license_file": "notices/batch-safety-MIT.txt",
     "scope": "suite_json_guard.py ANSI text validation only; the retired server is absent"
+  },
+  "kicad-skills": {
+    "upstream": "https://github.com/IxTechCrypto/kicad-skills.git",
+    "snapshot_commit": "f187be5cc48ae8f5fcb48d21591500f1bf2a4046",
+    "license": "MIT",
+    "license_file": "notices/kicad-skills-MIT.txt",
+    "scope": "Bundled KiCad 10 domain skills (kicad-core, kicad-10-workflow, kicad-highcurrent, kicad-highspeed, kicad-rf-lowpower, kicad-newpart, pcb-routing-best-practices) and helper scripts under skills/"
+  },
+  "circuit-design-skill": {
+    "upstream": "https://github.com/davlug3/circuit-design-skill.git",
+    "snapshot_commit": "66923fe20619c66777c162a80b9d430c96bd3506",
+    "license": "MIT",
+    "license_file": "notices/circuit-design-skill-MIT.txt",
+    "scope": "Bundled evidence-led circuit design, SPICE simulation, component sizing, and KiCad schematic handoff skill under skills/circuit-design-skill/"
   }
 }

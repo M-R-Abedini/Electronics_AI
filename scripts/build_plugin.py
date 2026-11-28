@@ -45,6 +45,7 @@ ROOT_FILES = (
     'docs/P1_CLUSTER_BENCHMARK_RESULTS.json',
     'eda-agent/pyproject.toml', 'eda-agent/README.md', 'eda-agent/LICENSE', 'eda-agent/NOTICE',
     'suite_json_guard.py', 'notices/batch-safety-MIT.txt',
+    'notices/kicad-skills-MIT.txt', 'notices/circuit-design-skill-MIT.txt',
 )
 TREE_RULES = {
     'installer': {'.py', '.iss', '.ps1', '.md'},
@@ -122,7 +123,7 @@ def audit_payload(payload):
     if manifest.get('license') != 'MIT AND Apache-2.0':
         raise ValueError('Unexpected plugin license closure')
     upstream = json.loads(payload['UPSTREAM.json'])
-    if set(upstream) != {'eda-agent', 'native-json-validation'}:
+    if set(upstream) != {'eda-agent', 'native-json-validation', 'kicad-skills', 'circuit-design-skill'}:
         raise ValueError('Unexpected bundled upstream implementation')
 
 
