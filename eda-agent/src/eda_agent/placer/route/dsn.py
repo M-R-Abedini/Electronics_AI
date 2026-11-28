@@ -660,3 +660,462 @@ def restrict_fast_net_layers(dsn: str, board: Board, intent: dict | None) -> tup
     if not applied_nets:
         return dsn, []
     return dsn[:net_start] + net_block + dsn[net_end:], applied_nets
+
+
+def _apply_class_net_constraints(
+    dsn: str,
+    target_nets: set[str],
+    *,
+    suffix: str,
+    use_layers: list[str] | None = None,
+    min_width_val: float | None = None,
+) -> tuple[str, list[str]]:
+    """Apply ``(circuit (use_layer ...))`` and/or ``(rule (width ...))`` to ``target_nets`` inside ``(class ...)``.
+
+    Specctra DSN / Freerouting v2.5 enforces ``use_layer`` and ``width`` at the ``(class ...)``
+    scope (ignoring ``(circuit (use_layer ...))`` attached to ``(net ...)``). When every net in a
+    class matches ``target_nets``, the class is updated in place; otherwise matching nets are split
+    into a derived subclass ``<parent>__<suffix>`` and every ``(class_class ...)`` clearance rule
+    referencing ``<parent>`` is cloned strictly against distinct other classes (never self-paired),
+    plus an intra-class rule preserving ``<parent>``'s own clearance between parent and subclass.
+    """
+    if not target_nets or (not use_layers and min_width_val is None):
+        return dsn, []
+    net_start = dsn.find("(network")
+    if net_start < 0:
+        return dsn, []
+    net_end = _sexp_end(dsn, net_start)
+    if net_end < 0:
+        return dsn, []
+    net_block = dsn[net_start:net_end]
+
+    cls_pat = re.compile(r'\(class\s+("[^"]+"|[^\s()]+)')
+    cls_blocks: dict[str, tuple[int, int, str]] = {}
+    pos = 0
+    while True:
+        m = cls_pat.search(net_block, pos)
+        if m is None:
+            break
+        cend = _sexp_end(net_block, m.start())
+        if cend < 0:
+            break
+        cname = m.group(1).strip('"')
+        cls_blocks[cname] = (m.start(), cend, net_block[m.start():cend])
+        pos = cend
+
+    parent_to_nets: dict[str, list[str]] = {}
+    for nname in sorted(target_nets):
+        ntok_raw = _token(nname)
+        ntok_q = _quote(nname)
+        for cname, (_s, _e, cbody) in cls_blocks.items():
+            sub_idx = cbody.find("(", 1)
+            hdr = cbody[:sub_idx] if sub_idx > 0 else cbody
+            matched = bool(re.search(r"(?:^|\s)" + re.escape(ntok_raw) + r"(?=$|\s|\))", hdr))
+            if not matched and ntok_q != ntok_raw:
+                matched = bool(re.search(r"(?:^|\s)" + re.escape(ntok_q) + r"(?=$|\s|\))", hdr))
+            if not matched:
+                continue
+            needs_layer = bool(use_layers) and "(use_layer" not in cbody
+            needs_width = False
+            if min_width_val is not None:
+                wm = re.search(r"\(width\s+([0-9.]+)\)", cbody)
+                cur_w = float(wm.group(1)) if wm else 0.0
+                needs_width = (cur_w + 1e-6 < min_width_val)
+            if needs_layer or needs_width:
+                parent_to_nets.setdefault(cname, []).append(nname)
+            break
+
+    if not parent_to_nets:
+        return dsn, []
+
+    use_layer_clause = (
+        f"(use_layer {' '.join(_token(ly) for ly in use_layers)})"
+        if use_layers
+        else ""
+    )
+
+    def _transform_tail(tail: str) -> str:
+        out = tail
+        if use_layer_clause and "(use_layer" not in out:
+            c_idx = out.find("(circuit")
+            if c_idx >= 0:
+                c_end = _sexp_end(out, c_idx)
+                if c_end > c_idx:
+                    c_body = out[c_idx:c_end]
+                    new_c = c_body[:-1].rstrip() + f"\n        {use_layer_clause}\n      )"
+                    out = out[:c_idx] + new_c + out[c_end:]
+            else:
+                r_idx = out.find("(rule")
+                if r_idx >= 0:
+                    out = out[:r_idx] + f"(circuit\n        {use_layer_clause}\n      )\n      " + out[r_idx:]
+                else:
+                    out = out[:-1].rstrip() + f"\n      (circuit\n        {use_layer_clause}\n      )\n    )"
+        if min_width_val is not None:
+            wm = re.search(r"\(width\s+([0-9.]+)\)", out)
+            if wm:
+                if float(wm.group(1)) + 1e-6 < min_width_val:
+                    out = out[:wm.start()] + f"(width {_num(min_width_val)})" + out[wm.end():]
+            elif "(rule" in out:
+                out = out.replace("(rule", f"(rule (width {_num(min_width_val)})", 1)
+            else:
+                out = out[:-1].rstrip() + f"\n      (rule (width {_num(min_width_val)}))\n    )"
+        return out
+
+    applied: list[str] = []
+    cloned_classes: list[str] = []
+    parent_to_sub: dict[str, str] = {}
+
+    for cname in sorted(parent_to_nets, key=lambda c: cls_blocks[c][0], reverse=True):
+        s, e, cbody = cls_blocks[cname]
+        move_nets = parent_to_nets[cname]
+        sub_idx = cbody.find("(", 1)
+        hdr = cbody[:sub_idx] if sub_idx > 0 else cbody[:-1]
+        tail = cbody[sub_idx:] if sub_idx > 0 else ")"
+
+        new_hdr = hdr
+        for nname in move_nets:
+            for tok in (_token(nname), _quote(nname)):
+                new_hdr = re.sub(r"(\s+)" + re.escape(tok) + r"(?=$|\s|\))", "", new_hdr, count=1)
+
+        cname_tok = re.match(r'\(class\s+(?:"[^"]+"|[^\s()]+)', new_hdr)
+        rem_hdr = new_hdr[cname_tok.end():].strip() if cname_tok else ""
+        updated_tail = _transform_tail(tail)
+
+        if not rem_hdr:
+            net_block = net_block[:s] + hdr + updated_tail + net_block[e:]
+            applied.extend(move_nets)
+        else:
+            sub_name = f"{cname}__{suffix}"
+            while sub_name in cls_blocks or sub_name in parent_to_sub.values():
+                sub_name = f"{sub_name}_x"
+            parent_to_sub[cname] = sub_name
+            moved_tokens = " ".join(_token(n) for n in move_nets)
+            new_sub = f"    (class {_token(sub_name)} {moved_tokens}\n      {updated_tail.lstrip()}"
+            net_block = net_block[:s] + new_hdr.rstrip() + "\n      " + tail.lstrip() + net_block[e:]
+            cloned_classes.append(new_sub)
+            applied.extend(move_nets)
+
+    extra_cc: list[str] = []
+    if parent_to_sub:
+        cc_pat = re.compile(r"\(class_class\s+")
+        seen_cc: set[tuple[str, str, str]] = set()
+        pos = 0
+        while True:
+            m = cc_pat.search(net_block, pos)
+            if m is None:
+                break
+            cend = _sexp_end(net_block, m.start())
+            if cend < 0:
+                break
+            cc_body = net_block[m.start():cend]
+            r_idx = cc_body.find("(rule")
+            cc_hdr = cc_body[:r_idx] if r_idx > 0 else cc_body[:-1]
+            cc_tail = cc_body[r_idx:] if r_idx > 0 else ")"
+            toks = re.findall(r'"[^"]+"|[^\s()]+', cc_hdr)
+            if len(toks) >= 4:
+                rule_id = toks[1].strip('"')
+                members = [t.strip('"') for t in toks[2:]]
+                # Pair each split parent's subclass strictly against DISTINCT other members
+                # (never self-pair sub with sub unless the original rule was explicitly self-paired).
+                orig_self_paired = len(members) >= 2 and len(set(members)) == 1
+                unique_members = list(dict.fromkeys(members))
+                for idx_a, ma in enumerate(unique_members):
+                    if ma not in parent_to_sub:
+                        continue
+                    sub_a = parent_to_sub[ma]
+                    if orig_self_paired:
+                        for target in (ma, sub_a):
+                            pair = tuple(sorted((sub_a, target)))
+                            key = (pair[0], pair[1], cc_tail.strip())
+                            if key not in seen_cc:
+                                seen_cc.add(key)
+                                extra_cc.append(
+                                    f"    (class_class {_token(f'{rule_id}_{pair[0]}_{pair[1]}')} "
+                                    f"{_token(pair[0])} {_token(pair[1])}\n      {cc_tail.lstrip()}"
+                                )
+                        continue
+                    for idx_b, mb in enumerate(unique_members):
+                        if idx_b == idx_a:
+                            continue
+                        targets = [mb]
+                        if mb in parent_to_sub:
+                            targets.append(parent_to_sub[mb])
+                        for tb in targets:
+                            if tb == sub_a:
+                                continue
+                            pair = tuple(sorted((sub_a, tb)))
+                            key = (pair[0], pair[1], cc_tail.strip())
+                            if key not in seen_cc:
+                                seen_cc.add(key)
+                                extra_cc.append(
+                                    f"    (class_class {_token(f'{rule_id}_{pair[0]}_{pair[1]}')} "
+                                    f"{_token(pair[0])} {_token(pair[1])}\n      {cc_tail.lstrip()}"
+                                )
+            pos = cend
+
+        # Preserve parent's own intra-class clearance between parent and derived subclass.
+        for parent, sub in parent_to_sub.items():
+            pbody = cls_blocks[parent][2]
+            cm = re.search(r"\(clearance\s+([0-9.]+)\)", pbody)
+            if cm:
+                clr_tail = f"(rule (clearance {cm.group(1)}))\n    )"
+                pair = tuple(sorted((parent, sub)))
+                key = (pair[0], pair[1], clr_tail.strip())
+                if key not in seen_cc:
+                    seen_cc.add(key)
+                    extra_cc.append(
+                        f"    (class_class {_token(f'intra_{suffix}_{parent}_{sub}')} "
+                        f"{_token(parent)} {_token(sub)}\n      {clr_tail}"
+                    )
+
+    if cloned_classes or extra_cc:
+        insert_blob = "\n".join(cloned_classes + extra_cc)
+        net_block = net_block[:-1].rstrip() + "\n" + insert_blob + "\n  )"
+
+    return dsn[:net_start] + net_block + dsn[net_end:], sorted(set(applied))
+
+
+def restrict_power_hv_outer_layers(
+    dsn: str,
+    board: Board,
+    intent: dict | None = None,
+) -> tuple[str, list[str]]:
+    """Keep mains AC, primary HV power loops, and high-dV/dt switch nodes on outer copper layers.
+
+    On >=4-layer boards, standard fabrication puts 1oz/2oz copper on outer layers (F.Cu, B.Cu)
+    with ~2x IPC-2152 thermal/fusing capacity vs 0.5oz inner copper (In1.Cu..In(N-2).Cu), and
+    Power Integrations AN-70/AN-82 + TI TIDA/PMP guidelines keep high-dV/dt switch nodes
+    (FLY_DRAIN, SW, RCD_CLAMP) compact on outer layers to prevent via inductance and inner
+    capacitive EMI coupling.
+
+    Safety parity guards:
+    - Never restricts nets that have an inner-layer plane zone (e.g., board GND planes).
+    - Never restricts low-current HV sensing/feedback nets (V_SENSE, FLY_V, FLY_FB).
+    - Never restricts a net whose SMD pads or locked copper lie off outer layers.
+    - Emits ``(circuit (use_layer F.Cu B.Cu))`` inside ``(class ...)`` where Freerouting enforces it.
+    """
+    ordered = [cl for cl in sorted(board.copper_layers, key=lambda c: c.index)]
+    if len(ordered) < 4:
+        return dsn, []
+
+    from ..eval.emc_safety import hv_power_and_switch_nets
+    from ..ir import plane_zone_layers
+
+    by_canon = {cl.name: cl.canonical for cl in ordered}
+    name_by_canon = {cl.canonical: cl.name for cl in ordered}
+    outer_canons = [ordered[0].canonical, ordered[-1].canonical]
+    outer_set = set(outer_canons)
+
+    planes = plane_zone_layers(board)
+    inner_plane_nets: set[str] = set()
+    for z in board.zones:
+        znet = z.get("net") or ""
+        if not znet:
+            continue
+        z_canons = {by_canon.get(n, n) for n in z.get("layers", ())}
+        if (z.get("uuid") in planes or z.get("filled") or z.get("fill_fraction", 0.0) > 0.3) and (z_canons - outer_set):
+            inner_plane_nets.add(znet)
+
+    groups = hv_power_and_switch_nets(board, intent)
+    candidates = (groups["hv_power"] | groups["switch_nodes"]) - inner_plane_nets
+    if not candidates:
+        return dsn, []
+
+    eligible: set[str] = set()
+    for nname in sorted(candidates):
+        ok = True
+        for fp in board.footprints:
+            for pad in fp.pads:
+                if pad.net != nname or pad.kind != "smd":
+                    continue
+                plyrs = {by_canon.get(lyr, lyr) for lyr in pad.layers}
+                if not (plyrs <= outer_set):
+                    ok = False
+                    break
+            if not ok:
+                break
+        if ok and board.routing:
+            for trk in board.routing.get("tracks", ()):
+                if trk.get("locked") and trk.get("net") == nname:
+                    tlyr = by_canon.get(trk.get("layer", ""), trk.get("layer", ""))
+                    if tlyr not in outer_set:
+                        ok = False
+                        break
+        if ok:
+            eligible.add(nname)
+    if not eligible:
+        return dsn, []
+
+    outer_names = [name_by_canon.get(c, c) for c in outer_canons]
+    return _apply_class_net_constraints(dsn, eligible, suffix="outer", use_layers=outer_names)
+
+
+def isolate_net_in_class(
+    dsn: str,
+    net_name: str,
+    *,
+    suffix: str = "net",
+) -> tuple[str, str | None]:
+    """Ensure ``net_name`` resides in its own dedicated Specctra DSN ``(class ...)``.
+
+    If ``net_name`` is already the sole net in its class, returns that class name unchanged.
+    Otherwise splits ``net_name`` into a derived class ``<parent>__<suffix>``, cloning every
+    ``(class_class ...)`` rule referencing ``<parent>`` strictly against distinct other classes
+    plus preserving ``<parent>``'s intra-class clearance.
+    """
+    net_start = dsn.find("(network")
+    if net_start < 0:
+        return dsn, None
+    net_end = _sexp_end(dsn, net_start)
+    if net_end < 0:
+        return dsn, None
+    net_block = dsn[net_start:net_end]
+
+    cls_pat = re.compile(r'\(class\s+("[^"]+"|[^\s()]+)')
+    ntok_raw = _token(net_name)
+    ntok_q = _quote(net_name)
+    pos = 0
+    existing_names: set[str] = set()
+    found: tuple[str, int, int, str, str, str] | None = None
+    while True:
+        m = cls_pat.search(net_block, pos)
+        if m is None:
+            break
+        cend = _sexp_end(net_block, m.start())
+        if cend < 0:
+            break
+        cname = m.group(1).strip('"')
+        existing_names.add(cname)
+        cbody = net_block[m.start():cend]
+        sub_idx = cbody.find("(", 1)
+        hdr = cbody[:sub_idx] if sub_idx > 0 else cbody[:-1]
+        tail = cbody[sub_idx:] if sub_idx > 0 else ")"
+        if found is None and (
+            re.search(r"(?:^|\s)" + re.escape(ntok_raw) + r"(?=$|\s|\))", hdr)
+            or (ntok_q != ntok_raw and re.search(r"(?:^|\s)" + re.escape(ntok_q) + r"(?=$|\s|\))", hdr))
+        ):
+            found = (cname, m.start(), cend, cbody, hdr, tail)
+        pos = cend
+
+    if found is None:
+        return dsn, None
+    cname, s, e, cbody, hdr, tail = found
+    new_hdr = hdr
+    for tok in (ntok_raw, ntok_q):
+        new_hdr = re.sub(r"(\s+)" + re.escape(tok) + r"(?=$|\s|\))", "", new_hdr, count=1)
+    cname_tok = re.match(r'\(class\s+(?:"[^"]+"|[^\s()]+)', new_hdr)
+    rem_hdr = new_hdr[cname_tok.end():].strip() if cname_tok else ""
+    if not rem_hdr:
+        return dsn, cname
+
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", net_name).strip("_")[-24:] or "n"
+    sub_name = f"{cname}__{suffix}_{slug}"
+    while sub_name in existing_names:
+        sub_name = f"{sub_name}_x"
+    new_sub = f"    (class {_token(sub_name)} {_token(net_name)}\n      {tail.lstrip()}"
+    net_block = net_block[:s] + new_hdr.rstrip() + "\n      " + tail.lstrip() + net_block[e:]
+
+    extra_cc: list[str] = []
+    seen_cc: set[tuple[str, str, str]] = set()
+    cc_pat = re.compile(r"\(class_class\s+")
+    pos = 0
+    while True:
+        m = cc_pat.search(net_block, pos)
+        if m is None:
+            break
+        cend = _sexp_end(net_block, m.start())
+        if cend < 0:
+            break
+        cc_body = net_block[m.start():cend]
+        r_idx = cc_body.find("(rule")
+        cc_hdr = cc_body[:r_idx] if r_idx > 0 else cc_body[:-1]
+        cc_tail = cc_body[r_idx:] if r_idx > 0 else ")"
+        toks = re.findall(r'"[^"]+"|[^\s()]+', cc_hdr)
+        if len(toks) >= 4:
+            rule_id = toks[1].strip('"')
+            members = [t.strip('"') for t in toks[2:]]
+            if cname in members:
+                orig_self = len(members) >= 2 and len(set(members)) == 1
+                others = [cname, sub_name] if orig_self else [mb for mb in dict.fromkeys(members) if mb != cname]
+                for ob in others:
+                    pair = tuple(sorted((sub_name, ob)))
+                    key = (pair[0], pair[1], cc_tail.strip())
+                    if key not in seen_cc:
+                        seen_cc.add(key)
+                        extra_cc.append(
+                            f"    (class_class {_token(f'{rule_id}_{pair[0]}_{pair[1]}')} "
+                            f"{_token(pair[0])} {_token(pair[1])}\n      {cc_tail.lstrip()}"
+                        )
+        pos = cend
+
+    cm = re.search(r"\(clearance\s+([0-9.]+)\)", cbody)
+    if cm:
+        clr_tail = f"(rule (clearance {cm.group(1)}))\n    )"
+        pair = tuple(sorted((cname, sub_name)))
+        key = (pair[0], pair[1], clr_tail.strip())
+        if key not in seen_cc:
+            seen_cc.add(key)
+            extra_cc.append(
+                f"    (class_class {_token(f'intra_{suffix}_{cname}_{sub_name}')} "
+                f"{_token(cname)} {_token(sub_name)}\n      {clr_tail}"
+            )
+
+    net_block = net_block[:-1].rstrip() + "\n" + "\n".join([new_sub, *extra_cc]) + "\n  )"
+    return dsn[:net_start] + net_block + dsn[net_end:], sub_name
+
+
+def enforce_mains_trace_width_floor(
+    dsn: str,
+    board: Board,
+    intent: dict | None = None,
+    *,
+    min_width_mm: float = 1.0,
+) -> tuple[str, list[str]]:
+    """Ensure eligible AC mains / pre-fuse nets route at >= ``min_width_mm`` (SMD-pad-safe) in DSN.
+
+    Per IEC 61010-1 / UL 61010-1 / IEC 61000-4-5 / IPC-2152, mains AC and pre-fuse traces must
+    have higher I^2*t fusing capacity than the physical fuse. To avoid pad overhang and clearance
+    neck-down on compact SMD bridge rectifiers (e.g. 1.0x0.8 mm pads at 2.54 mm pitch), each net's
+    target width is capped to ``min(min_width_mm, narrowest_smd_pad_dim)`` (rounded to 0.05 mm),
+    skipping only nets whose narrowest SMD pad is < 0.60 mm.
+    """
+    if min_width_mm <= 0.0:
+        return dsn, []
+    unit = _UNIT.search(dsn)
+    if unit is None or unit.group(1) not in _SCALE:
+        return dsn, []
+    scale = _SCALE[unit.group(1)]
+
+    from ..eval.emc_safety import hv_power_and_switch_nets
+
+    mains_nets = hv_power_and_switch_nets(board, intent)["mains_ac"]
+    if not mains_nets:
+        return dsn, []
+
+    buckets: dict[float, set[str]] = {}
+    for nname in sorted(mains_nets):
+        smd_min = min_width_mm
+        for fp in board.footprints:
+            for pad in fp.pads:
+                if pad.net != nname or pad.kind != "smd":
+                    continue
+                smd_min = min(smd_min, float(pad.size[0]), float(pad.size[1]))
+        if smd_min < 0.60:
+            continue
+        eff_w = round(min(min_width_mm, smd_min) * 20.0) / 20.0  # 0.05 mm steps (e.g. 1.00 or 0.80 mm)
+        buckets.setdefault(eff_w, set()).add(nname)
+
+    if not buckets:
+        return dsn, []
+
+    applied_all: list[str] = []
+    for eff_w in sorted(buckets, reverse=True):
+        suf = f"mains_{round(eff_w * 1000)}"
+        dsn, applied = _apply_class_net_constraints(
+            dsn,
+            buckets[eff_w],
+            suffix=suf,
+            min_width_val=eff_w * scale,
+        )
+        applied_all.extend(applied)
+    return dsn, sorted(set(applied_all))

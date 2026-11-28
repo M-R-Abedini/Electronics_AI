@@ -395,7 +395,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 sanitize_drc: bool = True, heal_thermals: bool = True,
                 heal_mask_bridges: bool = True, allow_router_microvias: bool = False,
                 reroute_after_sanitize: bool = True, prune_dangling: bool = True,
-                inject_gnd_return_vias: bool = True, postprocess=None) -> dict:
+                inject_gnd_return_vias: bool = True, restrict_hv_power_outer: bool = True,
+                postprocess=None) -> dict:
     """Route-check ``board``.  ``reference_board`` is the original input whose DRC
     findings count as pre-existing (architecture 8.1.3); it defaults to ``board``
     itself, which is right only when ``board`` *is* the designer's file.  A
@@ -509,6 +510,11 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
     text, stacked_vias_merged = dsn.merge_stacked_fixed_vias(text, ordered_layer_names)
     text, vippo_attached = dsn.enable_vippo_attach(text, layer_count=len(ir.copper_layers))
     text, fast_layer_nets = dsn.restrict_fast_net_layers(text, ir, intent)
+    power_outer_nets: list[str] = []
+    mains_width_nets: list[str] = []
+    if restrict_hv_power_outer:
+        text, power_outer_nets = dsn.restrict_power_hv_outer_layers(text, ir, intent)
+        text, mains_width_nets = dsn.enforce_mains_trace_width_floor(text, ir, intent)
     text, restricted_vias = dsn.restrict_structure_vias(
         text,
         layer_count=len(ir.copper_layers),
@@ -637,6 +643,9 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
                 rr_text, _ = dsn.merge_stacked_fixed_vias(rr_text, ordered_layer_names)
                 rr_text, _ = dsn.enable_vippo_attach(rr_text, layer_count=len(ir.copper_layers))
                 rr_text, _ = dsn.restrict_fast_net_layers(rr_text, locked_ir, intent)
+                if restrict_hv_power_outer:
+                    rr_text, _ = dsn.restrict_power_hv_outer_layers(rr_text, locked_ir, intent)
+                    rr_text, _ = dsn.enforce_mains_trace_width_floor(rr_text, locked_ir, intent)
                 rr_text = dsn.add_wire_keepouts(rr_text, macro_zone_keepouts + intent_kps + san_kps)
                 rr_text, _ = dsn.restrict_structure_vias(
                     rr_text, layer_count=len(ir.copper_layers), allow_blind_micro=allow_router_microvias,
@@ -961,6 +970,8 @@ def route_check(board: str | Path, *, out_dir: str | Path | None = None,
             "dsn_power_layers": power_layers(ir),
             "dsn_dru_compiled": dru_compiled,
             "dsn_fast_layer_nets": fast_layer_nets,
+            "dsn_power_outer_layer_nets": power_outer_nets,
+            "dsn_mains_width_floor_nets": mains_width_nets,
             "dsn_via_hole_clearances": via_hole_clrs,
             "dsn_stacked_vias_merged": stacked_vias_merged,
             "dsn_vippo_attached": vippo_attached,

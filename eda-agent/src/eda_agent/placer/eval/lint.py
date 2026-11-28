@@ -1160,7 +1160,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
                 )
 
     # ------------------------------------------------------------------
-    # Rules 10-14: First-principles EMI/EMC, HV safety & thermal DFM
+    # Rules 10-18: First-principles EMI/EMC, HV safety, power-layer & thermal DFM
     # ------------------------------------------------------------------
     emc_checks = emc_safety.run_emc_safety_checks(
         board,
@@ -1169,6 +1169,7 @@ def audit(board: Board, intent: dict | None = None) -> dict[str, Any]:
         vias=vias,
         ref_planes=ref_planes,
         add_finding=add_finding,
+        intent=intent,
     )
 
     # Deterministic finding order

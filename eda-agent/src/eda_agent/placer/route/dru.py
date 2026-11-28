@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...units import MM_PER_MIL
-from .dsn import _SCALE, _UNIT, _num, _quote, _sexp_end, _token
+from .dsn import _SCALE, _UNIT, _num, _quote, _sexp_end, _token, isolate_net_in_class
 
 if TYPE_CHECKING:
     from ..ir import Board
@@ -27,6 +27,8 @@ _NETCLASS_PAIR_COND = re.compile(
 )
 _A_NC_TERM = re.compile(r"A\.(?:NetClass\s*==\s*['\"]([^'\"]+)['\"]|hasNetclass\(\s*['\"]([^'\"]+)['\"]\s*\))")
 _B_NC_TERM = re.compile(r"B\.(?:NetClass\s*==\s*['\"]([^'\"]+)['\"]|hasNetclass\(\s*['\"]([^'\"]+)['\"]\s*\))")
+_A_NN_TERM = re.compile(r"A\.NetName\s*==\s*['\"]([^'\"]+)['\"]")
+_B_NN_TERM = re.compile(r"B\.NetName\s*==\s*['\"]([^'\"]+)['\"]")
 _INVALID_DRU_TOKEN = re.compile(r"\b[AB]\.Footprint\b")
 _CLEARANCE_RE = re.compile(r"\(constraint\s+clearance\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
 _WIDTH_RE = re.compile(r"\(constraint\s+track_width\b([^()]*(?:\([^()]*\)[^()]*)*)\)")
@@ -287,7 +289,11 @@ def _update_layer_rule(dsn: str, layer_name: str, scale: float, *, width_mm: flo
 
 def _insert_class_class_clearance(dsn: str, left_classes: list[str], right_classes: list[str],
                                   scale: float, clearance_mm: float) -> tuple[str, bool]:
-    """Insert or tighten Specctra ``(class_class ...)`` clearance rules inside ``(network ...)``."""
+    """Insert or tighten Specctra ``(class_class ...)`` clearance rules inside ``(network ...)``.
+
+    Updates existing ``(class_class ...)`` entries for the same unordered pair in place with
+    ``max(existing, target)`` so Freerouting never sees shadowed/conflicting duplicate pairs.
+    """
     if clearance_mm <= 0 or not left_classes or not right_classes:
         return dsn, False
     net_start = dsn.find("(network")
@@ -296,7 +302,8 @@ def _insert_class_class_clearance(dsn: str, left_classes: list[str], right_class
     net_end = _sexp_end(dsn, net_start)
     if net_end < 0:
         return dsn, False
-    val = _num(clearance_mm * scale)
+    target = clearance_mm * scale
+    val = _num(target)
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for a in left_classes:
@@ -305,17 +312,61 @@ def _insert_class_class_clearance(dsn: str, left_classes: list[str], right_class
             if key not in seen:
                 seen.add(key)
                 pairs.append(key)
+    if not pairs:
+        return dsn, False
+
+    net_block = dsn[net_start:net_end]
+    # First update any existing (class_class ...) blocks matching a target pair in place.
+    existing_pairs: set[tuple[str, str]] = set()
+    cc_pat = re.compile(r"\(class_class\s+")
+    matches: list[tuple[int, int, str, tuple[str, str]]] = []
+    pos = 0
+    while True:
+        m = cc_pat.search(net_block, pos)
+        if m is None:
+            break
+        cend = _sexp_end(net_block, m.start())
+        if cend < 0:
+            break
+        cc_body = net_block[m.start():cend]
+        r_idx = cc_body.find("(rule")
+        cc_hdr = cc_body[:r_idx] if r_idx > 0 else cc_body[:-1]
+        toks = re.findall(r'"[^"]+"|[^\s()]+', cc_hdr)
+        if len(toks) == 4:
+            ca, cb = toks[2].strip('"'), toks[3].strip('"')
+            pkey = (ca, cb) if ca <= cb else (cb, ca)
+            if pkey in seen:
+                matches.append((m.start(), cend, cc_body, pkey))
+                existing_pairs.add(pkey)
+        pos = cend
+
+    changed = False
+    for s, e, cc_body, _pkey in reversed(matches):
+        cm = re.search(r"\(clearance\s+([0-9.]+)\)", cc_body)
+        if cm:
+            if target > float(cm.group(1)) + 1e-6:
+                new_body = cc_body[:cm.start()] + f"(clearance {val})" + cc_body[cm.end():]
+                net_block = net_block[:s] + new_body + net_block[e:]
+            changed = True
+        elif "(rule" in cc_body:
+            new_body = cc_body.replace("(rule", f"(rule (clearance {val})", 1)
+            net_block = net_block[:s] + new_body + net_block[e:]
+            changed = True
+
     entries = []
     for a, b in pairs:
+        if (a, b) in existing_pairs:
+            continue
         entries.append(
             f"    (class_class kicad_dru_{_token(a)}_{_token(b)} {_token(a)} {_token(b)}\n"
             f"      (rule (clearance {val}))\n    )"
         )
-    if not entries:
+    if entries:
+        net_block = net_block[:-1].rstrip() + "\n" + "\n".join(entries) + "\n  )"
+        changed = True
+    if not changed:
         return dsn, False
-    net_block = dsn[net_start:net_end]
-    updated = net_block[:-1].rstrip() + "\n" + "\n".join(entries) + "\n  )"
-    return dsn[:net_start] + updated + dsn[net_end:], True
+    return dsn[:net_start] + net_block + dsn[net_end:], True
 
 
 def _extract_compound_netclasses(cond: str) -> tuple[list[str], list[str]] | None:
@@ -332,6 +383,26 @@ def _extract_compound_netclasses(cond: str) -> tuple[list[str], list[str]] | Non
     # Strip matched netclass terms, type qualifiers, boolean ops, and parentheses to verify no unsupported clauses remain
     stripped = _A_NC_TERM.sub("", cond)
     stripped = _B_NC_TERM.sub("", stripped)
+    stripped = re.sub(r"[AB]\.Type\s*[=!]=\s*['\"][^'\"]+['\"]", "", stripped)
+    stripped = re.sub(r"(&&|\|\||!|\(|\)|\s)+", "", stripped)
+    if stripped:
+        return None
+    return (list(dict.fromkeys(a_pats)), list(dict.fromkeys(b_pats)))
+
+
+def _extract_compound_netnames(cond: str) -> tuple[list[str], list[str]] | None:
+    """Extract (A_net_patterns, B_net_patterns) from KiCad 8/9/10 compound NetName conditions.
+
+    Handles expressions such as:
+    ``(A.NetName == '/AUX/AC_L' || A.NetName == '/AUX/AC_L_FUSED') && (B.NetName == '/AUX/AC_N' || ...)``
+    with optional ``A.Type`` / ``B.Type`` qualifiers.
+    """
+    a_pats = [m.group(1) for m in _A_NN_TERM.finditer(cond)]
+    b_pats = [m.group(1) for m in _B_NN_TERM.finditer(cond)]
+    if not a_pats or not b_pats:
+        return None
+    stripped = _A_NN_TERM.sub("", cond)
+    stripped = _B_NN_TERM.sub("", stripped)
     stripped = re.sub(r"[AB]\.Type\s*[=!]=\s*['\"][^'\"]+['\"]", "", stripped)
     stripped = re.sub(r"(&&|\|\||!|\(|\)|\s)+", "", stripped)
     if stripped:
@@ -468,8 +539,13 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
             continue
         has_unsupported_extra = bool(found_constraints - _SUPPORTED_CONSTRAINTS)
 
-        # Reject complex spatial / pair / zone / silk conditions cleanly (P5 honesty)
-        if any(tok in cond_low for tok in ("intersectsarea", "fromto", "indiffpair", "netname", "zone", "silk", "text", "graphic", "castellated")):
+        # Reject complex spatial / pair / zone / silk conditions cleanly (P5 honesty);
+        # compound A.NetName == ... && B.NetName == ... clearance rules ARE translated below.
+        compound_nn = _extract_compound_netnames(cond) if "netname" in cond_low else None
+        if any(tok in cond_low for tok in ("intersectsarea", "fromto", "indiffpair", "zone", "silk", "text", "graphic", "castellated")):
+            untranslated.append(rule_name)
+            continue
+        if "netname" in cond_low and compound_nn is None:
             untranslated.append(rule_name)
             continue
 
@@ -508,10 +584,10 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
 
         # 2) DSN class or layer width/clearance rules
         if clr_mm is not None or wid_mm is not None:
-            def _resolve_nc(patterns: list[str]) -> list[str]:
+            def _resolve_nc(patterns: list[str], classes: list[str] = dsn_classes) -> list[str]:
                 out_c: list[str] = []
                 for pat in patterns:
-                    hits = [c for c in dsn_classes if fnmatch.fnmatchcase(c, pat)]
+                    hits = [c for c in classes if fnmatch.fnmatchcase(c, pat)]
                     if not hits and "*" not in pat and "?" not in pat:
                         hits = [pat]
                     out_c.extend(hits)
@@ -551,6 +627,43 @@ def compile_dru_to_dsn(dsn: str, dru_path: Path, board: Board) -> tuple[str, dic
                 elif a_cls or b_cls:
                     for cname in dict.fromkeys(a_cls + b_cls):
                         dsn, ok = _update_class_rule(dsn, cname, scale, width_mm=wid_mm, clearance_mm=clr_mm)
+                        applied |= ok
+            elif compound_nn is not None and clr_mm is not None and wid_mm is None:
+                a_npats, b_npats = compound_nn
+                board_net_names = [n.name for n in board.nets if n.name]
+
+                def _resolve_nets(pats: list[str], names: list[str] = board_net_names) -> list[str]:
+                    hits: list[str] = []
+                    for pat in pats:
+                        matched = [bn for bn in names if fnmatch.fnmatchcase(bn, pat)]
+                        if not matched and pat in names:
+                            matched = [pat]
+                        hits.extend(matched)
+                    return list(dict.fromkeys(hits))
+
+                a_nets = _resolve_nets(a_npats)
+                b_nets = _resolve_nets(b_npats)
+                if a_nets and b_nets:
+                    net_to_cls: dict[str, str] = {}
+                    for nname in dict.fromkeys(a_nets + b_nets):
+                        dsn, cname = isolate_net_in_class(dsn, nname, suffix="drunet")
+                        if cname:
+                            net_to_cls[nname] = cname
+                    dsn_classes = _dsn_class_names(dsn)
+                    # Insert pairwise (class_class ...) strictly between distinct nets (a != b)
+                    distinct_pairs: set[tuple[str, str]] = set()
+                    for na in a_nets:
+                        ca = net_to_cls.get(na)
+                        if not ca:
+                            continue
+                        for nb in b_nets:
+                            cb = net_to_cls.get(nb)
+                            if not cb or ca == cb:
+                                continue
+                            pair = (ca, cb) if ca <= cb else (cb, ca)
+                            distinct_pairs.add(pair)
+                    for ca, cb in sorted(distinct_pairs):
+                        dsn, ok = _insert_class_class_clearance(dsn, [ca], [cb], scale, clr_mm)
                         applied |= ok
             elif _is_global_copper_cond(cond):
                 target_layers = _resolve_layers(lyr_spec, board)
